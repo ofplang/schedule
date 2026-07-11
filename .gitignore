@@ -6,3 +6,7 @@ build/
 dist/
 .venv/
 venv/
+
+# Local working notes, not part of the published project (until explicitly committed).
+CLAUDE.md
+dev-notes/
