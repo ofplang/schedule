@@ -85,20 +85,34 @@ model:
 | Object-bearing | Occupies a spot | Transported between spots | Physical material |
 | Pure Data | None | None | Information; produces a dependency (ordering) only |
 
-### 4.4 Spots (the processing resource)
+### 4.4 Devices and spots (the exclusive resources)
 
-A **spot** is a holding/processing position on a device. Spots are the only
-exclusive resource for processing:
+Both **devices** and **spots** are exclusive resources; the model applies
+mutual-exclusion to each.
 
-- A processing activity occupies the spots bound to its Object-bearing input and
-  output ports for the interval `[start, end]`.
-- Two activities may not occupy the same spot at overlapping times.
+A **device** is a machine that carries out work. A device runs at most one
+activity at a time: the activities that occupy a device may not overlap in time.
 
-**Devices are not locked.** A device's concurrency is governed entirely by its
-spots: a device with one spot effectively runs one activity at a time, while a
-device with many spots (e.g. an incubator or a storage hotel) can hold or process
-several items concurrently. Devices exist only to group spots and to label the
-plan; they are not themselves an exclusive resource.
+A **spot** is a holding/processing position on a device. A spot holds at most one
+item at a time: the intervals that occupy a spot may not overlap.
+
+- A processing activity occupies its device(s) (see §4.4.1) and the spots bound to
+  its Object-bearing input and output ports over the interval `[start, end]`.
+- Spots additionally capture material held **beyond** an activity's own interval —
+  in particular, material waiting in a spot before and after transport (§4.5) —
+  which device occupation does not.
+
+Because a device runs one activity at a time, a resource that must hold several
+items concurrently (a storage hotel, a multi-slot incubator) is modelled as
+several devices — typically one device per position — rather than one device with
+many spots.
+
+#### 4.4.1 Multi-device activities
+
+An activity may occupy **more than one device** at once (e.g. a transport activity
+occupies its source device, its destination device, and a transporter; §4.5). A
+processing mode may therefore declare more than one device (§5.5). Each occupied
+device is subject to the same non-overlap rule.
 
 ### 4.5 Transport
 
@@ -117,19 +131,23 @@ activity start `s_j`:
     the moment the source activity finishes until it has been transported away;
   - the **destination spot** over `[a, s_j]` — reserved from the start of
     transport until the destination activity begins;
-  - the chosen **transporter** over `[a, b]`.
+  - the **source device**, the **destination device**, and the chosen
+    **transporter** over `[a, b]`.
 - If `p == q` the two spot intervals collapse to `[e_i, s_j]` and the duration is
   zero.
+
+(A transporter is itself a device (§4.6), so a transport activity occupies three
+devices at once — source, destination, and transporter — an instance of the
+multi-device activities of §4.4.1.)
 
 Ordering: `a >= e_i` and `s_j >= b`.
 
 ### 4.6 Transporters
 
-A transporter is an **individual** entity with its own id, modelled as an
-exclusive resource: the transport activities assigned to a given transporter may
-not overlap in time (one move at a time per transporter). Multiple transporters
-are multiple distinct ids, and each transport activity is assigned to one of
-them.
+A transporter is an **individual** device with its own id, exclusive like any
+device: the transport activities assigned to a given transporter may not overlap
+in time (one move at a time per transporter). Multiple transporters are multiple
+distinct ids, and each transport activity is assigned to one of them.
 
 - The **initial version uses a single transporter**, so all transports are
   serialized on it.
@@ -163,8 +181,7 @@ top-level sections.
 
 ### 5.2 `devices`
 
-A list of devices. Each device groups spots; the device itself is not an
-exclusive resource (§4.4).
+A list of devices. Each device is an exclusive resource (§4.4) and groups spots.
 
 - `id` — unique device id.
 - `spots` — a list of spot names belonging to this device. A spot name is unique
@@ -178,7 +195,7 @@ A list of transporters (§4.6). Each entry is an individual transporter:
 
 - `id` — unique transporter id.
 
-The initial version expects exactly one entry.
+The initial version uses a single transporter; the schema permits several.
 
 ### 5.4 `transports`
 
@@ -204,18 +221,20 @@ instance override.
 
 Each process has a list of **modes**. A mode is one way to run the process:
 
-- `device` — the device the mode runs on. **Optional**: a Pure-Data-only process
-  (e.g. a `python_script` step) may omit `device` and declare only a `duration`,
-  occupying no spot and no transporter.
+- `devices` — a **list** of device ids the mode occupies simultaneously (§4.4.1).
+  Usually one device, but a mode may occupy several. **Optional**: a
+  Pure-Data-only process (e.g. a `python_script` step) may omit `devices` and
+  declare only a `duration`, occupying no device and no spot.
 - `duration` — the estimated processing time, a non-negative integer in
   `time.unit`.
-- `input_spots` — a mapping from **Object-bearing** input port name to a spot on
-  `device`, given as a **local spot name** (resolved against this mode's
-  `device`; not the qualified form).
-- `output_spots` — a mapping from **Object-bearing** output port name to a local
-  spot name on `device`. Within one mode, input ports must not share a spot with
-  each other and output ports must not share a spot with each other, but an input
-  and an output port may share a spot.
+- `input_spots` — a mapping from **Object-bearing** input port name to a spot,
+  given in **qualified form** `<device>.<spot>` (§8). The qualified form is
+  required because a mode may name more than one device, so a bare local spot name
+  would be ambiguous. The device must be one of the mode's `devices`.
+- `output_spots` — a mapping from **Object-bearing** output port name to a
+  qualified spot. Within one mode, input ports must not share a spot with each
+  other and output ports must not share a spot with each other, but an input and
+  an output port may share a spot.
 
 Pure Data ports are not listed in `input_spots` / `output_spots` (they occupy no
 spot).
@@ -231,35 +250,35 @@ spot).
 time:
   unit: second
 
-devices:
-  - id: incubator-0
-    spots: [slot-0, slot-1, slot-2]   # many spots -> concurrent holding/processing
-  - id: reader-0
-    spots: [stage]                    # one spot -> one at a time
-  - id: hotel-0                       # storage / buffer
+devices:                              # ids use [A-Za-z_][A-Za-z0-9_]* (no hyphens)
+  - id: incubator_0
+    spots: [slot_0, slot_1, slot_2]   # holding positions on one device
+  - id: reader_0
+    spots: [stage]
+  - id: hotel_0                       # storage / buffer
     spots: [h0, h1, h2, h3]
 
 transporters:
-  - id: arm-0
-  - id: arm-1
+  - id: arm_0
+  - id: arm_1
 
 transports:  # from/to are qualified <device>.<spot>
-  - { transporter: arm-0, from: incubator-0.slot-0, to: reader-0.stage, duration: 20 }
-  - { transporter: arm-1, from: incubator-0.slot-0, to: reader-0.stage, duration: 15 }  # arm-1 is faster
-  - { transporter: arm-0, from: reader-0.stage,     to: hotel-0.h0,     duration: 25 }
-  # no arm-1 entry for reader-0.stage -> hotel-0.h0, so arm-1 cannot make that move
+  - { transporter: arm_0, from: incubator_0.slot_0, to: reader_0.stage, duration: 20 }
+  - { transporter: arm_1, from: incubator_0.slot_0, to: reader_0.stage, duration: 15 }  # arm_1 is faster
+  - { transporter: arm_0, from: reader_0.stage,     to: hotel_0.h0,     duration: 25 }
+  # no arm_1 entry for reader_0.stage -> hotel_0.h0, so arm_1 cannot make that move
 
 processes:
   measure_od:                         # keyed by the v0 process definition name
     modes:
-      - device: reader-0
+      - devices: [reader_0]           # a list; may name several devices
         duration: 60
-        input_spots:  { plate: stage }
-        output_spots: { plate: stage }
-      - device: incubator-0
+        input_spots:  { plate: reader_0.stage }   # qualified <device>.<spot>
+        output_spots: { plate: reader_0.stage }
+      - devices: [incubator_0]
         duration: 45
-        input_spots:  { plate: slot-0 }
-        output_spots: { plate: slot-0 }
+        input_spots:  { plate: incubator_0.slot_0 }
+        output_spots: { plate: incubator_0.slot_0 }
   compute_mean:                       # Pure Data only -> duration only
     modes:
       - duration: 5
@@ -271,8 +290,8 @@ objective:
 ## 6. Execution plan schema
 
 *Forthcoming.* This will describe the scheduler output: for each activity
-(processing and transport), its start and end, the selected mode / device / spots,
-and the selected transporter for transport activities.
+(processing and transport), its start and end, the selected mode / devices /
+spots, and the selected transporter for transport activities.
 
 ## 7. Execution status schema
 
@@ -291,8 +310,9 @@ identifier grammar:
 [A-Za-z_][A-Za-z0-9_]*
 ```
 
-ASCII, case-sensitive, no `.`. The v0 reserved-word list applies to the workflow,
-not to environment-local ids.
+ASCII, case-sensitive. Note the grammar allows `_` but **not `-`**, and `.` is
+excluded (reserved as the separator for qualified spot ids, §8.2). The v0
+reserved-word list applies to the workflow, not to environment-local ids.
 
 Process names and port names are **referenced from the workflow** and therefore
 follow the v0 rules for those positions.
@@ -302,9 +322,9 @@ follow the v0 rules for those positions.
 - **device id** — unique among devices.
 - **transporter id** — unique among transporters.
 - **spot** — a spot name is unique within its device. The globally unique spot id
-  is the qualified form `<device>.<spot>`. `modes` reference spots by local name
-  (the device is the mode's `device`); `transports` reference spots by qualified
-  form because they span devices.
+  is the qualified form `<device>.<spot>`. Both `modes` and `transports` reference
+  spots by the qualified form (a mode may name several devices, so a bare local
+  name would be ambiguous).
 - **Cross-kind coincidence is allowed**: a device, a spot name, and a transporter
   may share the same string, and a port name may coincide with any of them (port
   names live in a per-process, per-direction namespace — v0 §2.4). Coincidence
@@ -327,8 +347,8 @@ Checks are organised in layers:
 - Duplicate detection: duplicate ids; duplicate `transports` entries for the same
   `(transporter, from, to)`.
 - Intra-mode spot rules: within a mode, input ports do not share a spot, output
-  ports do not share a spot, and every referenced spot belongs to the mode's
-  `device`.
+  ports do not share a spot, and every referenced spot's device is one of the
+  mode's `devices`.
 - **Unknown or extra keys are errors** (strict only; there is no
   extension-tolerant mode).
 
