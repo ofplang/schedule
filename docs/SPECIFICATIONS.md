@@ -172,7 +172,9 @@ revised estimates.
 ## 5. Execution environment definition schema
 
 The execution environment definition is a YAML document with the following
-top-level sections.
+top-level sections. `time`, `devices`, and `processes` are required; `transporters`,
+`transports`, and `objective` are optional (`transporters` / `transports` may be
+omitted when the workflow has no Object-bearing arcs). Durations are YAML integers.
 
 ### 5.1 `time`
 
@@ -181,10 +183,11 @@ top-level sections.
 
 ### 5.2 `devices`
 
-A list of devices. Each device is an exclusive resource (§4.4) and groups spots.
+A non-empty list of devices. Each device is an exclusive resource (§4.4) and groups
+spots.
 
 - `id` — unique device id.
-- `spots` — a list of spot names belonging to this device. A spot name is unique
+- `spots` — a list of spot names belonging to this device (may be empty). A spot name is unique
   **within its device**; the globally unique spot id is the qualified form
   `<device>.<spot>` (see §8). Because neither part contains a `.`, the qualified
   form parses unambiguously.
@@ -201,9 +204,9 @@ The initial version uses a single transporter; the schema permits several.
 
 The transport-duration table, keyed by `(transporter, from_spot, to_spot)`:
 
-- `transporter` — a transporter id.
-- `from` — source spot, in qualified form `<device>.<spot>` (§8).
-- `to` — destination spot, in qualified form `<device>.<spot>` (§8).
+- `transporter` — a defined transporter id.
+- `from` — source spot, a defined spot in qualified form `<device>.<spot>` (§8).
+- `to` — destination spot, a defined spot in qualified form `<device>.<spot>` (§8).
 - `duration` — a non-negative integer, in `time.unit`.
 
 Semantics:
@@ -219,14 +222,19 @@ Execution capability, keyed by the **atomic process definition name** used in th
 workflow. Capability is attached per process definition; there is no per-node-
 instance override.
 
-Each process has a list of **modes**. A mode is one way to run the process:
+Each process has a non-empty list of **modes**. A mode is one way to run the
+process:
 
+- `id` — an optional mode id, unique within the process. If omitted it is assigned
+  automatically (e.g. by position). The execution plan records the selected mode by
+  this id, and replanning fixes a completed/running activity to its mode by id.
 - `devices` — a **list** of device ids the mode occupies simultaneously (§4.4.1).
   Usually one device, but a mode may occupy several. **Optional**: a
   Pure-Data-only process (e.g. a `python_script` step) may omit `devices` and
   declare only a `duration`, occupying no device and no spot.
-- `duration` — the estimated processing time, a non-negative integer in
-  `time.unit`.
+- `duration` — the estimated processing time, a **positive** integer in
+  `time.unit` (transport durations, §5.4, may be zero, but a processing mode may
+  not).
 - `input_spots` — a mapping from **Object-bearing** input port name to a spot,
   given in **qualified form** `<device>.<spot>` (§8). The qualified form is
   required because a mode may name more than one device, so a bare local spot name
@@ -242,7 +250,8 @@ spot).
 ### 5.6 `objective` (optional)
 
 - `kind` — the objective. Only `makespan` is accepted in the initial version. May
-  be overridden on the command line.
+  be overridden on the command line. When `objective` is omitted, the default is
+  `makespan`.
 
 ### 5.7 Example
 
@@ -334,7 +343,12 @@ follow the v0 rules for those positions.
 ## 9. Validation
 
 Validation of the environment definition is owned by `ofplang.schedule`.
-`ofplang.validate` is not involved; it validates only the v0 workflow.
+`ofplang.validate` is not involved. For the against-workflow layer,
+`ofplang.schedule` reads the workflow itself with a minimal parser — extracting
+only what it needs (process kinds, type domains, and per-port Object-bearing-ness)
+— without depending on `ofplang.validate`. Full v0 validation of the workflow is
+out of scope here and is expected to be done separately (by `ofplang.validate`);
+the scheduler assumes it is given a valid v0 workflow.
 
 Checks are organised in layers:
 
@@ -342,8 +356,15 @@ Checks are organised in layers:
 
 - Identifier syntax (§8.1) and per-kind uniqueness (§8.2); cross-kind coincidence
   raises a warning.
-- Value constraints: `duration` is a non-negative integer; `time.unit` is a
-  non-empty string; `objective.kind` is `makespan`.
+- Required sections present (`time`, `devices`, `processes`); `devices` non-empty;
+  each process has at least one mode.
+- Value constraints: a processing `duration` is a positive YAML integer, a
+  transport `duration` is a non-negative YAML integer; `time.unit` is a non-empty
+  string; `objective.kind` is `makespan`.
+- Env-internal references: each `transports.transporter` is a defined transporter;
+  every `from` / `to` and every `input_spots` / `output_spots` value is a
+  well-formed qualified spot `<device>.<spot>` (exactly one `.`) naming a defined
+  device and a spot defined on it.
 - Duplicate detection: duplicate ids; duplicate `transports` entries for the same
   `(transporter, from, to)`.
 - Intra-mode spot rules: within a mode, input ports do not share a spot, output
