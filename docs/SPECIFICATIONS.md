@@ -167,8 +167,10 @@ A list of devices. Each device groups spots; the device itself is not an
 exclusive resource (§4.4).
 
 - `id` — unique device id.
-- `spots` — a list of spot ids belonging to this device. Spot ids are unique
-  across the whole environment.
+- `spots` — a list of spot names belonging to this device. A spot name is unique
+  **within its device**; the globally unique spot id is the qualified form
+  `<device>.<spot>` (see §8). Because neither part contains a `.`, the qualified
+  form parses unambiguously.
 
 ### 5.3 `transporters`
 
@@ -183,8 +185,8 @@ The initial version expects exactly one entry.
 The transport-duration table, keyed by `(transporter, from_spot, to_spot)`:
 
 - `transporter` — a transporter id.
-- `from` — source spot id.
-- `to` — destination spot id.
+- `from` — source spot, in qualified form `<device>.<spot>` (§8).
+- `to` — destination spot, in qualified form `<device>.<spot>` (§8).
 - `duration` — a non-negative integer, in `time.unit`.
 
 Semantics:
@@ -207,10 +209,13 @@ Each process has a list of **modes**. A mode is one way to run the process:
   occupying no spot and no transporter.
 - `duration` — the estimated processing time, a non-negative integer in
   `time.unit`.
-- `input_spots` — a mapping from **Object-bearing** input port name to a spot id
-  on `device`.
-- `output_spots` — a mapping from **Object-bearing** output port name to a spot id
-  on `device`. An input and an output port may share a spot.
+- `input_spots` — a mapping from **Object-bearing** input port name to a spot on
+  `device`, given as a **local spot name** (resolved against this mode's
+  `device`; not the qualified form).
+- `output_spots` — a mapping from **Object-bearing** output port name to a local
+  spot name on `device`. Within one mode, input ports must not share a spot with
+  each other and output ports must not share a spot with each other, but an input
+  and an output port may share a spot.
 
 Pure Data ports are not listed in `input_spots` / `output_spots` (they occupy no
 spot).
@@ -238,11 +243,11 @@ transporters:
   - id: arm-0
   - id: arm-1
 
-transports:
-  - { transporter: arm-0, from: slot-0, to: stage, duration: 20 }
-  - { transporter: arm-1, from: slot-0, to: stage, duration: 15 }  # arm-1 is faster
-  - { transporter: arm-0, from: stage,  to: h0,    duration: 25 }
-  # no arm-1 entry for stage -> h0, so arm-1 cannot make that move
+transports:  # from/to are qualified <device>.<spot>
+  - { transporter: arm-0, from: incubator-0.slot-0, to: reader-0.stage, duration: 20 }
+  - { transporter: arm-1, from: incubator-0.slot-0, to: reader-0.stage, duration: 15 }  # arm-1 is faster
+  - { transporter: arm-0, from: reader-0.stage,     to: hotel-0.h0,     duration: 25 }
+  # no arm-1 entry for reader-0.stage -> hotel-0.h0, so arm-1 cannot make that move
 
 processes:
   measure_od:                         # keyed by the v0 process definition name
@@ -274,3 +279,72 @@ and the selected transporter for transport activities.
 *Forthcoming.* This is the replanning input: completed and running activities with
 their actual times and assignments, plus the initial state (device positions,
 where material currently sits). It will be aligned with the execution plan schema.
+
+## 8. Identifiers
+
+### 8.1 Syntax
+
+All ids defined by the environment (device, spot, transporter) use the v0
+identifier grammar:
+
+```text
+[A-Za-z_][A-Za-z0-9_]*
+```
+
+ASCII, case-sensitive, no `.`. The v0 reserved-word list applies to the workflow,
+not to environment-local ids.
+
+Process names and port names are **referenced from the workflow** and therefore
+follow the v0 rules for those positions.
+
+### 8.2 Uniqueness and namespaces
+
+- **device id** — unique among devices.
+- **transporter id** — unique among transporters.
+- **spot** — a spot name is unique within its device. The globally unique spot id
+  is the qualified form `<device>.<spot>`. `modes` reference spots by local name
+  (the device is the mode's `device`); `transports` reference spots by qualified
+  form because they span devices.
+- **Cross-kind coincidence is allowed**: a device, a spot name, and a transporter
+  may share the same string, and a port name may coincide with any of them (port
+  names live in a per-process, per-direction namespace — v0 §2.4). Coincidence
+  across the device / spot / transporter kinds is permitted but **should raise a
+  warning** for readability.
+
+## 9. Validation
+
+Validation of the environment definition is owned by `ofplang.schedule`.
+`ofplang.validate` is not involved; it validates only the v0 workflow.
+
+Checks are organised in layers:
+
+### 9.1 Shape (standalone; no workflow needed)
+
+- Identifier syntax (§8.1) and per-kind uniqueness (§8.2); cross-kind coincidence
+  raises a warning.
+- Value constraints: `duration` is a non-negative integer; `time.unit` is a
+  non-empty string; `objective.kind` is `makespan`.
+- Duplicate detection: duplicate ids; duplicate `transports` entries for the same
+  `(transporter, from, to)`.
+- Intra-mode spot rules: within a mode, input ports do not share a spot, output
+  ports do not share a spot, and every referenced spot belongs to the mode's
+  `device`.
+- **Unknown or extra keys are errors** (strict only; there is no
+  extension-tolerant mode).
+
+### 9.2 Against the workflow
+
+- Each `processes` key names a process that exists in the workflow, is **atomic**,
+  and is in scope (§2).
+- Each port in `input_spots` / `output_spots` exists on that process, in the
+  correct direction, and is **Object-bearing**; Pure Data ports must not appear.
+
+### 9.3 Out of scope for the validator (checked by the execution layer)
+
+- **Coverage / completeness**: every atomic process actually invoked by the
+  workflow has at least one mode, and every mode maps exactly the Object-bearing
+  ports of its process.
+- **Reachability / solvability**: for each Object-bearing arc, a feasible
+  combination of endpoint modes and a transporter that can move between the
+  chosen spots exists. This depends on mode selection and is a solvability
+  concern, not a schema check.
