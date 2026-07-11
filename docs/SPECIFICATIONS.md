@@ -342,17 +342,23 @@ follow the v0 rules for those positions.
 
 ## 9. Validation
 
-Validation of the environment definition is owned by `ofplang.schedule`.
-`ofplang.validate` is not involved. For the against-workflow layer,
-`ofplang.schedule` reads the workflow itself with a minimal parser — extracting
-only what it needs (process kinds, type domains, and per-port Object-bearing-ness)
-— without depending on `ofplang.validate`. Full v0 validation of the workflow is
-out of scope here and is expected to be done separately (by `ofplang.validate`);
-the scheduler assumes it is given a valid v0 workflow.
+Validation splits into a standalone **schema validator** and **execution-layer
+validation**.
 
-Checks are organised in layers:
+The **schema validator** is owned by `ofplang.schedule` and checks only the shape
+of the environment definition on its own (§9.1). It does not read the workflow.
+`ofplang.validate` is not involved. Its diagnostics follow the same convention as
+`ofplang.validate`: stable **error codes** with a `file:line:col` source position.
 
-### 9.1 Shape (standalone; no workflow needed)
+**Execution-layer validation** (§9.2) covers everything that needs the workflow or
+depends on solvability. The execution layer reads the workflow itself with
+`ofplang.schedule`'s own minimal parser — extracting only what it needs (process
+kinds, type domains, per-port Object-bearing-ness) — without depending on
+`ofplang.validate`. Full v0 validation of the workflow is out of scope here and is
+expected to be done separately (by `ofplang.validate`); the scheduler assumes it is
+given a valid v0 workflow.
+
+### 9.1 Schema validator — shape only (standalone; no workflow needed)
 
 - Identifier syntax (§8.1) and per-kind uniqueness (§8.2); cross-kind coincidence
   raises a warning.
@@ -373,15 +379,14 @@ Checks are organised in layers:
 - **Unknown or extra keys are errors** (strict only; there is no
   extension-tolerant mode).
 
-### 9.2 Against the workflow
+### 9.2 Execution-layer validation (needs the workflow / solvability)
 
-- Each `processes` key names a process that exists in the workflow, is **atomic**,
-  and is in scope (§2).
-- Each port in `input_spots` / `output_spots` exists on that process, in the
-  correct direction, and is **Object-bearing**; Pure Data ports must not appear.
+Not part of the schema validator; checked by the execution layer.
 
-### 9.3 Out of scope for the validator (checked by the execution layer)
-
+- **Against the workflow**: each `processes` key names a process that exists in the
+  workflow, is **atomic**, and is in scope (§2); each port in `input_spots` /
+  `output_spots` exists on that process, in the correct direction, and is
+  **Object-bearing** (Pure Data ports must not appear).
 - **Coverage / completeness**: every atomic process actually invoked by the
   workflow has at least one mode, and every mode maps exactly the Object-bearing
   ports of its process.
