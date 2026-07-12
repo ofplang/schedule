@@ -301,20 +301,28 @@ objective:
 The execution plan is the scheduler's output: a list of timed activities plus
 top-level metadata. Times are non-negative integers in `time.unit`.
 
-An activity is **physical-first**: its main fields say what is actually done
-(when, where, with what), and workflow provenance is attached as supplementary
-information. The two kinds are deliberately asymmetric:
+An activity is **action-first**: its main fields say what is actually done (when,
+and the concrete operation), while the workflow provenance is attached as a
+supplementary field. The two kinds are parallel:
 
-- A **processing** activity realizes a node the workflow author wrote, so it is
-  anchored in the workflow: `node` and `mode` are primary. The physical detail
-  (`process`, `devices`, spots) follows from `node`, `mode`, the workflow, and the
-  environment, and is supplementary.
-- A **transport** activity is induced by the scheduler to move an Object, so it is
-  anchored in the physical move: `from_spot`, `to_spot`, and `transporter` are
-  primary. The `arc` it serves is supplementary provenance.
+- A **processing** activity's main fields are `process` (the operation) and `mode`
+  (how it runs). Its provenance is `node` — the specific invocation in the
+  workflow.
+- A **transport** activity's main fields are `from_spot`, `to_spot`, and
+  `transporter` (the move and the mover). Its provenance is `arc` — the
+  Object-bearing arc it serves.
 
-Supplementary fields are derivable and may be omitted; they are included for
-self-containment or for tooling that should not re-derive them.
+The two kinds of supplementary field differ in nature:
+
+- `node` and `arc` are **provenance** and **cannot be reconstructed from the other
+  files**. The workflow lists every node and arc, but which one a given activity
+  corresponds to is recorded only here — a `process` + `mode` does not fix which
+  `node` (a process may be invoked at several nodes), just as a spot pair +
+  transporter does not fix which `arc`. So each is the activity's identity for
+  replanning (§6.4); a plan that will be replanned must carry it.
+- `devices`, `input_spots`, and `output_spots` are a **derivable echo**: they can
+  be reconstructed in full from `process` + `mode` + the environment, and are
+  present only for self-containment. Omitting them loses nothing.
 
 ### 6.1 Top level
 
@@ -334,20 +342,21 @@ Main (required):
 
 - `kind: processing`.
 - `start`, `end` — integers in `time.unit`.
-- `node` — the node path: node ids from the entry composite's body down to the
-  atomic node invoked, as a list (e.g. `[brew, heat]`); a single-level workflow
-  yields a one-element list. This is also the activity's stable identity (§6.4).
+- `process` — the atomic process definition invoked.
 - `mode` — the selected mode id (process-local, §5.5; the auto-assigned id if the
-  mode had none). Resolved against the activity's process.
+  mode had none). Resolved against `process`.
 
-Supplementary (optional; copied from the workflow and the mode):
+Supplementary (optional):
 
-- `process` — the atomic process definition invoked (from `node` + workflow).
-- `devices` — the mode's devices.
-- `input_spots` / `output_spots` — the mode's qualified spot mappings.
+- `node` — provenance: the node path, i.e. the node ids from the entry composite's
+  body down to the atomic node invoked, as a list (e.g. `[brew, heat]`); a
+  single-level workflow yields a one-element list. Not derivable from `process` +
+  `mode`; it is the activity's identity for replanning (§6.4) when present.
+- `devices`, `input_spots` / `output_spots` — derivable echo of the mode's devices
+  and qualified spot mappings (from `process` + `mode` + the environment).
 
-A Pure-Data-only processing activity has no device or spot, so among the
-supplementary fields it carries at most `process`.
+A Pure-Data-only processing activity has no device or spot, so its only
+supplementary field is `node`.
 
 ### 6.3 Transport activity
 
@@ -368,10 +377,11 @@ Supplementary (optional; provenance):
 
 ### 6.4 Identity for replanning
 
-The execution status (§7) matches plan activities by their workflow-anchored
-identity: a processing activity by its `node` (always present), a transport
-activity by its `arc` (include it when the plan will be replanned). Physical
-fields are not identities — they change from one plan to the next.
+The execution status (§7) matches plan activities by their workflow provenance: a
+processing activity by its `node`, a transport activity by its `arc`. Both are
+supplementary, so include them when the plan will be replanned. The main fields
+are not identities — a process/mode or a spot/transporter combination does not
+distinguish repeated occurrences, and the times change from one plan to the next.
 
 Durations are not stored (`end - start`).
 
@@ -390,19 +400,19 @@ activities:
   - kind: processing
     start: 0
     end: 60
-    node: [brew, heat]                        # main (also the identity)
+    process: heat_sample                      # main
     mode: fast
-    process: heat_sample                      # supplementary
-    devices: [reader_0]
+    node: [brew, heat]                        # supplementary provenance (identity)
+    devices: [reader_0]                       # supplementary echo
     input_spots:  { plate: reader_0.stage }
     output_spots: { plate: reader_0.stage }
 
   - kind: processing                          # Pure Data compute: no device/spot
     start: 60
     end: 65
-    node: [compute]
+    process: compute_mean                     # main
     mode: mean_v1
-    process: compute_mean
+    node: [compute]                           # supplementary provenance
 
   - kind: transport
     start: 60
