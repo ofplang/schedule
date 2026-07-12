@@ -131,14 +131,14 @@ activity start `s_j`:
     the moment the source activity finishes until it has been transported away;
   - the **destination spot** over `[a, s_j]` — reserved from the start of
     transport until the destination activity begins;
-  - the **source device**, the **destination device**, and the chosen
-    **transporter** over `[a, b]`.
+  - the chosen **transporter** (which is itself a device, §4.6) over `[a, b]`.
 - If `p == q` the two spot intervals collapse to `[e_i, s_j]` and the duration is
   zero.
 
-(A transporter is itself a device (§4.6), so a transport activity occupies three
-devices at once — source, destination, and transporter — an instance of the
-multi-device activities of §4.4.1.)
+For now a transport activity occupies only the **transporter** among devices; it
+does not lock the source or destination devices (their spots are still occupied,
+above). This is the looser of the two formulations ofp-scheduler describes and may
+be revisited.
 
 Ordering: `a >= e_i` and `s_j >= b`.
 
@@ -298,9 +298,126 @@ objective:
 
 ## 6. Execution plan schema
 
-*Forthcoming.* This will describe the scheduler output: for each activity
-(processing and transport), its start and end, the selected mode / devices /
-spots, and the selected transporter for transport activities.
+The execution plan is the scheduler's output: a list of timed activities plus
+top-level metadata. Times are non-negative integers in `time.unit`.
+
+An activity is **physical-first**: its main fields say what is actually done
+(when, where, with what), and workflow provenance is attached as supplementary
+information. The two kinds are deliberately asymmetric:
+
+- A **processing** activity realizes a node the workflow author wrote, so it is
+  anchored in the workflow: `node` and `mode` are primary. The physical detail
+  (`process`, `devices`, spots) follows from `node`, `mode`, the workflow, and the
+  environment, and is supplementary.
+- A **transport** activity is induced by the scheduler to move an Object, so it is
+  anchored in the physical move: `from_spot`, `to_spot`, and `transporter` are
+  primary. The `arc` it serves is supplementary provenance.
+
+Supplementary fields are derivable and may be omitted; they are included for
+self-containment or for tooling that should not re-derive them.
+
+### 6.1 Top level
+
+- `time` (optional) — `unit`; derivable from the environment, echoed for
+  self-containment.
+- `status` (required) — one of `optimal`, `feasible`, `infeasible`, `unknown`
+  (`unknown` = a feasible plan whose optimality was not proven, e.g. on timeout).
+- `objective` (required) — `kind` (`makespan`) and `value` (for makespan, the
+  makespan).
+- `activities` (required) — the scheduled activities.
+- `meta` (optional) — provenance, e.g. `workflow` and `environment` source
+  references.
+
+### 6.2 Processing activity
+
+Main (required):
+
+- `kind: processing`.
+- `start`, `end` — integers in `time.unit`.
+- `node` — the node path: node ids from the entry composite's body down to the
+  atomic node invoked, as a list (e.g. `[brew, heat]`); a single-level workflow
+  yields a one-element list. This is also the activity's stable identity (§6.4).
+- `mode` — the selected mode id (process-local, §5.5; the auto-assigned id if the
+  mode had none). Resolved against the activity's process.
+
+Supplementary (optional; copied from the workflow and the mode):
+
+- `process` — the atomic process definition invoked (from `node` + workflow).
+- `devices` — the mode's devices.
+- `input_spots` / `output_spots` — the mode's qualified spot mappings.
+
+A Pure-Data-only processing activity has no device or spot, so among the
+supplementary fields it carries at most `process`.
+
+### 6.3 Transport activity
+
+Main (required):
+
+- `kind: transport`.
+- `start`, `end` — the transport interval `[start, end]`.
+- `from_spot` — the qualified source spot `<device>.<spot>`.
+- `to_spot` — the qualified destination spot.
+- `transporter` — the selected transporter id. The transporter is the only device
+  the activity occupies (§4.5), so there is no separate `devices` field.
+
+Supplementary (optional; provenance):
+
+- `arc` — the Object-bearing arc served: `from` / `to`, each `{ node: <path>,
+  port: <name> }`. When present it is the activity's identity for replanning
+  (§6.4).
+
+### 6.4 Identity for replanning
+
+The execution status (§7) matches plan activities by their workflow-anchored
+identity: a processing activity by its `node` (always present), a transport
+activity by its `arc` (include it when the plan will be replanned). Physical
+fields are not identities — they change from one plan to the next.
+
+Durations are not stored (`end - start`).
+
+### 6.5 Example
+
+```yaml
+time:
+  unit: second
+
+status: optimal
+objective:
+  kind: makespan
+  value: 80
+
+activities:
+  - kind: processing
+    start: 0
+    end: 60
+    node: [brew, heat]                        # main (also the identity)
+    mode: fast
+    process: heat_sample                      # supplementary
+    devices: [reader_0]
+    input_spots:  { plate: reader_0.stage }
+    output_spots: { plate: reader_0.stage }
+
+  - kind: processing                          # Pure Data compute: no device/spot
+    start: 60
+    end: 65
+    node: [compute]
+    mode: mean_v1
+    process: compute_mean
+
+  - kind: transport
+    start: 60
+    end: 80
+    from_spot: reader_0.stage                 # main
+    to_spot:   incubator_0.slot_0
+    transporter: arm_0
+    arc:                                      # supplementary provenance
+      from: { node: [brew, heat], port: plate }
+      to:   { node: [assay],      port: sample }
+
+meta:                                         # optional provenance
+  workflow: workflow.yaml
+  environment: env.yaml
+```
 
 ## 7. Execution status schema
 
