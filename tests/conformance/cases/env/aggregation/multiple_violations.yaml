@@ -1,0 +1,10 @@
+time: {unit: ''}
+devices:
+- id: reader_0
+  spots: [stage]
+- id: reader_0
+  spots: [bench]
+processes:
+  compute:
+    modes:
+    - {duration: 5}

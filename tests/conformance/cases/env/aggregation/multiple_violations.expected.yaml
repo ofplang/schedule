@@ -1,0 +1,6 @@
+outcome: invalid
+match: superset
+errors:
+- {code: empty_time_unit}
+- {code: duplicate_device_id}
+notes: Two independent violations; the validator collects both (superset).
