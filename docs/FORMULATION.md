@@ -398,48 +398,17 @@ already released at `now`.
 
 ## Objective
 
-The objective is a **lexicographic** sequence of stages. The stage list is set by
-the objective configuration (the environment definition's `objective`, or a
-command-line override; SPEC §4.7, §5.6): a non-empty tuple of distinct, known
-stage names. Unknown stage names, an empty tuple, and duplicate stages are
-rejected. The available stages are:
-
-- `"makespan"`: minimize $C_{\max}$ (all completion times);
-- `"arc_gap_sum"`: minimize the total arc gap $G_{\mathrm{arc}}$ (below);
-- `"replenishment_count"`: minimize the number of new replenishment activities.
-
-For each arc $r = (i,j) \in R$ define the **arc gap** $g_r = s_j - e_i$ — the
-time between the source activity's completion and the destination activity's
-start (covering both transport and waiting; zero-distance arcs included). Then
+The objective is **makespan minimization**:
 
 $$
-G_{\mathrm{arc}} = \sum_{r \in R} g_r
+\min C_{\max}
 $$
 
-For simplicity all arcs may be included in the sum, treating gaps fixed by
-`running` / `completed` state as constants.
-
-The new-replenishment stage minimizes
-
-$$
-\sum_{k \in K^{\mathrm{new}}} y_k
-$$
-
-where $K^{\mathrm{new}}$ is the set of replenishment candidates generated in the
-current solve; `running` / `completed` replenishment activities are fixed history
-and are not counted.
-
-### Lexicographic solve
-
-The stages are solved sequentially rather than as a single weighted objective:
-minimize stage 1 to its optimum $Z_1^{*}$, fix $Z_1 = Z_1^{*}$ and minimize stage
-2, and so on. A common sequence is `("arc_gap_sum", "makespan",
-"replenishment_count")`: minimize the arc-gap sum, then minimize makespan at that
-optimum, then minimize the count of new replenishment activities.
-
-The execution plan records the achieved objective as `objective.kind` and
-`objective.value` (SPEC §6.1); the final value of each executed stage and the
-per-job completion times $C_j$ are available alongside.
+Only makespan is accepted in the initial version; the objective is supplied by
+the environment definition's `objective` or overridden on the command line (SPEC
+§4.7, §5.6). The execution plan records the achieved objective as `objective.kind`
+and `objective.value` (SPEC §6.1); the per-job completion times $C_j$ are
+available alongside.
 
 ## CP-SAT implementation notes
 
@@ -509,12 +478,9 @@ entirely:
 - **Constraints** — §8 (device-local inventory) is removed in full, and the
   activity–device selector equation of §1 (which defines $z_{i,\ell}$) is dropped
   with it.
-- **Objective** — only `"makespan"` is accepted in the initial version (SPEC
-  §4.7); the `"arc_gap_sum"` and `"replenishment_count"` stages are not
-  available.
 
-Only the spatial resources — spots (§6) and devices (§7) — remain as competing
-resources.
+The objective is unaffected (makespan; SPEC §4.7). Only the spatial resources —
+spots (§6) and devices (§7) — remain as competing resources.
 
 ### Resulting model
 
