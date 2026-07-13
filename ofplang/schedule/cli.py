@@ -1,12 +1,14 @@
 """Command-line interface for ofplang.schedule.
 
-Thin presentation layer over the library. Two subcommands:
+Thin presentation layer over the library. Subcommands:
 
     ofp-schedule validate [--kind ...] [--format ...] <file>...
     ofp-schedule schedule <workflow> --env <env> [-o <file>] [--format yaml|json]
+    ofp-schedule visualize <plan> [--view station|workflow] [-o <file>]
 
 `validate` runs the schema validators (SPECIFICATIONS.md §9); `schedule` produces
-an execution plan (§6) from a v0 workflow and an execution environment. All logic
+an execution plan (§6) from a v0 workflow and an execution environment;
+`visualize` renders a plan as a self-contained HTML/SVG Gantt chart. All logic
 lives in the library so the CLI cannot drift from it.
 
 Exit codes:
@@ -28,6 +30,7 @@ from ofplang.schedule import schedule as run_schedule
 from ofplang.schedule import validate_document, validate_environment
 from ofplang.schedule.core.diagnostics import ERROR, ValidationResult
 from ofplang.schedule.scheduler.plan import to_yaml
+from ofplang.schedule.scheduler.visualize import render_html, render_svg
 
 EXIT_OK = 0
 EXIT_INVALID = 1
@@ -61,6 +64,12 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--env", required=True, metavar="ENV", help="execution environment definition YAML")
     s.add_argument("-o", "--out", metavar="FILE", help="write the plan here (default: stdout)")
     s.add_argument("--format", choices=["yaml", "json"], default="yaml", help="plan output format")
+
+    z = sub.add_parser("visualize", help="render an execution plan as an HTML/SVG Gantt chart")
+    z.add_argument("plan", metavar="PLAN", help="execution plan/document YAML")
+    z.add_argument("--view", choices=["station", "workflow"], default="station", help="lane layout")
+    z.add_argument("--format", choices=["html", "svg"], default=None, help="output format (default: infer from -o extension, else html)")
+    z.add_argument("-o", "--out", metavar="FILE", help="write the chart here (default: stdout)")
 
     return parser
 
@@ -203,12 +212,42 @@ def _cmd_schedule(args) -> int:
     return EXIT_OK
 
 
+def _cmd_visualize(args) -> int:
+    if not Path(args.plan).is_file():
+        print(f"ofp-schedule: cannot open {args.plan!r}: no such file", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        plan = yaml.safe_load(Path(args.plan).read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        print(f"ofp-schedule: cannot parse {args.plan!r}: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if not isinstance(plan, dict) or "activities" not in plan:
+        print(f"ofp-schedule: {args.plan!r} is not an execution document (no 'activities')", file=sys.stderr)
+        return EXIT_USAGE
+
+    # Format: explicit --format wins; otherwise infer from the -o extension
+    # (.svg -> svg), else default to html.
+    fmt = args.format
+    if fmt is None:
+        fmt = "svg" if (args.out and args.out.lower().endswith(".svg")) else "html"
+
+    text = render_svg(plan, view=args.view) if fmt == "svg" else render_html(plan, view=args.view)
+    if args.out:
+        Path(args.out).write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+        print(f"ofp-schedule: wrote {args.view} view ({fmt}) to {args.out}", file=sys.stderr)
+    else:
+        print(text, end="" if text.endswith("\n") else "\n")
+    return EXIT_OK
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.command == "validate":
         return _cmd_validate(args)
     if args.command == "schedule":
         return _cmd_schedule(args)
+    if args.command == "visualize":
+        return _cmd_visualize(args)
     return EXIT_USAGE  # pragma: no cover - argparse enforces a subcommand
 
 
