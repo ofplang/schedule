@@ -95,6 +95,8 @@ Processing and transport:
 Replanning:
 
 - $now \in \mathbb{Z}_{\ge 0}$: replan time.
+- $m \in \mathbb{Z}_{\ge 0}$: running-task safety margin (`running_task_margin`,
+  default $0$); see §9.
 - $T^{\mathrm{done}}, T^{\mathrm{run}}, T^{\mathrm{pend}}$: completed, running,
   and pending processing activities;
   $T^{\mathrm{pend}} = T \setminus (T^{\mathrm{done}} \cup T^{\mathrm{run}})$.
@@ -264,11 +266,15 @@ s_i = \hat{s}_i,\ e_i = \hat{e}_i,\ x_{i,m} = \hat{x}_{i,m},
 \quad \forall i \in T^{\mathrm{done}}
 $$
 $$
-s_i = \hat{s}_i,\ e_i = \hat{e}_i,\ x_{i,m} = \hat{x}_{i,m},
+s_i = \hat{s}_i,\ e_i = \max(\hat{e}_i,\ now + m),\ x_{i,m} = \hat{x}_{i,m},
 \quad \forall i \in T^{\mathrm{run}}
 $$
 
-(a running activity's end is fixed to its expected finish $\hat{e}_i$, SPEC §6.2).
+A running activity's end is fixed to its expected finish $\hat{e}_i$ (SPEC §6.2),
+clamped up to $now + m$ by the safety margin $m$ so that an overrunning task
+(one whose expected finish is already in the past, $\hat{e}_i < now$) is never
+fixed to a finish before $now$; it holds its resources until $now + m$. With the
+default $m = 0$ the clamp is simply $\max(\hat{e}_i, now)$.
 
 $$
 s_i \ge now, \quad \forall i \in T^{\mathrm{pend}}
@@ -276,11 +282,14 @@ $$
 
 Pending activities' mode assignment is not fixed and may change on replan; the
 spot occupancy of a pending activity follows automatically from its selected
-mode.
+mode. The same $s_i \ge now$ lower bound applies to a pending **transport**
+activity's start $a_r$, so a transport whose source finished before $now$ is
+still not scheduled in the past.
 
 Replan input is assumed **normalized**: a `running` / `completed` transport
 activity never feeds directly into a `pending` processing activity (such cases
-are removed before solving).
+must be removed before solving; the scheduler rejects them as
+`status_unnormalized`).
 
 ## Objective
 

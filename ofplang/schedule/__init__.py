@@ -2,8 +2,8 @@
 
 The package provides the layer-1 schema validators (SPECIFICATIONS.md §9) for the
 two documents the scheduler consumes, and the scheduler itself: `schedule` turns
-a v0 workflow plus an execution environment into an execution plan (initial-plan
-slice — single workflow, makespan, transport, no replanning yet).
+a v0 workflow plus an execution environment into an execution plan (single
+workflow, makespan, transport) and, given an execution status, replans it.
 """
 
 from ofplang.schedule.core.diagnostics import (

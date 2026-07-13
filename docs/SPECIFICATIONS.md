@@ -357,7 +357,10 @@ environment.
   from a status (the scheduler re-derives them from the workflow).
 - `start`, `end` (required) — integers in `time.unit`. Planned times on a plan;
   actual times on a `completed` activity; on a `running` activity `start` is
-  actual and `end` is the expected finish.
+  actual and `end` is the expected finish. On a replan the scheduler does not
+  move a running activity's fixed end earlier than `now` (it clamps it up to
+  `now + running_task_margin`), so an overrunning task is never fixed to a finish
+  in the past (FORMULATION §9).
 
 ### 6.3 Processing activity
 
@@ -637,6 +640,30 @@ environment for processes the workflow never invokes are not checked.
   chosen spots exists (`arc_unreachable` otherwise). This depends on mode
   selection and is a solvability concern, not a schema check.
 
+When a replanning status is supplied (`--status`), it is matched against the
+instance after these checks, emitting the codes in §10.4:
+
+- **Reference time**: the status sets `now` (`status_missing_now` otherwise).
+- **Provenance resolves**: each started (`completed` / `running`) activity's
+  `node` matches a processing activity (`status_node_unknown` otherwise) and each
+  transport's `arc` matches an Object-bearing arc (`status_arc_unknown`
+  otherwise); no activity or arc is fixed twice (`status_duplicate` otherwise).
+  `pending` / status-less entries are ignored and re-derived from the workflow,
+  so a prior plan feeds back verbatim.
+- **Assignment exists**: a processing `mode` is one its capability offers
+  (`status_mode_unknown` otherwise); a transport route (transporter + from/to
+  spot) is a viable option for its arc (`status_route_unknown` otherwise).
+- **Consistency with `now`**: a `completed` activity ends at or before `now`, and
+  a `running` activity starts at or before `now` (`status_time_inconsistent`
+  otherwise). A `running` activity whose expected finish is already past `now` is
+  a legitimate overrun and is not rejected (§6.2, clamped in FORMULATION §9).
+- **Route agreement**: a fixed transport's route implies the same endpoint mode
+  that endpoint activity is itself fixed to (`status_route_inconsistent`
+  otherwise).
+- **Normalized input**: a `running` / `completed` transport does not feed a
+  `pending` processing activity (`status_unnormalized` otherwise); such cases
+  must be normalized away before replanning (FORMULATION §9).
+
 ## 10. Error codes
 
 Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
@@ -710,3 +737,18 @@ building the solver instance. All are error severity.
 | `mode_ports_incomplete` | a mode does not map every Object-bearing port of its process |
 | `arc_unreachable` | no endpoint-mode pair and transporter can serve an Object-bearing arc |
 | `infeasible` | the solver proved the instance has no feasible schedule |
+
+Replanning (`--status`), emitted while matching an execution status (§7) against
+the instance:
+
+| code | meaning |
+| --- | --- |
+| `status_missing_now` | a replanning status does not set `now` |
+| `status_node_unknown` | a status `node` matches no processing activity in the workflow |
+| `status_arc_unknown` | a status `arc` matches no Object-bearing arc in the workflow |
+| `status_mode_unknown` | a processing status names a `mode` its capability does not offer |
+| `status_route_unknown` | a transport status names a route (transporter + from/to spot) that is not a viable option for its arc |
+| `status_route_inconsistent` | a fixed transport's route implies an endpoint mode other than the one fixed on that endpoint activity |
+| `status_time_inconsistent` | a `completed` activity ends after `now`, or a `running` activity starts after `now` |
+| `status_duplicate` | two status entries fix the same activity (`node`) or arc |
+| `status_unnormalized` | a `running` / `completed` transport feeds directly into a `pending` processing activity |

@@ -9,11 +9,13 @@ definition and plans when its work runs; it also replans from an execution
 status. The design is documented in [docs/SPECIFICATIONS.md](docs/SPECIFICATIONS.md).
 
 > **Status:** early. The **schema validators** (environment definition and
-> execution document, spec §9) and an **initial scheduler** are implemented: it
-> produces a makespan-optimal plan for a single workflow with mode selection,
-> spot/device occupancy, and transport (no replanning or device-local resources
-> yet). A `visualize` command renders a plan as a self-contained SVG/HTML Gantt
-> chart. The model is documented in [docs/FORMULATION.md](docs/FORMULATION.md).
+> execution document, spec §9) and the **scheduler** are implemented: it produces
+> a makespan-optimal plan for a single workflow with mode selection, spot/device
+> occupancy, and transport, and **replans** from an execution status (`--status`)
+> by fixing completed/running activities and re-optimising the rest at or after
+> `now` (device-local resources not yet). A `visualize` command renders a plan as
+> a self-contained SVG/HTML Gantt chart. The model is documented in
+> [docs/FORMULATION.md](docs/FORMULATION.md).
 
 This is a fresh implementation that targets the spec directly. The prototype
 [`ofp-scheduler`](https://github.com/ofplang) (OR-Tools CP-SAT) is a reference
@@ -32,14 +34,16 @@ solver used by the scheduler).
 
 ```sh
 ofp-schedule validate <file>...                 # validate an environment or a plan/status
-ofp-schedule schedule <workflow> --env <env> [-o plan.yaml] [--format yaml|json]
+ofp-schedule schedule <workflow> --env <env> [--status status.yaml] [--running-margin N] [-o plan.yaml] [--format yaml|json]
 ofp-schedule visualize <plan> [--view device|workflow|lane] [--theme light|dark|auto] [-o out.svg]
 ```
 
 `validate` auto-detects whether the file is an environment definition or an
 execution document (pass `--kind` to force it); diagnostics are reported as
 `file:line:col: <severity> <code>`. `schedule` produces an execution plan (§6)
-that minimises makespan. `visualize` renders a plan as a self-contained Gantt
+that minimises makespan; with `--status` it replans from an execution status
+(§7), emitting the full timeline (fixed history + re-optimised future) that
+round-trips as the next status input. `visualize` renders a plan as a self-contained Gantt
 chart — SVG by default (fixed colours, transparent background, PowerPoint-safe)
 or HTML. Exit codes: `0` success, `1` validation errors or no feasible schedule,
 `2` usage/input error.

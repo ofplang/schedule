@@ -66,6 +66,34 @@ MODE_PORTS_INCOMPLETE = "mode_ports_incomplete"
 ARC_UNREACHABLE = "arc_unreachable"
 INFEASIBLE = "infeasible"
 
+# Replanning (§9.3): produced while matching an execution status against the
+# workflow/instance and building the fixation for the solver. A status names a
+# processing activity by its `node` path and a transport by its `arc`, sets a
+# `status` (completed / running) and times on started activities, and is assumed
+# already normalized (a started transport never feeds a pending processing).
+# A status is missing its replan reference time `now`.
+STATUS_MISSING_NOW = "status_missing_now"
+# A status entry's `node` does not match any processing activity in the workflow.
+STATUS_NODE_UNKNOWN = "status_node_unknown"
+# A status entry's `arc` does not match any Object-bearing arc in the workflow.
+STATUS_ARC_UNKNOWN = "status_arc_unknown"
+# A processing status names a `mode` its process capability does not offer.
+STATUS_MODE_UNKNOWN = "status_mode_unknown"
+# A transport status names a route (transporter + from/to spot) that is not a
+# viable transport option for its arc.
+STATUS_ROUTE_UNKNOWN = "status_route_unknown"
+# A fixed transport's route implies an endpoint mode that disagrees with that
+# endpoint activity's own fixed mode.
+STATUS_ROUTE_INCONSISTENT = "status_route_inconsistent"
+# A started activity's reported times contradict `now` (a completed activity
+# ends after `now`, or a running activity starts after `now`).
+STATUS_TIME_INCONSISTENT = "status_time_inconsistent"
+# Two status entries fix the same activity (same node) or the same arc.
+STATUS_DUPLICATE = "status_duplicate"
+# A running / completed transport feeds directly into a pending processing
+# activity; such cases must be normalized away before solving (FORMULATION §9).
+STATUS_UNNORMALIZED = "status_unnormalized"
+
 # The `cross_kind_id_coincidence` code is the only warning; everything else is an
 # error. The runner and CLI use this to check severity.
 WARNING_CODES = frozenset({CROSS_KIND_ID_COINCIDENCE})
@@ -114,6 +142,15 @@ ERROR_CODES = frozenset(
         MODE_PORTS_INCOMPLETE,
         ARC_UNREACHABLE,
         INFEASIBLE,
+        STATUS_MISSING_NOW,
+        STATUS_NODE_UNKNOWN,
+        STATUS_ARC_UNKNOWN,
+        STATUS_MODE_UNKNOWN,
+        STATUS_ROUTE_UNKNOWN,
+        STATUS_ROUTE_INCONSISTENT,
+        STATUS_TIME_INCONSISTENT,
+        STATUS_DUPLICATE,
+        STATUS_UNNORMALIZED,
     }
 )
 

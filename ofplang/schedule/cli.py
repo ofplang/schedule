@@ -3,13 +3,14 @@
 Thin presentation layer over the library. Subcommands:
 
     ofp-schedule validate [--kind ...] [--format ...] <file>...
-    ofp-schedule schedule <workflow> --env <env> [-o <file>] [--format yaml|json]
+    ofp-schedule schedule <workflow> --env <env> [--status <status>] [-o <file>] [--format yaml|json]
     ofp-schedule visualize <plan> [--view station|workflow] [-o <file>]
 
 `validate` runs the schema validators (SPECIFICATIONS.md §9); `schedule` produces
-an execution plan (§6) from a v0 workflow and an execution environment;
-`visualize` renders a plan as a self-contained HTML/SVG Gantt chart. All logic
-lives in the library so the CLI cannot drift from it.
+an execution plan (§6) from a v0 workflow and an execution environment, and with
+`--status` replans from an execution status (§7); `visualize` renders a plan as a
+self-contained HTML/SVG Gantt chart. All logic lives in the library so the CLI
+cannot drift from it.
 
 Exit codes:
     0  success (valid, or a plan was produced)
@@ -62,6 +63,18 @@ def _build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("schedule", help="produce an execution plan from a workflow and environment")
     s.add_argument("workflow", metavar="WORKFLOW", help="ofplang v0 workflow YAML")
     s.add_argument("--env", required=True, metavar="ENV", help="execution environment definition YAML")
+    s.add_argument(
+        "--status",
+        metavar="STATUS",
+        help="replan from this execution status (§7): fix completed/running, re-optimise the rest at/after now",
+    )
+    s.add_argument(
+        "--running-margin",
+        type=int,
+        default=0,
+        metavar="N",
+        help="safety margin: a running activity's fixed end is clamped up to now + N (default: 0)",
+    )
     s.add_argument("-o", "--out", metavar="FILE", help="write the plan here (default: stdout)")
     s.add_argument("--format", choices=["yaml", "json"], default="yaml", help="plan output format")
 
@@ -193,12 +206,18 @@ def _cmd_validate(args) -> int:
 
 
 def _cmd_schedule(args) -> int:
-    for p in (args.workflow, args.env):
+    inputs = [args.workflow, args.env] + ([args.status] if args.status else [])
+    for p in inputs:
         if not Path(p).is_file():
             print(f"ofp-schedule: cannot open {p!r}: no such file", file=sys.stderr)
             return EXIT_USAGE
 
-    report = run_schedule(args.workflow, args.env)
+    report = run_schedule(
+        args.workflow,
+        args.env,
+        status_path=args.status,
+        running_task_margin=args.running_margin,
+    )
     if not report.ok:
         # Surface every error diagnostic (missing location falls back to a path).
         for diag in report.diagnostics:

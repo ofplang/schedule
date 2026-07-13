@@ -14,6 +14,7 @@ from ofplang.schedule.scheduler.instance import (
     build_instance,
 )
 from ofplang.schedule.scheduler.model import Arc, Endpoint, Environment, Mode
+from ofplang.schedule.scheduler.status import ActivityFixation, ArcFixation, Fixation
 from ofplang.schedule.scheduler.workflow import parse_workflow
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
@@ -124,3 +125,74 @@ def test_faster_transporter_is_selected():
     (t,) = sol.transport
     assert t.option.transporter == "arm1"        # picks the fast one
     assert sol.makespan == 1 + 3 + 1              # source + fast move + target
+
+
+# --- replanning fixation (FORMULATION §9) --------------------------------
+#
+# A source(2) -> move(1) -> target(2) chain built directly from the model.
+
+
+def _chain_instance() -> Instance:
+    src = ActivityInstance(("S",), "src", (Mode("0", ("ds",), 2, {}, {"o": "ds.p"}),))
+    dst = ActivityInstance(("T",), "tgt", (Mode("0", ("dt",), 2, {"i": "dt.p"}, {}),))
+    options = (TransportOption(0, 0, "arm", "ds.p", "dt.p", 1),)
+    arc = ArcInstance(Arc(Endpoint(("S",), "o"), Endpoint(("T",), "i")), 0, 1, options)
+    return Instance(_ENV, "second", (src, dst), (arc,), ((0, 1),))
+
+
+def test_pending_is_pushed_to_now_and_completed_is_pinned():
+    # Source completed at [0, 2]; replanning at now=5 leaves the transport and
+    # target pending -> both start at or after now.
+    fix = Fixation(now=5, activities={0: ActivityFixation("completed", 0, 2, 0)}, arcs={}, placements=[])
+    sol = solve(_chain_instance(), fixation=fix)
+    assert sol.outcome == "optimal"
+    src = next(p for p in sol.processing if p.node == ("S",))
+    tgt = next(p for p in sol.processing if p.node == ("T",))
+    (t,) = sol.transport
+    assert (src.start, src.end, src.status) == (0, 2, "completed")
+    assert t.start >= 5 and t.status is None       # pending transport not before now
+    assert tgt.start >= t.end and tgt.status is None
+    assert sol.makespan == t.start + 1 + 2         # move(1) + target(2) after now
+
+
+def test_running_end_clamped_up_to_now_plus_margin():
+    # Target running with expected end 4 but now=10 (overrun). With margin 0 the
+    # fixed end is max(4, 10) = 10; with margin 5 it is max(4, 15) = 15.
+    def run(margin):
+        fix = Fixation(
+            now=10,
+            activities={
+                0: ActivityFixation("completed", 0, 2, 0),
+                1: ActivityFixation("running", 3, 4, 0),
+            },
+            arcs={0: ArcFixation("completed", 2, 3, 0)},
+            placements=[],
+        )
+        return solve(_chain_instance(), fixation=fix, running_task_margin=margin)
+
+    s0 = run(0)
+    tgt0 = next(p for p in s0.processing if p.node == ("T",))
+    assert (tgt0.start, tgt0.end, tgt0.status) == (3, 10, "running")
+    assert s0.makespan == 10
+
+    s5 = run(5)
+    tgt5 = next(p for p in s5.processing if p.node == ("T",))
+    assert tgt5.end == 15 and s5.makespan == 15
+
+
+def test_fixed_transport_route_and_times_are_pinned():
+    fix = Fixation(
+        now=5,
+        activities={
+            0: ActivityFixation("completed", 0, 2, 0),
+            1: ActivityFixation("completed", 3, 5, 0),
+        },
+        arcs={0: ArcFixation("completed", 2, 3, 0)},
+        placements=[],
+    )
+    sol = solve(_chain_instance(), fixation=fix)
+    assert sol.outcome == "optimal"
+    (t,) = sol.transport
+    assert (t.start, t.end, t.status) == (2, 3, "completed")
+    assert t.option.transporter == "arm"
+    assert sol.makespan == 5                        # everything fixed
