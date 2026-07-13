@@ -128,14 +128,16 @@ for its start and end. For processing activity $\alpha = i \in T$,
 $start_\alpha = s_i$ and $end_\alpha = e_i$; for transport activity
 $\alpha = \tau_r$, $start_\alpha = a_r$ and $end_\alpha = b_r$.
 
-For each spot $p \in P$, let $\mathcal{A}_p$ be the activities occupying $p$;
-for each device $\ell \in L$, let $\mathcal{A}_\ell$ be the activities occupying
-$\ell$. Occupancy follows the selected modes:
+For each device $\ell \in L$, let $\mathcal{A}_\ell$ be the activities occupying
+$\ell$ (used by §7). Occupancy follows the selected modes:
 
-- processing activity $i$ occupies the devices $L_{i,m}$ and the spots $S_{i,m}$
-  of its selected mode,
-- transport activity $\tau_r$ occupies the devices $L_{r,m,n}$ of its selected
-  source/destination mode pair.
+- a processing activity $i$ occupies the devices $L_{i,m}$ and the spots
+  $S_{i,m}$ of its selected mode;
+- a transport activity $\tau_r$ occupies the devices $L_{r,m,n}$ of its selected
+  source/destination mode pair, and its source and destination spots (§6).
+
+Device occupancy spans the whole activity interval (§7); spot occupancy can
+differ per spot and is given interval-by-interval in §6.
 
 ## Constraints
 
