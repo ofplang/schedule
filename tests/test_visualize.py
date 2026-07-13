@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from ofplang.schedule import cli, schedule
 from ofplang.schedule.scheduler.visualize import render_html, render_svg
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
+
+_MARKER = 'marker-end="url(#ah)"'  # present iff dependency arrows were drawn
 
 
 def _plan(name):
@@ -21,15 +24,13 @@ def test_station_view_has_device_lanes():
     assert "<svg" in html and "</svg>" in html
     assert "station_0" in html and "station_1" in html
     assert "transport (transporter)" in html
-    # No dependency arrows in the station view.
-    assert 'class="arrow"' not in html
+    assert _MARKER not in html  # no arrows in the station view
 
 
 def test_workflow_view_has_nodes_and_arrows():
     html = render_html(_plan("job_sample"), view="workflow")
     assert "SampleSource" in html and "SampleTarget" in html
-    # The one arc yields dependency arrows (source -> transport -> destination).
-    assert 'class="arrow"' in html
+    assert _MARKER in html  # the arc yields dependency arrows
 
 
 def test_reformatter_both_views_render():
@@ -40,33 +41,52 @@ def test_reformatter_both_views_render():
         assert html.strip().startswith("<!doctype html>")
 
 
+def test_light_svg_is_powerpoint_safe():
+    # The default (light) SVG must use inline presentation attributes only —
+    # nothing PowerPoint's renderer trips on.
+    svg = render_svg(_plan("reformatter"), view="station", theme="light")
+    assert svg.startswith("<?xml")
+    assert "<style>" not in svg
+    assert "var(" not in svg
+    assert "prefers-color-scheme" not in svg
+    # No 8-digit hex colours on fill/stroke (they'd render black).
+    assert not re.search(r'(?:fill|stroke)="#[0-9a-fA-F]{8}"', svg)
+    # Concrete colours, with opacity kept separate.
+    assert 'fill="#3b82f6"' in svg          # processing
+    assert 'fill="#f59e0b"' in svg          # transport
+    assert 'fill="#f59e0b" fill-opacity="0.2"' in svg  # ghost (device occupancy)
+
+
+def test_dark_svg_is_fixed_and_inline():
+    svg = render_svg(_plan("job_sample"), view="workflow", theme="dark")
+    assert "<style>" not in svg and "var(" not in svg
+    assert 'fill="#0f1115"' in svg  # dark background painted explicitly
+
+
+def test_auto_svg_uses_css_for_browsers():
+    svg = render_svg(_plan("job_sample"), view="station", theme="auto")
+    assert "<style>" in svg
+    assert "prefers-color-scheme" in svg
+
+
 def test_visualize_cli_writes_html(tmp_path):
     plan = tmp_path / "plan.yaml"
     assert cli.main(["schedule", str(EXAMPLES / "job_sample.workflow.yaml"),
                      "--env", str(EXAMPLES / "job_sample.env.yaml"), "-o", str(plan)]) == cli.EXIT_OK
-    out = tmp_path / "gantt.html"
+    out = tmp_path / "gantt.html"  # .html extension -> HTML format inferred
     assert cli.main(["visualize", str(plan), "--view", "workflow", "-o", str(out)]) == cli.EXIT_OK
     assert "<svg" in out.read_text(encoding="utf-8")
 
 
-def test_render_svg_is_standalone():
-    svg = render_svg(_plan("job_sample"), view="station")
-    assert svg.startswith("<?xml")
-    assert "<svg" in svg and "</svg>" in svg
-    # Self-contained: styling and background travel with the SVG.
-    assert "<style>" in svg
-    assert 'class="bg"' in svg
-    assert "station_0" in svg
-
-
-def test_visualize_cli_svg_by_extension(tmp_path):
+def test_visualize_cli_svg_by_extension_is_powerpoint_safe(tmp_path):
     plan = tmp_path / "plan.yaml"
     assert cli.main(["schedule", str(EXAMPLES / "job_sample.workflow.yaml"),
                      "--env", str(EXAMPLES / "job_sample.env.yaml"), "-o", str(plan)]) == cli.EXIT_OK
-    out = tmp_path / "gantt.svg"  # .svg extension -> SVG format inferred
+    out = tmp_path / "gantt.svg"  # .svg -> SVG; default theme light
     assert cli.main(["visualize", str(plan), "-o", str(out)]) == cli.EXIT_OK
     text = out.read_text(encoding="utf-8")
     assert text.startswith("<?xml") and "<svg" in text
+    assert "var(" not in text and "<style>" not in text
 
 
 def test_visualize_cli_rejects_non_document(tmp_path):

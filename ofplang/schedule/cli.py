@@ -68,6 +68,12 @@ def _build_parser() -> argparse.ArgumentParser:
     z = sub.add_parser("visualize", help="render an execution plan as an HTML/SVG Gantt chart")
     z.add_argument("plan", metavar="PLAN", help="execution plan/document YAML")
     z.add_argument("--view", choices=["station", "workflow"], default="station", help="lane layout")
+    z.add_argument(
+        "--theme",
+        choices=["light", "dark", "auto"],
+        default="light",
+        help="light/dark = fixed colours (PowerPoint-safe); auto = adapts to the viewer (browsers only)",
+    )
     z.add_argument("--format", choices=["html", "svg"], default=None, help="output format (default: svg, or html when -o ends in .html)")
     z.add_argument("-o", "--out", metavar="FILE", help="write the chart here (default: stdout)")
 
@@ -231,10 +237,11 @@ def _cmd_visualize(args) -> int:
     if fmt is None:
         fmt = "html" if (args.out and args.out.lower().endswith((".html", ".htm"))) else "svg"
 
-    text = render_svg(plan, view=args.view) if fmt == "svg" else render_html(plan, view=args.view)
+    render = render_svg if fmt == "svg" else render_html
+    text = render(plan, view=args.view, theme=args.theme)
     if args.out:
         Path(args.out).write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
-        print(f"ofp-schedule: wrote {args.view} view ({fmt}) to {args.out}", file=sys.stderr)
+        print(f"ofp-schedule: wrote {args.view} view ({fmt}, {args.theme}) to {args.out}", file=sys.stderr)
     else:
         print(text, end="" if text.endswith("\n") else "\n")
     return EXIT_OK

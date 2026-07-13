@@ -47,15 +47,19 @@ class _Arrow:
     lane2: int
 
 
-def render_svg(plan: dict, *, view: str = "station") -> str:
+def render_svg(plan: dict, *, view: str = "station", theme: str = "light") -> str:
     """Render `plan` as a standalone SVG document (opens directly in a browser).
-    The chart carries its own CSS, background, and title, so it needs no wrapper."""
-    return '<?xml version="1.0" encoding="UTF-8"?>\n' + _svg_markup(plan, view)
+
+    `theme` is "light" or "dark" (fixed colours written as inline presentation
+    attributes — compatible with PowerPoint's SVG renderer), or "auto" (a CSS
+    `<style>` block that adapts to the viewer's light/dark preference; browsers
+    only). The chart is always self-contained (no external CSS/fonts/scripts)."""
+    return '<?xml version="1.0" encoding="UTF-8"?>\n' + _svg_markup(plan, view, theme)
 
 
-def render_html(plan: dict, *, view: str = "station") -> str:
+def render_html(plan: dict, *, view: str = "station", theme: str = "light") -> str:
     """Render `plan` as an HTML page wrapping the same self-contained SVG."""
-    svg = _svg_markup(plan, view)
+    svg = _svg_markup(plan, view, theme)
     return (
         "<!doctype html>\n"
         '<html lang="en"><head><meta charset="utf-8">'
@@ -65,7 +69,9 @@ def render_html(plan: dict, *, view: str = "station") -> str:
     )
 
 
-def _svg_markup(plan: dict, view: str) -> str:
+def _svg_markup(plan: dict, view: str, theme: str) -> str:
+    if theme not in ("auto", "light", "dark"):
+        theme = "light"
     activities = plan.get("activities") or []
     now = plan.get("now")
     unit = (plan.get("time") or {}).get("unit")
@@ -78,7 +84,7 @@ def _svg_markup(plan: dict, view: str) -> str:
         lanes, bars, arrows = _station_layout(activities)
 
     t_max = makespan if isinstance(makespan, (int, float)) else _max_end(activities)
-    return _svg(lanes, bars, arrows, t_max=float(t_max or 0), now=now, unit=unit, view=view, makespan=makespan)
+    return _svg(lanes, bars, arrows, t_max=float(t_max or 0), now=now, unit=unit, view=view, makespan=makespan, theme=theme)
 
 
 # --------------------------------------------------------------------------
@@ -176,8 +182,87 @@ def _workflow_layout(activities):
 
 _TITLE = 48  # top band for the title/subtitle
 
+# Concrete colour palettes. `light` is the default and is what the
+# PowerPoint-safe (inline-attribute) output uses; `dark` is the same idea with a
+# dark fixed theme. Values mirror the CSS variables used by the "auto" theme.
+_PALETTES = {
+    "light": {
+        "bg": "#ffffff", "fg": "#1a1a1a", "muted": "#666666",
+        "grid": "#e3e3e3", "lane": "#f0f0f0",
+        "proc": "#3b82f6", "proc_fg": "#ffffff",
+        "xfer": "#f59e0b", "xfer_fg": "#3a2a00",
+        "ghost": "#f59e0b", "arrow": "#9333ea", "now": "#dc2626",
+    },
+    "dark": {
+        "bg": "#0f1115", "fg": "#e6e6e6", "muted": "#9aa0a6",
+        "grid": "#262a31", "lane": "#1a1d23",
+        "proc": "#60a5fa", "proc_fg": "#06131f",
+        "xfer": "#fbbf24", "xfer_fg": "#241a00",
+        "ghost": "#fbbf24", "arrow": "#c084fc", "now": "#f87171",
+    },
+}
 
-def _svg(lane_labels, bars, arrows, *, t_max: float, now, unit, view, makespan) -> str:
+# Each semantic role: fill vs stroke, its palette colour, and extra presentation
+# attributes (opacity, stroke width, dash). Opacity is kept separate from the
+# colour so no 8-digit hex is ever emitted (PowerPoint renders those as black).
+_ROLE = {
+    "bg": ("fill", "bg", {}),
+    "title": ("fill", "fg", {}),
+    "subtitle": ("fill", "muted", {}),
+    "tick": ("fill", "muted", {}),
+    "axis": ("fill", "muted", {}),
+    "lanelabel": ("fill", "fg", {}),
+    "nowlabel": ("fill", "now", {}),
+    "grid": ("stroke", "grid", {"w": "1"}),
+    "lane": ("stroke", "lane", {"w": "1"}),
+    "now": ("stroke", "now", {"w": "1.5", "dash": "4 3"}),
+    "proc": ("fill", "proc", {}),
+    "xfer": ("fill", "xfer", {}),
+    "ghost": ("fill", "ghost", {"op": "0.2"}),
+    "barlabel-proc": ("fill", "proc_fg", {}),
+    "barlabel-xfer": ("fill", "xfer_fg", {}),
+    "arrow": ("stroke", "arrow", {"w": "1.3", "op": "0.8", "fillnone": True}),
+    "arrowhead": ("fill", "arrow", {}),
+}
+
+# Class names for the CSS ("auto") theme, matching _STYLE.
+_CLASS = {
+    "bg": "bg", "title": "title", "subtitle": "subtitle", "tick": "tick",
+    "axis": "axis", "lanelabel": "lanelabel", "nowlabel": "nowlabel",
+    "grid": "grid", "lane": "lane", "now": "now",
+    "proc": "bar proc", "xfer": "bar xfer", "ghost": "bar xfer-ghost",
+    "barlabel-proc": "barlabel proc", "barlabel-xfer": "barlabel xfer",
+    "arrow": "arrow", "arrowhead": "arrowhead",
+}
+
+
+def _attr(role: str, theme: str) -> str:
+    """Attributes for one element's role. In the "auto" theme this is a CSS class
+    (the <style> block colours it); otherwise it is explicit presentation
+    attributes with concrete colours and separate opacity, so it survives
+    PowerPoint's SVG renderer (no CSS variables, no 8-digit hex)."""
+    if theme == "auto":
+        return f'class="{_CLASS[role]}"'
+    kind, key, ex = _ROLE[role]
+    color = _PALETTES[theme][key]
+    if kind == "fill":
+        out = f'fill="{color}"'
+        if "op" in ex:
+            out += f' fill-opacity="{ex["op"]}"'
+        return out
+    tokens = []
+    if ex.get("fillnone"):
+        tokens.append('fill="none"')
+    tokens.append(f'stroke="{color}"')
+    tokens.append(f'stroke-width="{ex.get("w", "1")}"')
+    if "op" in ex:
+        tokens.append(f'stroke-opacity="{ex["op"]}"')
+    if "dash" in ex:
+        tokens.append(f'stroke-dasharray="{ex["dash"]}"')
+    return " ".join(tokens)
+
+
+def _svg(lane_labels, bars, arrows, *, t_max: float, now, unit, view, makespan, theme) -> str:
     n = len(lane_labels)
     span = t_max if t_max > 0 else 1.0
     plot_w = max(560.0, min(1200.0, span * 12.0))
@@ -185,6 +270,7 @@ def _svg(lane_labels, bars, arrows, *, t_max: float, now, unit, view, makespan) 
     width = _LEFT + plot_w + _RIGHT
     chart_h = _TOP + n * _ROW + _BOTTOM
     height = _TITLE + chart_h
+    bottom = chart_h - _BOTTOM  # y of the last lane's edge, within the chart group
 
     def x(t: float) -> float:
         return _LEFT + t * scale
@@ -201,15 +287,20 @@ def _svg(lane_labels, bars, arrows, *, t_max: float, now, unit, view, makespan) 
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width:.0f} {height:.0f}" '
         f'width="{width:.0f}" height="{height:.0f}" font-family="system-ui, sans-serif" font-size="12">'
     )
-    # Self-contained styling, background, and title so the SVG stands alone.
-    parts.append("<style>" + _STYLE + "</style>")
-    parts.append(f'<rect class="bg" x="0" y="0" width="{width:.0f}" height="{height:.0f}"/>')
-    parts.append(f'<text class="title" x="16" y="24">Schedule &#8212; {_esc(view)} view</text>')
+    # CSS is emitted only for the browser-adaptive "auto" theme; the fixed
+    # light/dark themes paint every element with inline attributes instead.
+    if theme == "auto":
+        parts.append("<style>" + _STYLE + "</style>")
+    parts.append(f'<rect {_attr("bg", theme)} x="0" y="0" width="{width:.0f}" height="{height:.0f}"/>')
+    parts.append(
+        f'<text {_attr("title", theme)} font-size="15" font-weight="600" x="16" y="24">'
+        f'Schedule &#8212; {_esc(view)} view</text>'
+    )
     if span_note:
-        parts.append(f'<text class="subtitle" x="16" y="40">{_esc(span_note)}</text>')
+        parts.append(f'<text {_attr("subtitle", theme)} x="16" y="40">{_esc(span_note)}</text>')
     parts.append(
         '<defs><marker id="ah" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">'
-        '<path d="M0,0 L7,3 L0,6 Z" class="arrowhead"/></marker></defs>'
+        f'<path d="M0,0 L7,3 L0,6 Z" {_attr("arrowhead", theme)}/></marker></defs>'
     )
     # All chart content lives below the title band.
     parts.append(f'<g transform="translate(0,{_TITLE})">')
@@ -219,32 +310,32 @@ def _svg(lane_labels, bars, arrows, *, t_max: float, now, unit, view, makespan) 
     t = 0.0
     while t <= span + 1e-9:
         gx = x(t)
-        parts.append(f'<line class="grid" x1="{gx:.1f}" y1="{_TOP - 6:.1f}" x2="{gx:.1f}" y2="{height - _BOTTOM:.1f}"/>')
-        parts.append(f'<text class="tick" x="{gx:.1f}" y="{_TOP - 12:.1f}" text-anchor="middle">{_fmt(t)}</text>')
+        parts.append(f'<line {_attr("grid", theme)} x1="{gx:.1f}" y1="{_TOP - 6:.1f}" x2="{gx:.1f}" y2="{bottom:.1f}"/>')
+        parts.append(f'<text {_attr("tick", theme)} x="{gx:.1f}" y="{_TOP - 12:.1f}" text-anchor="middle">{_fmt(t)}</text>')
         t += step
     axis_label = f"time ({unit})" if unit else "time"
-    parts.append(f'<text class="axis" x="{_LEFT:.1f}" y="{height - 8:.1f}">{_esc(axis_label)}</text>')
+    parts.append(f'<text {_attr("axis", theme)} x="{_LEFT:.1f}" y="{chart_h - 8:.1f}">{_esc(axis_label)}</text>')
 
     # Lane labels + separators.
     for i, label in enumerate(lane_labels):
         y = lane_y(i)
-        parts.append(f'<line class="lane" x1="0" y1="{y + _ROW:.1f}" x2="{width:.1f}" y2="{y + _ROW:.1f}"/>')
+        parts.append(f'<line {_attr("lane", theme)} x1="0" y1="{y + _ROW:.1f}" x2="{width:.1f}" y2="{y + _ROW:.1f}"/>')
         parts.append(
-            f'<text class="lanelabel" x="{_LEFT - 10:.1f}" y="{y + _ROW / 2 + 4:.1f}" text-anchor="end">{_esc(label)}</text>'
+            f'<text {_attr("lanelabel", theme)} x="{_LEFT - 10:.1f}" y="{y + _ROW / 2 + 4:.1f}" text-anchor="end">{_esc(label)}</text>'
         )
 
     # `now` marker (replanning).
     if isinstance(now, (int, float)):
         nx = x(float(now))
-        parts.append(f'<line class="now" x1="{nx:.1f}" y1="{_TOP - 6:.1f}" x2="{nx:.1f}" y2="{height - _BOTTOM:.1f}"/>')
-        parts.append(f'<text class="nowlabel" x="{nx + 3:.1f}" y="{_TOP - 12:.1f}">now={_fmt(float(now))}</text>')
+        parts.append(f'<line {_attr("now", theme)} x1="{nx:.1f}" y1="{_TOP - 6:.1f}" x2="{nx:.1f}" y2="{bottom:.1f}"/>')
+        parts.append(f'<text {_attr("nowlabel", theme)} x="{nx + 3:.1f}" y="{_TOP - 12:.1f}">now={_fmt(float(now))}</text>')
 
     # Arrows (workflow view).
     for a in arrows:
         y1 = lane_y(a.lane1) + _ROW / 2
         y2 = lane_y(a.lane2) + _ROW / 2
         parts.append(
-            f'<path class="arrow" d="M{x(a.x1):.1f},{y1:.1f} C{x(a.x1) + 16:.1f},{y1:.1f} '
+            f'<path {_attr("arrow", theme)} d="M{x(a.x1):.1f},{y1:.1f} C{x(a.x1) + 16:.1f},{y1:.1f} '
             f'{x(a.x2) - 16:.1f},{y2:.1f} {x(a.x2):.1f},{y2:.1f}" marker-end="url(#ah)"/>'
         )
 
@@ -253,12 +344,12 @@ def _svg(lane_labels, bars, arrows, *, t_max: float, now, unit, view, makespan) 
         bx = x(b.start)
         bw = max(2.0, (b.end - b.start) * scale)
         by = lane_y(b.lane) + (_ROW - _BAR) / 2
-        parts.append(
-            f'<rect class="bar {b.css}" x="{bx:.1f}" y="{by:.1f}" width="{bw:.1f}" height="{_BAR}" rx="3"/>'
-        )
+        role = "ghost" if b.css == "xfer-ghost" else b.css  # proc | xfer | ghost
+        parts.append(f'<rect {_attr(role, theme)} x="{bx:.1f}" y="{by:.1f}" width="{bw:.1f}" height="{_BAR}" rx="3"/>')
         if b.label and bw > 26:
+            lbl_role = "barlabel-xfer" if b.css == "xfer" else "barlabel-proc"
             parts.append(
-                f'<text class="barlabel {b.css}" x="{bx + 4:.1f}" y="{by + _BAR - 6:.1f}">{_esc(_clip(b.label, bw))}</text>'
+                f'<text {_attr(lbl_role, theme)} x="{bx + 4:.1f}" y="{by + _BAR - 6:.1f}">{_esc(_clip(b.label, bw))}</text>'
             )
 
     parts.append("</g></svg>")
