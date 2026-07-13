@@ -4,8 +4,12 @@ Development / verification fixtures for the scheduler. These are not conformance
 cases (those live under `tests/conformance/`); they are complete, realistic
 inputs used to drive and eyeball the scheduler.
 
-Generated artifacts (a produced workflow, rendered charts) live under
-`outputs/`.
+Generated artifacts live under `outputs/`: for each example a solved execution
+plan (`<name>.plan.yaml`, §6) and a rendered `device`-view chart
+(`<name>.device.svg`), plus the `plate_batch` generator's produced workflow and
+environment. The committed plans are a saved snapshot of one optimal solve (the
+concrete schedule among equal-makespan optima is not unique); each is a valid
+execution document (checked by `test_plan.py`).
 
 ## `plate_batch` — a parametric generator (workflow + environment)
 

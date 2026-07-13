@@ -1,0 +1,84 @@
+time:
+  unit: second
+outcome: optimal
+objective:
+  kind: makespan
+  value: 20
+activities:
+- kind: processing
+  start: 0
+  end: 5
+  process: source_a
+  mode: '0'
+  node:
+  - SourceA
+  devices:
+  - station_a1
+  output_spots:
+    sample_out: station_a1.core
+- kind: processing
+  start: 0
+  end: 5
+  process: source_b
+  mode: '0'
+  node:
+  - SourceB
+  devices:
+  - station_b1
+  output_spots:
+    sample_out: station_b1.core
+- kind: transport
+  start: 5
+  end: 12
+  from_spot: station_a1.core
+  to_spot: station_a2.core
+  transporter: arm1
+  arc:
+    from:
+      node:
+      - SourceA
+      port: sample_out
+    to:
+      node:
+      - TargetA
+      port: sample_in
+- kind: transport
+  start: 5
+  end: 15
+  from_spot: station_b1.core
+  to_spot: station_b2.core
+  transporter: arm0
+  arc:
+    from:
+      node:
+      - SourceB
+      port: sample_out
+    to:
+      node:
+      - TargetB
+      port: sample_in
+- kind: processing
+  start: 12
+  end: 17
+  process: target_a
+  mode: '0'
+  node:
+  - TargetA
+  devices:
+  - station_a2
+  input_spots:
+    sample_in: station_a2.core
+- kind: processing
+  start: 15
+  end: 20
+  process: target_b
+  mode: '0'
+  node:
+  - TargetB
+  devices:
+  - station_b2
+  input_spots:
+    sample_in: station_b2.core
+meta:
+  workflow: examples/two_arms.workflow.yaml
+  environment: examples/two_arms.env.yaml

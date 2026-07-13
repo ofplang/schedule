@@ -1,0 +1,744 @@
+time:
+  unit: second
+outcome: optimal
+objective:
+  kind: makespan
+  value: 50
+activities:
+- kind: processing
+  start: 0
+  end: 1
+  process: source
+  mode: '0'
+  node:
+  - source
+  devices:
+  - loader
+  output_spots:
+    plate_1: loader.s1
+    plate_2: loader.s2
+- kind: transport
+  start: 1
+  end: 2
+  from_spot: loader.s2
+  to_spot: peal.core
+  transporter: transport
+  arc:
+    from:
+      node:
+      - source
+      port: plate_2
+    to:
+      node:
+      - b2
+      - rep1
+      - peal
+      port: plate
+- kind: processing
+  start: 2
+  end: 3
+  process: peal
+  mode: '0'
+  node:
+  - b2
+  - rep1
+  - peal
+  devices:
+  - peal
+  input_spots:
+    plate: peal.core
+  output_spots:
+    plate: peal.core
+- kind: transport
+  start: 3
+  end: 4
+  from_spot: peal.core
+  to_spot: dispense.core
+  transporter: transport
+  arc:
+    from:
+      node:
+      - b2
+      - rep1
+      - peal
+      port: plate
+    to:
+      node:
+      - b2
+      - rep1
+      - dispense
+      port: plate
+- kind: transport
+  start: 4
+  end: 5
+  from_spot: loader.s1
+  to_spot: peal.core
+  transporter: transport
+  arc:
+    from:
+      node:
+      - source
+      port: plate_1
+    to:
+      node:
+      - b1
+      - rep1
+      - peal
+      port: plate
+- kind: processing
+  start: 4
+  end: 7
+  process: dispense
+  mode: '0'
+  node:
+  - b2
+  - rep1
+  - dispense
+  devices:
+  - dispense
+  input_spots:
+    plate: dispense.core
+  output_spots:
+    plate: dispense.core
+- kind: processing
+  start: 5
+  end: 6
+  process: peal
+  mode: '0'
+  node:
+  - b1
+  - rep1
+  - peal
+  devices:
+  - peal
+  input_spots:
+    plate: peal.core
+  output_spots:
+    plate: peal.core
+- kind: transport
+  start: 7
+  end: 8
+  from_spot: dispense.core
+  to_spot: seal.core
+  transporter: transport
+  arc:
+    from:
+      node:
+      - b2
+      - rep1
+      - dispense
+      port: plate
+    to:
+      node:
+      - b2
+      - rep1
+      - seal
+      port: plate
+- kind: processing
+  start: 8
+  end: 9
+  process: seal
+  mode: '0'
+  node:
+  - b2
+  - rep1
+  - seal
+  devices:
+  - seal
+  input_spots:
+    plate: seal.core
+  output_spots:
+    plate: seal.core
+- kind: transport
+  start: 8
+  end: 9
+  from_spot: peal.core
+  to_spot: dispense.core
+  transporter: transport
+  arc:
+    from:
+      node:
+      - b1
+      - rep1
+      - peal
+      port: plate
+    to:
+      node:
+      - b1
+      - rep1
+      - dispense
+      port: plate
+- kind: transport
+  start: 9
+  end: 10
+  from_spot: seal.core
+  to_spot: thermal_cycle_1.core
+  transporter: transport
+  arc:
+    from:
+      node:
+      - b2
+      - rep1
+      - seal
+      port: plate
+    to:
+      node:
+      - b2
+      - rep1
+      - thermal
+      port: plate
+- kind: processing
+  start: 9
+  end: 12
+  process: dispense
+  mode: '0'
+  node:
+  - b1
+  - rep1
+  - dispense
+  devices:
+  - dispense
+  input_spots:
+    plate: dispense.core
+  output_spots:
+    plate: dispense.core
+- kind: processing
+  start: 10
+  end: 20
+  process: thermal_cycle
+  mode: '0'
+  node:
+  - b2
+  - rep1
+  - thermal
+  devices:
+  - thermal_cycle_1
+  input_spots:
+    plate: thermal_cycle_1.core
+  output_spots:
+    plate: thermal_cycle_1.core
+- kind: transport
+  start: 12
+  end: 13
+  from_spot: dispense.core
+  to_spot: seal.core
+  transporter: transport
+  arc:
+    from:
+      node:
+      - b1
+      - rep1
+      - dispense
+      port: plate
+    to:
+      node:
+      - b1
+      - rep1
+      - seal
+      port: plate
+- kind: processing
+  start: 13
+  end: 14
+  process: seal
+  mode: '0'
+  node:
+  - b1
+  - rep1
+  - seal
+  devices:
+  - seal
+  input_spots:
+    plate: seal.core
+  output_spots:
+    plate: seal.core
+- kind: transport
+  start: 14
+  end: 15
+  from_spot: seal.core
+  to_spot: thermal_cycle_2.core
+  transporter: transport
+  arc:
+    from:
+      node:
+      - b1
+      - rep1
+      - seal
+      port: plate
+    to:
+      node:
+      - b1
+      - rep1
+      - thermal
+      port: plate
+- kind: processing
+  start: 15
+  end: 25
+  process: thermal_cycle
+  mode: '1'
+  node:
+  - b1
+  - rep1
+  - thermal
+  devices:
+  - thermal_cycle_2
+  input_spots:
+    plate: thermal_cycle_2.core
+  output_spots:
+    plate: thermal_cycle_2.core
+- kind: transport
+  start: 20
+  end: 21
+  from_spot: thermal_cycle_1.core
+  to_spot: rotate.core
+  transporter: transport
+  arc:
+    from:
+      node:
+      - b2
+      - rep1
+      - thermal
+      port: plate
+    to:
+      node:
+      - b2
+      - rep1
+      - rotate
+      port: plate
+- kind: processing
+  start: 21
+  end: 22
+  process: rotate
+  mode: '0'
+  node:
+  - b2
+  - rep1
+  - rotate
+  devices:
+  - rotate
+  input_spots:
+    plate: rotate.core
+  output_spots:
+    plate: rotate.core
+- kind: transport
+  start: 22
+  end: 23
+  from_spot: rotate.core
+  to_spot: peal.core
+  transporter: transport
+  arc:
+    from:
+      node:
+      - b2
+      - rep1
+      - rotate
+      port: plate
+    to:
+      node:
+      - b2
+      - rep2
+      - peal
+      port: plate
+- kind: processing
+  start: 23
+  end: 24
+  process: peal
+  mode: '0'
+  node:
+  - b2
+  - rep2
+  - peal
+  devices:
+  - peal
+  input_spots:
+    plate: peal.core
+  output_spots:
+    plate: peal.core
+- kind: transport
+  start: 24
+  end: 25
+  from_spot: peal.core
+  to_spot: dispense.core
+  transporter: transport
+  arc:
+    from:
+      node:
+      - b2
+      - rep2
+      - peal
+      port: plate
+    to:
+      node:
+      - b2
+      - rep2
+      - dispense
+      port: plate
+- kind: transport
+  start: 25
+  end: 26
+  from_spot: thermal_cycle_2.core
+  to_spot: rotate.core
+  transporter: transport
+  arc:
+    from:
+      node:
+      - b1
+      - rep1
+      - thermal
+      port: plate
+    to:
+      node:
+      - b1
+      - rep1
+      - rotate
+      port: plate
+- kind: processing
+  start: 25
+  end: 28
+  process: dispense
+  mode: '0'
+  node:
+  - b2
+  - rep2
+  - dispense
+  devices:
+  - dispense
+  input_spots:
+    plate: dispense.core
+  output_spots:
+    plate: dispense.core
+- kind: processing
+  start: 26
+  end: 27
+  process: rotate
+  mode: '0'
+  node:
+  - b1
+  - rep1
+  - rotate
+  devices:
+  - rotate
+  input_spots:
+    plate: rotate.core
+  output_spots:
+    plate: rotate.core
+- kind: transport
+  start: 27
+  end: 28
+  from_spot: rotate.core
+  to_spot: peal.core
+  transporter: transport
+  arc:
+    from:
+      node:
+      - b1
+      - rep1
+      - rotate
+      port: plate
+    to:
+      node:
+      - b1
+      - rep2
+      - peal
+      port: plate
+- kind: processing
+  start: 28
+  end: 29
+  process: peal
+  mode: '0'
+  node:
+  - b1
+  - rep2
+  - peal
+  devices:
+  - peal
+  input_spots:
+    plate: peal.core
+  output_spots:
+    plate: peal.core
+- kind: transport
+  start: 28
+  end: 29
+  from_spot: dispense.core
+  to_spot: seal.core
+  transporter: transport
+  arc:
+    from:
+      node:
+      - b2
+      - rep2
+      - dispense
+      port: plate
+    to:
+      node:
+      - b2
+      - rep2
+      - seal
+      port: plate
+- kind: processing
+  start: 29
+  end: 30
+  process: seal
+  mode: '0'
+  node:
+  - b2
+  - rep2
+  - seal
+  devices:
+  - seal
+  input_spots:
+    plate: seal.core
+  output_spots:
+    plate: seal.core
+- kind: transport
+  start: 29
+  end: 30
+  from_spot: peal.core
+  to_spot: dispense.core
+  transporter: transport
+  arc:
+    from:
+      node:
+      - b1
+      - rep2
+      - peal
+      port: plate
+    to:
+      node:
+      - b1
+      - rep2
+      - dispense
+      port: plate
+- kind: transport
+  start: 30
+  end: 31
+  from_spot: seal.core
+  to_spot: thermal_cycle_2.core
+  transporter: transport
+  arc:
+    from:
+      node:
+      - b2
+      - rep2
+      - seal
+      port: plate
+    to:
+      node:
+      - b2
+      - rep2
+      - thermal
+      port: plate
+- kind: processing
+  start: 30
+  end: 33
+  process: dispense
+  mode: '0'
+  node:
+  - b1
+  - rep2
+  - dispense
+  devices:
+  - dispense
+  input_spots:
+    plate: dispense.core
+  output_spots:
+    plate: dispense.core
+- kind: processing
+  start: 31
+  end: 41
+  process: thermal_cycle
+  mode: '1'
+  node:
+  - b2
+  - rep2
+  - thermal
+  devices:
+  - thermal_cycle_2
+  input_spots:
+    plate: thermal_cycle_2.core
+  output_spots:
+    plate: thermal_cycle_2.core
+- kind: transport
+  start: 33
+  end: 34
+  from_spot: dispense.core
+  to_spot: seal.core
+  transporter: transport
+  arc:
+    from:
+      node:
+      - b1
+      - rep2
+      - dispense
+      port: plate
+    to:
+      node:
+      - b1
+      - rep2
+      - seal
+      port: plate
+- kind: processing
+  start: 34
+  end: 35
+  process: seal
+  mode: '0'
+  node:
+  - b1
+  - rep2
+  - seal
+  devices:
+  - seal
+  input_spots:
+    plate: seal.core
+  output_spots:
+    plate: seal.core
+- kind: transport
+  start: 35
+  end: 36
+  from_spot: seal.core
+  to_spot: thermal_cycle_1.core
+  transporter: transport
+  arc:
+    from:
+      node:
+      - b1
+      - rep2
+      - seal
+      port: plate
+    to:
+      node:
+      - b1
+      - rep2
+      - thermal
+      port: plate
+- kind: processing
+  start: 36
+  end: 46
+  process: thermal_cycle
+  mode: '0'
+  node:
+  - b1
+  - rep2
+  - thermal
+  devices:
+  - thermal_cycle_1
+  input_spots:
+    plate: thermal_cycle_1.core
+  output_spots:
+    plate: thermal_cycle_1.core
+- kind: transport
+  start: 41
+  end: 42
+  from_spot: thermal_cycle_2.core
+  to_spot: rotate.core
+  transporter: transport
+  arc:
+    from:
+      node:
+      - b2
+      - rep2
+      - thermal
+      port: plate
+    to:
+      node:
+      - b2
+      - rep2
+      - rotate
+      port: plate
+- kind: processing
+  start: 42
+  end: 43
+  process: rotate
+  mode: '0'
+  node:
+  - b2
+  - rep2
+  - rotate
+  devices:
+  - rotate
+  input_spots:
+    plate: rotate.core
+  output_spots:
+    plate: rotate.core
+- kind: transport
+  start: 43
+  end: 44
+  from_spot: rotate.core
+  to_spot: loader.s2
+  transporter: transport
+  arc:
+    from:
+      node:
+      - b2
+      - rep2
+      - rotate
+      port: plate
+    to:
+      node:
+      - sink
+      port: plate_2
+- kind: transport
+  start: 46
+  end: 47
+  from_spot: thermal_cycle_1.core
+  to_spot: rotate.core
+  transporter: transport
+  arc:
+    from:
+      node:
+      - b1
+      - rep2
+      - thermal
+      port: plate
+    to:
+      node:
+      - b1
+      - rep2
+      - rotate
+      port: plate
+- kind: processing
+  start: 47
+  end: 48
+  process: rotate
+  mode: '0'
+  node:
+  - b1
+  - rep2
+  - rotate
+  devices:
+  - rotate
+  input_spots:
+    plate: rotate.core
+  output_spots:
+    plate: rotate.core
+- kind: transport
+  start: 48
+  end: 49
+  from_spot: rotate.core
+  to_spot: loader.s1
+  transporter: transport
+  arc:
+    from:
+      node:
+      - b1
+      - rep2
+      - rotate
+      port: plate
+    to:
+      node:
+      - sink
+      port: plate_1
+- kind: processing
+  start: 49
+  end: 50
+  process: sink
+  mode: '0'
+  node:
+  - sink
+  devices:
+  - loader
+  input_spots:
+    plate_1: loader.s1
+    plate_2: loader.s2
+meta:
+  workflow: examples/outputs/plate_batch.workflow.yaml
+  environment: examples/outputs/plate_batch.env.yaml

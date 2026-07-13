@@ -1,0 +1,47 @@
+time:
+  unit: second
+outcome: optimal
+objective:
+  kind: makespan
+  value: 5
+activities:
+- kind: processing
+  start: 0
+  end: 2
+  process: source
+  mode: '0'
+  node:
+  - SampleSource
+  devices:
+  - station_0
+  output_spots:
+    source_out: station_0.core
+- kind: transport
+  start: 2
+  end: 3
+  from_spot: station_0.core
+  to_spot: station_1.core
+  transporter: transport
+  arc:
+    from:
+      node:
+      - SampleSource
+      port: source_out
+    to:
+      node:
+      - SampleTarget
+      port: target_in
+- kind: processing
+  start: 3
+  end: 5
+  process: target
+  mode: '0'
+  node:
+  - SampleTarget
+  devices:
+  - station_1
+  input_spots:
+    target_in: station_1.core
+meta:
+  workflow: examples/simple.workflow.yaml
+  environment: examples/simple.env.yaml

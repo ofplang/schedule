@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from ofplang.schedule import validate_document
 from ofplang.schedule.scheduler.cpsat import solve
 from ofplang.schedule.scheduler.envload import load_environment
@@ -12,6 +14,7 @@ from ofplang.schedule.scheduler.plan import render_plan, to_yaml
 from ofplang.schedule.scheduler.workflow import parse_workflow
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
+OUTPUTS = EXAMPLES / "outputs"
 
 
 def _plan(name):
@@ -43,3 +46,16 @@ def test_reformatter_plan_is_valid_document(tmp_path):
     assert doc["outcome"] == "optimal"
     assert len(doc["activities"]) == 8 + 12
     _assert_valid_document(doc, tmp_path)
+
+
+# The plan YAML committed under outputs/ for each example (a saved solve result)
+# must be a valid execution document (§9.2), so the tracked artifacts stay honest.
+_COMMITTED_PLANS = ["simple", "reformatter", "two_arms", "plate_batch"]
+
+
+@pytest.mark.parametrize("name", _COMMITTED_PLANS)
+def test_committed_plan_is_valid_document(name):
+    path = OUTPUTS / f"{name}.plan.yaml"
+    assert path.is_file(), f"missing committed plan: {path}"
+    result = validate_document(path)
+    assert result.ok, [(d.code, d.path) for d in result.errors]
