@@ -27,6 +27,23 @@ def test_device_view_has_device_lanes():
     assert _MARKER not in html  # no arrows in the device view
 
 
+def test_device_view_has_one_lane_per_transporter():
+    # Two transports on different transporters must yield a lane each. Built
+    # inline so the assertion does not depend on any particular example.
+    plan = {
+        "activities": [
+            {"kind": "transport", "start": 0, "end": 5,
+             "from_spot": "d0.p", "to_spot": "d1.p", "transporter": "arm0",
+             "arc": {"from": {"node": ["a"], "port": "o"}, "to": {"node": ["b"], "port": "i"}}},
+            {"kind": "transport", "start": 0, "end": 3,
+             "from_spot": "d2.p", "to_spot": "d3.p", "transporter": "arm1",
+             "arc": {"from": {"node": ["c"], "port": "o"}, "to": {"node": ["d"], "port": "i"}}},
+        ],
+    }
+    html = render_html(plan, view="device")
+    assert "arm0 (transporter)" in html and "arm1 (transporter)" in html
+
+
 def test_workflow_view_has_nodes_and_arrows():
     html = render_html(_plan("simple"), view="workflow")
     assert "SampleSource" in html and "SampleTarget" in html

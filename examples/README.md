@@ -50,6 +50,31 @@ reagent consumption + replenishment in the original context is dropped
 (device-local resources are outside the initial scope). This is the smallest
 end-to-end case, for bringing the scheduler up before the larger `reformatter`.
 
+## `two_arms` — two jobs on a two-transporter fleet
+
+- `two_arms.workflow.yaml` — the v0 workflow.
+- `two_arms.env.yaml` — the matching environment definition.
+
+The smallest case that benefits from more than one transporter (docs
+FORMULATION.md §7 / SPEC §4.6). Two independent `source → target` jobs (A and B)
+share nothing, so their transports can run at the same time. The environment has
+two arms: `arm0` serves both routes, while `arm1` is faster on route A (7 vs 10)
+but has no table entry for route B, so it *cannot* make that move (reachability
+is presence in the transport table, §5.4).
+
+The optimal schedule is **makespan 20**: job B's move can only use `arm0`
+(10 units), and job A takes the faster `arm1` in parallel — the two moves overlap
+because they touch disjoint devices. A single transporter would serialise them
+for makespan 30. The `device` view (`outputs/two_arms.device.svg`) shows one lane
+per arm, with a transport bar on each.
+
+A move occupies its *source* device for its whole duration (the conservative
+3-device model, §4.5), so two moves picking up from the same device would
+serialise on that device regardless of the arm count — which is why this example
+uses two fully independent chains rather than one step fanning out. That makes
+the transporter the only shared resource, and the second arm the thing that
+relieves it.
+
 ## `reformatter` — a plate-reformatting DAG
 
 - `reformatter.workflow.yaml` — the ofplang v0 workflow (the logical dataflow
@@ -80,7 +105,8 @@ become transports, and two intra-reformatter handoffs pass through the shared
   is all the scheduler needs (it only reads process kind, port Object-bearing
   ness, and the arcs). A more physical model could `map` identity through the
   1:1 steps instead.
-- **One transporter**, per the initial ofplang.schedule scope.
+- **One transporter.** This example models a single arm; for the
+  multiple-transporter case see `two_arms`.
 
 ### Validated
 

@@ -8,8 +8,10 @@ from ofplang.schedule.core.diagnostics import ERROR
 from ofplang.schedule.scheduler.envload import load_environment
 from ofplang.schedule.scheduler.instance import build_instance
 from ofplang.schedule.scheduler.model import (
+    Arc,
     AtomicProcess,
     Device,
+    Endpoint,
     Environment,
     Mode,
     NodeInvocation,
@@ -165,3 +167,62 @@ def test_mode_ports_incomplete_is_reported():
     process = AtomicProcess("p", (), (Port("out1", True), Port("out2", True)))
     mode = Mode("m", ("d",), 1, {}, {"out1": "d.s"})
     assert _codes(*_single(process, mode)) == {"mode_ports_incomplete"}
+
+
+# --- transport options over multiple transporters (§9.3 reachability) ----
+#
+# One source->target arc, moving ds.p -> dt.p. The endpoints each have one mode;
+# the environment's transporter set and transport table are varied to check that
+# `build_instance` enumerates one option per (mode pair × transporter) that can
+# actually make the move, and drops the rest.
+
+
+def _arc_case(transporters: tuple[str, ...], transports: dict) -> tuple[Workflow, Environment]:
+    src = AtomicProcess("src", (), (Port("o", True),))
+    tgt = AtomicProcess("tgt", (Port("i", True),), ())
+    workflow = Workflow(
+        (NodeInvocation(("s",), "src"), NodeInvocation(("t",), "tgt")),
+        (Arc(Endpoint(("s",), "o"), Endpoint(("t",), "i")),),
+        ((("s",), ("t",)),),
+        {"src": src, "tgt": tgt},
+    )
+    env = Environment(
+        time_unit="second",
+        devices={"ds": Device("ds", frozenset({"p"})), "dt": Device("dt", frozenset({"p"}))},
+        transporters=transporters,
+        transports=transports,
+        processes={
+            "src": ProcessCapability("src", (Mode("m", ("ds",), 1, {}, {"o": "ds.p"}),)),
+            "tgt": ProcessCapability("tgt", (Mode("m", ("dt",), 1, {"i": "dt.p"}, {}),)),
+        },
+    )
+    return workflow, env
+
+
+def test_arc_gets_one_option_per_capable_transporter():
+    # Both transporters can move ds.p -> dt.p, at different speeds.
+    wf, env = _arc_case(
+        ("arm0", "arm1"),
+        {("arm0", "ds.p", "dt.p"): 5, ("arm1", "ds.p", "dt.p"): 3},
+    )
+    inst, diags = build_instance(wf, env)
+    assert not [d for d in diags.items if d.severity == ERROR]
+    (arc,) = inst.arcs
+    assert {(o.transporter, o.duration) for o in arc.options} == {("arm0", 5), ("arm1", 3)}
+
+
+def test_transporter_without_table_entry_is_excluded():
+    # arm1 has no entry for this move, so only arm0 yields an option.
+    wf, env = _arc_case(("arm0", "arm1"), {("arm0", "ds.p", "dt.p"): 5})
+    inst, diags = build_instance(wf, env)
+    assert not [d for d in diags.items if d.severity == ERROR]
+    (arc,) = inst.arcs
+    assert [(o.transporter, o.duration) for o in arc.options] == [("arm0", 5)]
+
+
+def test_arc_unreachable_when_no_transporter_can_move():
+    # Two transporters, but neither has a table entry for the move.
+    wf, env = _arc_case(("arm0", "arm1"), {})
+    inst, diags = build_instance(wf, env)
+    assert inst is None
+    assert "arc_unreachable" in {d.code for d in diags.items if d.severity == ERROR}

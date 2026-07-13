@@ -26,6 +26,9 @@ OUTPUTS = EXAMPLES / "outputs"
 CASES = [
     ("simple", EXAMPLES / "simple.workflow.yaml", EXAMPLES / "simple.env.yaml", 5),
     ("reformatter", EXAMPLES / "reformatter.workflow.yaml", EXAMPLES / "reformatter.env.yaml", 88),
+    # two_arms: two independent jobs on a two-transporter fleet. Parallel transport
+    # gives 20; a single transporter would serialise the two moves for 30.
+    ("two_arms", EXAMPLES / "two_arms.workflow.yaml", EXAMPLES / "two_arms.env.yaml", 20),
     ("plate_batch", OUTPUTS / "plate_batch.workflow.yaml", OUTPUTS / "plate_batch.env.yaml", 50),
 ]
 

@@ -1,0 +1,79 @@
+# Two-arms workflow — an ofplang v0 dataflow graph.
+#
+# The smallest case that benefits from more than one transporter: two independent
+# source -> target chains (jobs A and B) that share nothing. Their two transports
+# have no ordering between them and touch disjoint devices, so a second
+# transporter lets them run concurrently instead of serialising.
+#
+# Why two *independent* chains rather than one step fanning out to two? A
+# transport occupies its source device for the whole move (the conservative
+# 3-device model, docs/FORMULATION.md §4.5 / SPEC §4.5). Two moves that pick up
+# from the *same* device would serialise on that device no matter how many
+# transporters exist — the device, not the transporter, would be the bottleneck.
+# Disjoint chains isolate the transporter as the only shared resource, which is
+# exactly what a second arm relieves. See `two_arms.env.yaml`.
+spec_version: "0.0"
+
+types:
+  Sample:
+    domain: object
+
+processes:
+
+  # Two source/target pairs, each its own process definition so each binds to its
+  # own device in the environment (capability is keyed per process name, §5.5).
+
+  source_a:
+    kind: atomic
+    outputs:
+      sample_out: { type: Sample, phase: data }
+    objects:
+      create: [outputs.sample_out]
+
+  source_b:
+    kind: atomic
+    outputs:
+      sample_out: { type: Sample, phase: data }
+    objects:
+      create: [outputs.sample_out]
+
+  target_a:
+    kind: atomic
+    inputs:
+      sample_in: { type: Sample, phase: data }
+    objects:
+      consume: [inputs.sample_in]
+
+  target_b:
+    kind: atomic
+    inputs:
+      sample_in: { type: Sample, phase: data }
+    objects:
+      consume: [inputs.sample_in]
+
+  main:
+    kind: composite
+    inputs: {}
+    outputs: {}
+    body:
+      nodes:
+        - id: SourceA
+          process: source_a
+
+        - id: TargetA                           # arc A: SourceA.sample_out -> TargetA
+          process: target_a
+          state:
+            sample_in:
+              from: SourceA.sample_out
+
+        - id: SourceB
+          process: source_b
+
+        - id: TargetB                           # arc B: SourceB.sample_out -> TargetB
+          process: target_b
+          state:
+            sample_in:
+              from: SourceB.sample_out
+      returns: {}
+
+entry: main
