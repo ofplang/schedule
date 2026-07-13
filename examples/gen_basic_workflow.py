@@ -14,8 +14,9 @@ so their signatures — and the loader's spots — scale with the branch count. 
 environment therefore cannot be a single fixed file; this script emits a matching
 `env.yaml` alongside the `workflow.yaml`. The single-device stages
 (peal/dispense/seal/rotate) are contended across branches, while thermal_cycle has
-a fixed two-device pool the scheduler spreads parallel branches over via mode
-selection. Stages are `elidable_iso` (a single `plate` port passes through).
+a `--thermal-pool`-device pool (default 2, an environment-only knob) the scheduler
+spreads parallel branches over via mode selection. Stages are `elidable_iso` (a
+single `plate` port passes through).
 
 Usage:
     python examples/gen_basic_workflow.py --branches 2 --repeats 2 --out-dir examples/outputs
@@ -37,7 +38,10 @@ _STAGES = ["peal", "dispense", "seal", "thermal_cycle", "rotate"]
 _NODE_BASE = {"thermal_cycle": "thermal"}
 _STAGE_DEVICE = {"peal": "peal", "dispense": "dispense", "seal": "seal", "rotate": "rotate"}
 _STAGE_DURATION = {"peal": 1, "dispense": 3, "seal": 1, "thermal_cycle": 10, "rotate": 1}
-_THERMAL_POOL = 2  # fixed pool size for thermal_cycle (parallel via mode selection)
+# Default thermal_cycle pool size (parallel via mode selection); override with
+# --thermal-pool. The pool lives entirely in the environment, so the workflow is
+# unaffected by it.
+_DEFAULT_THERMAL_POOL = 2
 
 
 def _plate_ports(*names: str) -> dict:
@@ -120,18 +124,20 @@ def build_workflow(branches: int, repeats: int) -> dict:
 # --------------------------------------------------------------------------
 
 
-def build_env(branches: int) -> dict:
-    """Build the execution environment for `branches` branches. The loader (used
-    by source/sink) gets one spot per branch; stage devices and the thermal pool
-    are fixed."""
+def build_env(branches: int, thermal_pool: int = _DEFAULT_THERMAL_POOL) -> dict:
+    """Build the execution environment for `branches` branches with a
+    `thermal_pool`-device thermal_cycle pool. The loader (used by source/sink)
+    gets one spot per branch; the single-device stages are fixed."""
     if branches < 1:
         raise ValueError("branches must be >= 1")
+    if thermal_pool < 1:
+        raise ValueError("thermal_pool must be >= 1")
 
     loader_spots = [f"s{b}" for b in range(1, branches + 1)]
     devices = [{"id": "loader", "spots": loader_spots}]
     for name in ("peal", "dispense", "seal", "rotate"):
         devices.append({"id": name, "spots": ["core"]})
-    for k in range(1, _THERMAL_POOL + 1):
+    for k in range(1, thermal_pool + 1):
         devices.append({"id": f"thermal_cycle_{k}", "spots": ["core"]})
 
     def move(frm: str, to: str) -> dict:
@@ -142,7 +148,7 @@ def build_env(branches: int) -> dict:
         transports.append(move(f"loader.s{b}", "peal.core"))    # source -> first stage
         transports.append(move("rotate.core", f"loader.s{b}"))  # last stage -> sink
     transports += [move("peal.core", "dispense.core"), move("dispense.core", "seal.core")]
-    for k in range(1, _THERMAL_POOL + 1):
+    for k in range(1, thermal_pool + 1):
         transports.append(move("seal.core", f"thermal_cycle_{k}.core"))
         transports.append(move(f"thermal_cycle_{k}.core", "rotate.core"))
     transports.append(move("rotate.core", "peal.core"))         # next repeat
@@ -178,7 +184,7 @@ def build_env(branches: int) -> dict:
     for stage in ("peal", "dispense", "seal", "rotate"):
         processes[stage] = {"modes": [stage_mode(_STAGE_DEVICE[stage], _STAGE_DURATION[stage])]}
     processes["thermal_cycle"] = {
-        "modes": [stage_mode(f"thermal_cycle_{k}", _STAGE_DURATION["thermal_cycle"]) for k in range(1, _THERMAL_POOL + 1)]
+        "modes": [stage_mode(f"thermal_cycle_{k}", _STAGE_DURATION["thermal_cycle"]) for k in range(1, thermal_pool + 1)]
     }
 
     return {
@@ -199,12 +205,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate a basic-workflow v0 YAML and its environment.")
     parser.add_argument("--branches", type=int, default=2, help="number of parallel branches")
     parser.add_argument("--repeats", type=int, default=2, help="stage-chain repeats per branch")
+    parser.add_argument("--thermal-pool", type=int, default=_DEFAULT_THERMAL_POOL, help="thermal_cycle device count (environment only)")
     parser.add_argument("--out-dir", metavar="DIR", help="write <name>.workflow.yaml and <name>.env.yaml here (default: stdout)")
     parser.add_argument("--name", default="basic_workflow", help="base file name when --out-dir is given")
     args = parser.parse_args(argv)
 
     workflow = build_workflow(args.branches, args.repeats)
-    env = build_env(args.branches)
+    env = build_env(args.branches, args.thermal_pool)
 
     if args.out_dir:
         os.makedirs(args.out_dir, exist_ok=True)
