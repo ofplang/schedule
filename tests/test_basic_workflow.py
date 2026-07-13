@@ -72,11 +72,11 @@ def test_single_source_and_sink_with_per_branch_ports():
     assert node_ids.count("source") == 1 and node_ids.count("sink") == 1
 
 
-def test_thermal_pool_is_configurable(tmp_path):
+def test_thermal_cycler_pool_is_configurable(tmp_path):
     gen = _generator()
     # The pool lives only in the environment (device count + thermal_cycle modes).
     for pool in (1, 3):
-        env = gen.build_env(2, thermal_pool=pool)
+        env = gen.build_env(2, thermal_cycler_pool=pool)
         devices = [d["id"] for d in env["devices"] if d["id"].startswith("thermal_cycle_")]
         assert len(devices) == pool
         assert len(env["processes"]["thermal_cycle"]["modes"]) == pool
@@ -86,7 +86,7 @@ def test_thermal_pool_is_configurable(tmp_path):
     (tmp_path / "wf.yaml").write_text(yaml.safe_dump(wf), encoding="utf-8")
     for pool in (1, 3):
         env_path = tmp_path / f"env{pool}.yaml"
-        env_path.write_text(yaml.safe_dump(gen.build_env(2, thermal_pool=pool)), encoding="utf-8")
+        env_path.write_text(yaml.safe_dump(gen.build_env(2, thermal_cycler_pool=pool)), encoding="utf-8")
         assert schedule(tmp_path / "wf.yaml", env_path).outcome == "optimal"
 
 

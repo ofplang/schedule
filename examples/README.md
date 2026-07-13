@@ -18,7 +18,7 @@ Generated artifacts (a produced workflow, rendered charts) live under
   branch, so their signatures — and the loader's spots — scale with the branch
   count; that is why the environment is generated alongside the workflow rather
   than shared. Single-device stages (peal/dispense/seal/rotate) are contended
-  across branches; `thermal_cycle` has a `--thermal-pool`-device pool (default 2,
+  across branches; `thermal_cycle` has a `--thermal-cycler-pool`-device pool (default 2,
   an environment-only knob) the scheduler spreads parallel branches over via mode
   selection. Stages are `elidable_iso`
   (a single `plate` port passes through); the source creates each plate and the
