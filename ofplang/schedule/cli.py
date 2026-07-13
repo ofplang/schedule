@@ -67,7 +67,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     z = sub.add_parser("visualize", help="render an execution plan as an HTML/SVG Gantt chart")
     z.add_argument("plan", metavar="PLAN", help="execution plan/document YAML")
-    z.add_argument("--view", choices=["station", "workflow"], default="station", help="lane layout")
+    z.add_argument("--view", choices=["device", "workflow", "lane"], default="device", help="lane layout")
     z.add_argument(
         "--theme",
         choices=["light", "dark", "auto"],

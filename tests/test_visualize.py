@@ -19,18 +19,30 @@ def _plan(name):
     return report.plan
 
 
-def test_station_view_has_device_lanes():
-    html = render_html(_plan("job_sample"), view="station")
+def test_device_view_has_device_lanes():
+    html = render_html(_plan("job_sample"), view="device")
     assert "<svg" in html and "</svg>" in html
     assert "station_0" in html and "station_1" in html
     assert "transport (transporter)" in html
-    assert _MARKER not in html  # no arrows in the station view
+    assert _MARKER not in html  # no arrows in the device view
 
 
 def test_workflow_view_has_nodes_and_arrows():
     html = render_html(_plan("job_sample"), view="workflow")
     assert "SampleSource" in html and "SampleTarget" in html
     assert _MARKER in html  # the arc yields dependency arrows
+
+
+def test_lane_view_packs_into_fewer_lanes():
+    plan = _plan("reformatter")
+    lane = render_html(plan, view="lane")
+    workflow = render_html(plan, view="workflow")
+    # A lane label is the only element with text-anchor="end".
+    lane_lanes = lane.count('text-anchor="end"')
+    workflow_lanes = workflow.count('text-anchor="end"')
+    assert "lane 1" in lane and "lane 2" in lane  # parallel branches -> multiple lanes
+    assert 1 < lane_lanes < workflow_lanes         # packed: fewer than one-per-activity
+    assert _MARKER in lane                         # arcs still traced
 
 
 def test_reformatter_both_views_render():
@@ -44,7 +56,7 @@ def test_reformatter_both_views_render():
 def test_light_svg_is_powerpoint_safe():
     # The default (light) SVG must use inline presentation attributes only —
     # nothing PowerPoint's renderer trips on.
-    svg = render_svg(_plan("reformatter"), view="station", theme="light")
+    svg = render_svg(_plan("reformatter"), view="device", theme="light")
     assert svg.startswith("<?xml")
     assert "<style>" not in svg
     assert "var(" not in svg
@@ -67,7 +79,7 @@ def test_dark_svg_is_fixed_and_inline():
 
 
 def test_auto_svg_uses_css_for_browsers():
-    svg = render_svg(_plan("job_sample"), view="station", theme="auto")
+    svg = render_svg(_plan("job_sample"), view="device", theme="auto")
     assert "<style>" in svg
     assert "prefers-color-scheme" in svg
 

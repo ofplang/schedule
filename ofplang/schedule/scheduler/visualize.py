@@ -1,20 +1,24 @@
 """Render an execution plan (SPECIFICATIONS.md §6) as a self-contained HTML/SVG
-Gantt chart. No third-party dependencies: the chart is inline SVG in a single
-HTML page that opens in any browser (and adapts to light/dark).
+Gantt chart. No third-party dependencies: the chart is inline SVG (see `render_svg`
+/ `render_html`, and the `theme` colours in `_PALETTES`).
 
-Two views, selected by the caller:
+Three views, selected by the caller:
 
-- ``station`` — one lane per device (plus one per transporter). A processing
+- ``device`` — one lane per device (plus one per transporter). A processing
   activity draws a bar on each device it occupies; a transport draws a solid bar
   on its transporter lane and ghost bars on its source/destination device lanes,
-  reflecting the device occupancy of FORMULATION §7. Best for seeing resource
-  contention.
+  reflecting the device occupancy of FORMULATION §7. Best for resource contention.
 - ``workflow`` — one lane per activity (processing and transport), with arrows
   tracing each Object-bearing arc (source → transport → destination). Best for
-  reading the dataflow.
+  reading the dataflow one activity at a time.
+- ``lane`` — dataflow swimlanes (ofp-scheduler style): a chain of processing
+  activities shares one lane, a split branches into new lanes, and a merge
+  rejoins to the lowest lane, so extra lanes appear only where work runs in
+  parallel. Best for seeing concurrency compactly.
 
-The input is the plan dict alone; the device/transporter set is derived from the
-activities. A ``now`` marker is drawn when the document carries one (replanning).
+The input is the plan dict alone; the device/transporter set and the dataflow are
+derived from the activities. A ``now`` marker is drawn when the document carries
+one (replanning).
 """
 
 from __future__ import annotations
@@ -79,9 +83,11 @@ def _svg_markup(plan: dict, view: str, theme: str) -> str:
 
     if view == "workflow":
         lanes, bars, arrows = _workflow_layout(activities)
+    elif view == "lane":
+        lanes, bars, arrows = _lane_layout(activities)
     else:
-        view = "station"
-        lanes, bars, arrows = _station_layout(activities)
+        view = "device"
+        lanes, bars, arrows = _device_layout(activities)
 
     t_max = makespan if isinstance(makespan, (int, float)) else _max_end(activities)
     return _svg(lanes, bars, arrows, t_max=float(t_max or 0), now=now, unit=unit, view=view, makespan=makespan, theme=theme)
@@ -92,7 +98,7 @@ def _svg_markup(plan: dict, view: str, theme: str) -> str:
 # --------------------------------------------------------------------------
 
 
-def _station_layout(activities):
+def _device_layout(activities):
     """Device lanes then transporter lanes; processing on its devices, transport
     on transporter (solid) + source/destination devices (ghost)."""
     devices: set[str] = set()
@@ -173,6 +179,120 @@ def _workflow_layout(activities):
             dst_lane = proc_lane[dst]
             arrows.append(_Arrow(s_end, lane, geom[dst_lane][0], dst_lane))
     return lane_labels, bars, arrows
+
+
+def _lane_layout(activities):
+    """Dataflow swimlanes (ofp-scheduler style). Follow the Object-bearing arcs:
+    a straight chain of processing activities keeps one lane; a split (a step
+    feeding several successors) branches into a new lane per extra output; a
+    merge (a step with several predecessors) rejoins to the lowest incoming lane.
+    So extra lanes appear only where work runs in parallel. Transports ride the
+    lane of the branch they serve; arrows trace each arc through its transport."""
+    proc = [a for a in activities if a.get("kind") == "processing"]
+    xfer = [a for a in activities if a.get("kind") == "transport"]
+    visible = {tuple(a.get("node") or []) for a in proc}
+
+    # Predecessors / successors from the transport arcs.
+    preds: dict[tuple, list[tuple]] = {}
+    succs: dict[tuple, list[tuple]] = {}
+    for t in xfer:
+        arc = t.get("arc") or {}
+        src = tuple((arc.get("from") or {}).get("node") or [])
+        sport = (arc.get("from") or {}).get("port")
+        dst = tuple((arc.get("to") or {}).get("node") or [])
+        if src in visible and dst in visible:
+            preds.setdefault(dst, []).append((src, sport))
+            succs.setdefault(src, []).append((sport, dst))
+
+    # Assign a lane to each processing node, in start-time order.
+    lane_by_node: dict[tuple, int] = {}
+    out_lane_by_port: dict[tuple, int] = {}
+    next_lane = 0
+    for a in sorted(proc, key=lambda a: (float(a.get("start", 0)), tuple(a.get("node") or []))):
+        node = tuple(a.get("node") or [])
+        pp = preds.get(node, [])
+        if not pp:  # source: its own lane
+            lane_by_node[node] = next_lane
+            next_lane += 1
+            continue
+        if len(pp) > 1:  # merge: lowest predecessor lane
+            cand = [lane_by_node[pn] for pn, _ in pp if pn in lane_by_node]
+            lane_by_node[node] = min(cand) if cand else next_lane
+            if not cand:
+                next_lane += 1
+            continue
+        pred_node, pred_port = pp[0]
+        pred_lane = lane_by_node.get(pred_node)
+        if pred_lane is None:
+            lane_by_node[node] = next_lane
+            next_lane += 1
+            continue
+        # Distinct visible successor output ports of the predecessor.
+        ports: list = []
+        for sport, snode in succs.get(pred_node, []):
+            if snode in visible and sport not in ports:
+                ports.append(sport)
+        if len(ports) <= 1:  # straight chain: stay in lane
+            lane_by_node[node] = pred_lane
+            continue
+        # Split: the first output port keeps the lane, the rest branch off.
+        for idx, op in enumerate(ports):
+            key = (pred_node, op)
+            if key not in out_lane_by_port:
+                out_lane_by_port[key] = pred_lane if idx == 0 else next_lane
+                if idx != 0:
+                    next_lane += 1
+        lane_by_node[node] = out_lane_by_port[(pred_node, pred_port)]
+
+    proc_geom = {
+        tuple(a.get("node") or []): (
+            lane_by_node.get(tuple(a.get("node") or []), 0),
+            float(a.get("start", 0)),
+            float(a.get("end", 0)),
+        )
+        for a in proc
+    }
+
+    # Transport lanes: bias toward the endpoint on the branching side.
+    extra = max(lane_by_node.values(), default=-1) + 1
+    xfer_info = []  # (lane, start, end, src, dst)
+    for t in xfer:
+        arc = t.get("arc") or {}
+        src = tuple((arc.get("from") or {}).get("node") or [])
+        dst = tuple((arc.get("to") or {}).get("node") or [])
+        s, e = float(t.get("start", 0)), float(t.get("end", 0))
+        if src in lane_by_node and len(succs.get(src, [])) > 1 and dst in lane_by_node:
+            lane = lane_by_node[dst]
+        elif src in lane_by_node:
+            lane = lane_by_node[src]
+        else:
+            lane = extra
+            extra += 1
+        xfer_info.append((lane, s, e, src, dst))
+
+    # Remap the lanes actually used to contiguous indices.
+    used = sorted({g[0] for g in proc_geom.values()} | {xi[0] for xi in xfer_info})
+    remap = {lane: i for i, lane in enumerate(used)}
+    labels = [f"lane {i + 1}" for i in range(len(used))]
+
+    bars: list[_Bar] = []
+    for a in proc:
+        node = tuple(a.get("node") or [])
+        bars.append(_Bar(remap[lane_by_node[node]], float(a.get("start", 0)), float(a.get("end", 0)), _proc_label(a), "proc"))
+    for (lane, s, e, src, dst), t in zip(xfer_info, xfer):
+        bars.append(_Bar(remap[lane], s, e, _xfer_label(t), "xfer"))
+
+    # Arrows: source proc -> transport -> destination proc.
+    arrows: list[_Arrow] = []
+    for lane, s, e, src, dst in xfer_info:
+        xlane = remap[lane]
+        if src in proc_geom:
+            pl, _ps, pe = proc_geom[src]
+            arrows.append(_Arrow(pe, remap[pl], s, xlane))
+        if dst in proc_geom:
+            pl, ps, _pe = proc_geom[dst]
+            arrows.append(_Arrow(e, xlane, ps, remap[pl]))
+    return labels, bars, arrows
 
 
 # --------------------------------------------------------------------------
