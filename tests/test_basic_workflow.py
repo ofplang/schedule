@@ -59,3 +59,15 @@ def test_generator_is_parametric(tmp_path):
 def test_committed_sample_schedules():
     report = schedule(EXAMPLES / "outputs" / "basic_workflow.workflow.yaml", ENV)
     assert report.outcome == "optimal"
+
+
+def test_stages_are_elidable_iso():
+    doc = _generator().build_workflow(1, 1)
+    for stage in ["peal", "dispense", "seal", "thermal_cycle", "rotate"]:
+        proc = doc["processes"][stage]
+        assert proc.get("traits") == ["elidable_iso"]
+        # Identity-preserving map, not consume+create.
+        assert proc["objects"] == {"map": {"outputs.plate_out": "inputs.plate_in"}}
+    # Source still creates and sink still consumes.
+    assert doc["processes"]["source"]["objects"] == {"create": ["outputs.plate_out"]}
+    assert doc["processes"]["sink"]["objects"] == {"consume": ["inputs.plate_in"]}

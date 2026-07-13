@@ -23,6 +23,8 @@ processes:
       - inputs.plate_in
   peal:
     kind: atomic
+    traits:
+    - elidable_iso
     inputs:
       plate_in:
         type: Plate
@@ -32,12 +34,12 @@ processes:
         type: Plate
         phase: data
     objects:
-      consume:
-      - inputs.plate_in
-      create:
-      - outputs.plate_out
+      map:
+        outputs.plate_out: inputs.plate_in
   dispense:
     kind: atomic
+    traits:
+    - elidable_iso
     inputs:
       plate_in:
         type: Plate
@@ -47,12 +49,12 @@ processes:
         type: Plate
         phase: data
     objects:
-      consume:
-      - inputs.plate_in
-      create:
-      - outputs.plate_out
+      map:
+        outputs.plate_out: inputs.plate_in
   seal:
     kind: atomic
+    traits:
+    - elidable_iso
     inputs:
       plate_in:
         type: Plate
@@ -62,12 +64,12 @@ processes:
         type: Plate
         phase: data
     objects:
-      consume:
-      - inputs.plate_in
-      create:
-      - outputs.plate_out
+      map:
+        outputs.plate_out: inputs.plate_in
   thermal_cycle:
     kind: atomic
+    traits:
+    - elidable_iso
     inputs:
       plate_in:
         type: Plate
@@ -77,12 +79,12 @@ processes:
         type: Plate
         phase: data
     objects:
-      consume:
-      - inputs.plate_in
-      create:
-      - outputs.plate_out
+      map:
+        outputs.plate_out: inputs.plate_in
   rotate:
     kind: atomic
+    traits:
+    - elidable_iso
     inputs:
       plate_in:
         type: Plate
@@ -92,10 +94,8 @@ processes:
         type: Plate
         phase: data
     objects:
-      consume:
-      - inputs.plate_in
-      create:
-      - outputs.plate_out
+      map:
+        outputs.plate_out: inputs.plate_in
   main:
     kind: composite
     inputs: {}

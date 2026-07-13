@@ -9,7 +9,9 @@ chain of stages repeated `repeats` times —
 
 Every stage invokes a fixed-signature atomic process (`plate_in` / `plate_out`),
 so one shared execution environment (examples/basic_workflow.env.yaml) works for
-any branch/repeat count. Branches contend on the shared single-device stages
+any branch/repeat count. The stages are `elidable_iso` (the plate passes through
+with its identity preserved), while the source creates the plate and the sink
+consumes it. Branches contend on the shared single-device stages
 (peal/dispense/seal/rotate and the loader); the environment gives thermal_cycle a
 small device pool, so the scheduler can run those steps in parallel via mode
 selection.
@@ -33,7 +35,8 @@ _NODE_BASE = {"thermal_cycle": "thermal"}
 
 
 def _atomic(inputs: list[str], outputs: list[str]) -> dict:
-    """An atomic Plate process: consumes every input, creates every output."""
+    """An atomic Plate process: consumes every input, creates every output.
+    Used for the pure source (creates a plate) and sink (consumes it)."""
     proc: dict = {"kind": "atomic"}
     if inputs:
         proc["inputs"] = {name: {"type": "Plate", "phase": "data"} for name in inputs}
@@ -48,6 +51,21 @@ def _atomic(inputs: list[str], outputs: list[str]) -> dict:
     return proc
 
 
+def _iso_stage() -> dict:
+    """A 1-in/1-out stage that passes the same plate through unchanged, i.e.
+    `elidable_iso` (identity-preserving), not consume+create. The ports are named
+    plate_in/plate_out rather than sharing one name, so the identity map is
+    written explicitly (elidable_iso's implicit same-name inference does not apply
+    to differently-named ports)."""
+    return {
+        "kind": "atomic",
+        "traits": ["elidable_iso"],
+        "inputs": {"plate_in": {"type": "Plate", "phase": "data"}},
+        "outputs": {"plate_out": {"type": "Plate", "phase": "data"}},
+        "objects": {"map": {"outputs.plate_out": "inputs.plate_in"}},
+    }
+
+
 def build_workflow(branches: int, repeats: int) -> dict:
     """Build the v0 workflow document for `branches` chains of length `repeats`."""
     if branches < 1 or repeats < 1:
@@ -59,7 +77,7 @@ def build_workflow(branches: int, repeats: int) -> dict:
         "sink": _atomic(["plate_in"], []),
     }
     for stage in _STAGES:
-        processes[stage] = _atomic(["plate_in"], ["plate_out"])
+        processes[stage] = _iso_stage()
 
     # Composite body: one independent chain per branch.
     nodes: list[dict] = []
