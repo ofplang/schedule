@@ -436,3 +436,87 @@ structure more directly with optional intervals.
 - Job completion: derive each $C_j$ with `AddMaxEquality` and bind $C_{\max}$ as
   the max over $C_j$.
 - Validate the absence of cross-job precedence/arc before solving.
+
+## Implementation scope (initial version)
+
+The initial `ofplang.schedule` implementation targets a **restriction** of the
+general model above. Two restrictions apply:
+
+1. **Single workflow** — exactly one job, $|J| = 1$.
+2. **No station-local resources** — the consumable-resource concept is dropped
+   entirely (no consumption, and hence no replenishment).
+
+Everything not mentioned below is used unchanged. The retained model is:
+Mode selection, spot hierarchy, and transport Activities — a single-job model
+with spatial (spot/station) occupancy only.
+
+### Single workflow ($|J| = 1$)
+
+Let $j_0$ be the only job, so $T = T_{j_0}$, $A = A_{j_0}$, $R = R_{j_0}$. The
+per-job completion variables $C_j$ are unnecessary; §9 (job completion and
+makespan) collapses to
+
+$$
+C_{\max} \ge e_i, \quad \forall i \in T
+$$
+
+The cross-job clauses of §10 (jobs added at replan; no cross-job precedence/arc)
+are vacuous and drop out, as does the pre-solve cross-job validation. The
+"replan adds new jobs" path is not modeled.
+
+### No station-local resources
+
+The consumable-resource concept — and with it replenishment — is removed
+entirely:
+
+- **Sets** — drop the resource-type set $G$, the replenishment-candidate set
+  $K$, the replenishment Station $\ell^{\mathrm{rep}}$, and the inventory-check
+  time points $\Theta$. The Activity set is $\mathcal{A} = T \cup H$ (processing
+  and transport only).
+- **Parameters** — drop the consumption $c_{i,m,g}$, the initial inventory
+  $u_{\ell,g}^{0}$, the capacity $\bar{u}_{\ell,g}$, and the replenishment
+  duration $\rho_{\ell}$.
+- **Decision variables** — drop $y_k$, $a_k$, $b_k$, $r_{k,g}$. The task–station
+  selector $z_{i,\ell}$ (and the set $S_i$ behind it) is no longer needed; its
+  only uses were the inventory and replenishment clauses.
+- **Constraints** — §8 (station-local inventory) is removed in full, and the
+  task–station selector equation of §1 (which defines $z_{i,\ell}$) is dropped
+  with it.
+- **Objective** — the `"replenishment_count"` stage is not available; only
+  `"makespan"` and `"arc_gap_sum"` may appear in `SchedulingContext.objective`.
+
+Only the spatial resources — Spots (§6) and Stations (§7) — remain as competing
+resources.
+
+### Resulting model
+
+Collecting the two restrictions, the scoped model is fully specified by:
+
+- **Sets** — the single job's $T$, $A$, $R$; Stations $L$ (with the transport
+  device $\ell^{\mathrm{tr}}$); Spots $P$; candidate Modes $M_i$; transport
+  Activities $H$; ports $I_i$, $O_i$. (No $G$, $K$, $\Theta$,
+  $\ell^{\mathrm{rep}}$.)
+- **Parameters** — $p_{i,m}$, $L_{i,m}$, the spot maps $\sigma^{\mathrm{in/out}}$
+  (hence $S_{i,m}$), $d_{p,q}$, $L_{r,m,n}$, $k_r^{\mathrm{out/in}}$, and the
+  rescheduling parameters ($now$, actuals, $m^{\mathrm{safe}}$).
+- **Variables** — $x_{i,m}$, $s_i$, $e_i$ (processing); $q_{r,m,n}$, $a_r$, $b_r$
+  (transport); $C_{\max}$.
+- **Constraints** — §1 (Mode selection, selector dropped), §2 (processing time),
+  §3 (precedence and arc ordering), §4 (transport route selection), §5 (transport
+  time), §6 (spot resource), §7 (station resource), the rescheduling fixation of
+  §10 for processing and transport Activities, and the collapsed makespan
+  $C_{\max} \ge e_i,\ \forall i \in T$.
+- **Objective** — lexicographic over stages drawn from `{"makespan",
+  "arc_gap_sum"}`.
+
+This is the single-workflow transport-and-spot model, with Spot and Station
+occupancy as the only competing resources.
+
+### CP-SAT notes for the scoped model
+
+The general CP-SAT notes apply, minus the resource and multi-job parts:
+
+- No inventory / `reservoir` constraint at all; no replenishment intervals and no
+  $\ell^{\mathrm{rep}}$. Only the spot and station `NoOverlap` constraints remain.
+- Skip the per-job $C_j$ derivation; bind $C_{\max}$ directly as the max over all
+  $e_i$.
