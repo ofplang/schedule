@@ -8,25 +8,31 @@ model. It is the theory `ofplang.schedule` implements, ported from the
 
 `ofp-scheduler` grew the model in incremental steps (fixed devices → device
 selection → spot hierarchy → transport → device-local resources →
-replenishment → multiple workflows). This document keeps **only the final,
+replenishment → multiple jobs). This document keeps **only the final,
 consolidated form** and drops the step-by-step history. Parts that are present
 in the final model but outside the immediate implementation focus (e.g.
 replenishment) are retained as-is.
 
 Terminology follows `SPECIFICATIONS.md`: **activity**, **processing activity**,
-**transport activity**, **device**, **spot**, **mode**, **transporter**,
-**workflow**, and the `pending` / `running` / `completed` statuses. This document
-covers the optimization model only; the scheduler input, environment schema,
+**transport activity**, **device**, **spot**, **mode**, **transporter**, and the
+`pending` / `running` / `completed` statuses. One term is added here: a **job**
+is one scheduled run of a workflow (see below). This document covers the
+optimization model only; the scheduler input, environment schema,
 execution-document schema, identifiers, and validator scope are in
 `SPECIFICATIONS.md`.
 
-### Note on workflows
+### Note on jobs and workflows
 
-The model is written for the general **multi-workflow** case: a set of
-independent workflows sharing physical resources. The current `ofplang.schedule`
-scope is a single workflow ($|J| = 1$; see the reduction at the end); the
-multi-workflow constraints below then reduce to the single-workflow case without
-change.
+A **workflow** is the ofplang v0 dataflow graph — the IR defined by the spec. A
+**job** is one submission of that workflow to the scheduler: a single run to be
+planned. The two are distinct — several jobs may run the same workflow — and
+`job` is used throughout for the scheduled unit to avoid overloading `workflow`.
+
+The model is written for the general **multi-job** case: a set of independent
+jobs sharing physical resources. The current `ofplang.schedule` scope is a single
+job ($|J| = 1$; SPEC §1 — a single workflow at a time; see the reduction at the
+end), and the multi-job constraints below then reduce to the single-job case
+without change.
 
 ## Activities
 
@@ -50,15 +56,15 @@ exclusive (mutual-exclusion applies to each; SPEC §4.4).
 
 ## Sets and indices
 
-- $J$: set of workflows to plan.
-- $T_j$: processing-activity set of workflow $j$.
-- $A_j \subseteq T_j \times T_j$: dependency (precedence) relation of workflow
+- $J$: set of jobs to plan.
+- $T_j$: processing-activity set of job $j$.
+- $A_j \subseteq T_j \times T_j$: dependency (precedence) relation of job
   $j$; $(i,j') \in A_j$ means "$j'$ may start after $i$ completes".
-- $R_j$: Object-bearing arc set of workflow $j$ (output-port → input-port
+- $R_j$: Object-bearing arc set of job $j$ (output-port → input-port
   connections). Pure Data arcs contribute a dependency to $A_j$ only and are not
   in $R_j$ (SPEC §4.3, §4.5).
 - $T = \bigcup_{j \in J} T_j$, $A = \bigcup_{j \in J} A_j$,
-  $R = \bigcup_{j \in J} R_j$: cross-workflow processing-activity, dependency, and
+  $R = \bigcup_{j \in J} R_j$: cross-job processing-activity, dependency, and
   arc sets.
 - $L$: device set. A device is an exclusive resource that owns spots and carries
   out work (SPEC §4.4).
@@ -76,7 +82,7 @@ exclusive (mutual-exclusion applies to each; SPEC §4.4).
   modes.
 - $G$: consumable resource-type set.
 - $H = \{\tau_r \mid r \in R\}$: transport-activity set.
-- $K$: replenishment-candidate set (cross-workflow). Each $k \in K$ corresponds to
+- $K$: replenishment-candidate set (cross-job). Each $k \in K$ corresponds to
   a processing activity $i(k)$ and a target device $\ell(k)$.
 - $\mathcal{A} = T \cup H \cup \{\text{replenishment activities}\}$: the full
   activity set. Processing activities are identified with their processing
@@ -85,8 +91,8 @@ exclusive (mutual-exclusion applies to each; SPEC §4.4).
 - $I_i$, $O_i$: Object-bearing input-port and output-port sets of processing
   activity $i$. (Pure Data ports occupy no spot and are not listed.)
 
-Each processing activity belongs to exactly one workflow. There is **no
-cross-workflow dependency and no cross-workflow arc**: $A_j \subseteq T_j \times
+Each processing activity belongs to exactly one job. There is **no
+cross-job dependency and no cross-job arc**: $A_j \subseteq T_j \times
 T_j$ and $R_j$ is internal to $T_j$.
 
 Every arc $r = (i,j) \in R$ corresponds to some dependency pair in $A$, so the
@@ -173,7 +179,7 @@ Replenishment activities:
 
 Objective auxiliaries:
 
-- $C_j \in \mathbb{Z}_{\ge 0}$: completion time of workflow $j$.
+- $C_j \in \mathbb{Z}_{\ge 0}$: completion time of job $j$.
 - $C_{\max} \in \mathbb{Z}_{\ge 0}$: overall makespan.
 
 ## Common activity-time notation
@@ -334,7 +340,7 @@ immediately before its triggering activity. Candidates are generated per
 (processing activity × candidate device) to bound model size; the model assumes
 this candidate set does not lose the optimum.
 
-### 9. Workflow completion and makespan
+### 9. Job completion and makespan
 
 $$
 C_j \ge e_i, \quad \forall j \in J,\ \forall i \in T_j
@@ -385,9 +391,9 @@ Resources on replan:
 - An input under which a `running` replenishment completion alone forces
   $I_{\ell,g}(t) > \bar{u}_{\ell,g}$ is rejected as invalid.
 
-Workflows added at replan are treated as new workflows whose activities are all
-`pending`; no cross-workflow dependency or arc is created. There is no
-`not_released` state — all workflows given to the scheduler are considered
+Jobs added at replan are treated as new jobs whose activities are all
+`pending`; no cross-job dependency or arc is created. There is no
+`not_released` state — all jobs given to the scheduler are considered
 already released at `now`.
 
 ## Objective
@@ -433,7 +439,7 @@ optimum, then minimize the count of new replenishment activities.
 
 The execution plan records the achieved objective as `objective.kind` and
 `objective.value` (SPEC §6.1); the final value of each executed stage and the
-per-workflow completion times $C_j$ are available alongside.
+per-job completion times $C_j$ are available alongside.
 
 ## CP-SAT implementation notes
 
@@ -453,36 +459,37 @@ structure more directly with optional intervals.
   the replenishment-free case may use a `reservoir` constraint. On replan, add
   fixed intervals/positive events for `running` replenishment activities and fold
   `completed` ones into the initial inventory.
-- Workflow completion: derive each $C_j$ with `AddMaxEquality` and bind $C_{\max}$
+- Job completion: derive each $C_j$ with `AddMaxEquality` and bind $C_{\max}$
   as the max over $C_j$.
-- Validate the absence of cross-workflow dependency/arc before solving.
+- Validate the absence of cross-job dependency/arc before solving.
 
 ## Implementation scope (initial version)
 
 The initial `ofplang.schedule` implementation targets a **restriction** of the
 general model above. Two restrictions apply:
 
-1. **Single workflow** — exactly one workflow, $|J| = 1$ (SPEC §1).
+1. **Single job** — exactly one job, $|J| = 1$ (SPEC §1: a single workflow at a
+   time).
 2. **No device-local resources** — the consumable-resource concept is dropped
    entirely (no consumption, and hence no replenishment).
 
 Everything not mentioned below is used unchanged. The retained model is:
-mode selection, spot hierarchy, and transport activities — a single-workflow
+mode selection, spot hierarchy, and transport activities — a single-job
 model with spatial (spot/device) occupancy only.
 
-### Single workflow ($|J| = 1$)
+### Single job ($|J| = 1$)
 
-Let $j_0$ be the only workflow, so $T = T_{j_0}$, $A = A_{j_0}$, $R = R_{j_0}$.
-The per-workflow completion variables $C_j$ are unnecessary; §9 (workflow
+Let $j_0$ be the only job, so $T = T_{j_0}$, $A = A_{j_0}$, $R = R_{j_0}$.
+The per-job completion variables $C_j$ are unnecessary; §9 (job
 completion and makespan) collapses to
 
 $$
 C_{\max} \ge e_i, \quad \forall i \in T
 $$
 
-The cross-workflow clauses of §10 (workflows added at replan; no cross-workflow
-dependency/arc) are vacuous and drop out, as does the pre-solve cross-workflow
-validation. The "replan adds new workflows" path is not modeled.
+The cross-job clauses of §10 (jobs added at replan; no cross-job
+dependency/arc) are vacuous and drop out, as does the pre-solve cross-job
+validation. The "replan adds new jobs" path is not modeled.
 
 ### No device-local resources
 
@@ -513,7 +520,7 @@ resources.
 
 Collecting the two restrictions, the scoped model is fully specified by:
 
-- **Sets** — the single workflow's $T$, $A$, $R$; devices $L$ (with the
+- **Sets** — the single job's $T$, $A$, $R$; devices $L$ (with the
   transporter $\ell^{\mathrm{tr}}$); spots $P$; candidate modes $M_i$; transport
   activities $H$; ports $I_i$, $O_i$. (No $G$, $K$, $\Theta$,
   $\ell^{\mathrm{rep}}$.)
@@ -529,14 +536,14 @@ Collecting the two restrictions, the scoped model is fully specified by:
   collapsed makespan $C_{\max} \ge e_i,\ \forall i \in T$.
 - **Objective** — makespan minimization (SPEC §4.7).
 
-This is the single-workflow transport-and-spot model, with spot and device
+This is the single-job transport-and-spot model, with spot and device
 occupancy as the only competing resources.
 
 ### CP-SAT notes for the scoped model
 
-The general CP-SAT notes apply, minus the resource and multi-workflow parts:
+The general CP-SAT notes apply, minus the resource and multi-job parts:
 
 - No inventory / `reservoir` constraint at all; no replenishment intervals and no
   $\ell^{\mathrm{rep}}$. Only the spot and device `NoOverlap` constraints remain.
-- Skip the per-workflow $C_j$ derivation; bind $C_{\max}$ directly as the max over
+- Skip the per-job $C_j$ derivation; bind $C_{\max}$ directly as the max over
   all $e_i$.
