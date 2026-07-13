@@ -14,6 +14,12 @@ Generated artifacts (a produced workflow, rendered charts) live under
   `source → (peal → dispense → seal → thermal_cycle → rotate) × --repeats`, and
   one `sink` gathers them. Ported (structure only) from ofp-scheduler's
   `basic_workflow_demo.py`.
+- The repeated structure uses **nested composites**: `repeat_unit` (the five-stage
+  chain), `branch` (`--repeats` of those chained), and `main` (a `branch` per
+  source port, gathered into the sink). The scheduler flattens this to the same
+  atomic graph, so the schedule is identical; plan node paths are hierarchical
+  (e.g. `b1/rep1/peal`). This example also exercises nested-composite expansion at
+  scale.
 - The source has one output port per branch and the sink one input port per
   branch, so their signatures — and the loader's spots — scale with the branch
   count; that is why the environment is generated alongside the workflow rather

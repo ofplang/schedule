@@ -36,8 +36,9 @@ def _schedule(gen, branches: int, repeats: int, tmp_path: Path):
 def test_generated_2x2_schedules_with_thermal_parallelism(tmp_path):
     report = _schedule(_generator(), 2, 2, tmp_path)
     assert report.outcome == "optimal"
-    # 1 source + 1 sink + 2 branches x 2 repeats x 5 stages = 22 processing,
-    # plus 11 arcs/transports per branch = 22 -> 44 activities.
+    # The nested composites flatten to the same atomic graph: 1 source + 1 sink +
+    # 2 branches x 2 repeats x 5 stages = 22 processing, plus 11 arcs/transports
+    # per branch = 22 -> 44 activities.
     assert len(report.plan["activities"]) == 44
     used = {
         d
@@ -97,3 +98,35 @@ def test_stages_are_elidable_iso():
         assert proc.get("traits") == ["elidable_iso"]
         assert set(proc["inputs"]) == {"plate"} and set(proc["outputs"]) == {"plate"}
         assert "objects" not in proc
+
+
+def test_nested_composite_structure():
+    # The repeated structure is expressed with nested composites, not one flat
+    # body: repeat_unit (the five-stage chain), branch (repeats of it), main.
+    doc = _generator().build_workflow(2, 2)
+    procs = doc["processes"]
+    assert procs["repeat_unit"]["kind"] == "composite"
+    assert procs["branch"]["kind"] == "composite"
+
+    # repeat_unit threads one plate through the five stages and returns the last.
+    ru = procs["repeat_unit"]["body"]
+    assert [n["id"] for n in ru["nodes"]] == ["peal", "dispense", "seal", "thermal", "rotate"]
+    assert ru["nodes"][0]["state"] == {"plate": {"from": "inputs.plate"}}
+    assert ru["nodes"][1]["state"] == {"plate": {"from": "peal.plate"}}
+    assert ru["returns"] == {"plate": {"from": "rotate.plate"}}
+
+    # branch chains `repeats` repeat_unit invocations plate-to-plate.
+    br = procs["branch"]["body"]
+    assert [n["id"] for n in br["nodes"]] == ["rep1", "rep2"]
+    assert all(n["process"] == "repeat_unit" for n in br["nodes"])
+    assert br["nodes"][1]["state"] == {"plate": {"from": "rep1.plate"}}
+    assert br["returns"] == {"plate": {"from": "rep2.plate"}}
+
+    # main invokes one branch per source port and gathers them into the sink.
+    main_nodes = procs["main"]["body"]["nodes"]
+    assert [n["id"] for n in main_nodes] == ["source", "b1", "b2", "sink"]
+    assert main_nodes[1]["state"] == {"plate": {"from": "source.plate_1"}}
+    assert main_nodes[3]["state"] == {
+        "plate_1": {"from": "b1.plate"},
+        "plate_2": {"from": "b2.plate"},
+    }

@@ -9,6 +9,13 @@ sink gathers them back —
 
     source ={plate_b}=> [peal -> dispense -> seal -> thermal_cycle -> rotate] x repeats =>{plate_b}= sink
 
+The repeated structure is expressed with **nested composites** rather than one
+flat body: `repeat_unit` is the five-stage chain (one plate in/out), `branch`
+chains `--repeats` of those, and `main` fans a `branch` per port out of the
+source and gathers them into the sink. The scheduler flattens this back to the
+same atomic graph (so the schedule is identical), while the workflow stays small
+and its intent is explicit. Plan node paths are hierarchical, e.g. `b1/rep1/peal`.
+
 The source has one output port per branch and the sink one input port per branch,
 so their signatures — and the loader's spots — scale with the branch count. The
 environment therefore cannot be a single fixed file; this script emits a matching
@@ -54,8 +61,9 @@ def _plate_ports(*names: str) -> dict:
 
 
 def build_workflow(branches: int, repeats: int) -> dict:
-    """Build the v0 workflow: one source/sink with a port per branch, and
-    `branches` independent stage chains of length `repeats`."""
+    """Build the v0 workflow with nested composites: `repeat_unit` (the five-stage
+    chain), `branch` (`repeats` of those chained), and `main` (a `branch` per
+    source port, gathered into the sink)."""
     if branches < 1 or repeats < 1:
         raise ValueError("branches and repeats must be >= 1")
 
@@ -83,34 +91,41 @@ def build_workflow(branches: int, repeats: int) -> dict:
             "outputs": _plate_ports("plate"),
         }
 
-    nodes: list[dict] = [{"id": "source", "process": "source"}]
-    for b in range(1, branches + 1):
-        prev_node, prev_port = "source", f"plate_{b}"
-        for r in range(1, repeats + 1):
-            for stage in _STAGES:
-                base = _NODE_BASE.get(stage, stage)
-                node_id = f"{base}_b{b}_r{r}"
-                nodes.append(
-                    {
-                        "id": node_id,
-                        "process": stage,
-                        "state": {"plate": {"from": f"{prev_node}.{prev_port}"}},
-                    }
-                )
-                prev_node, prev_port = node_id, "plate"
-    # One sink node gathering each branch's last output.
-    sink_state = {
-        f"plate_{b}": {"from": f"rotate_b{b}_r{repeats}.plate"}
-        for b in range(1, branches + 1)
-    }
-    nodes.append({"id": "sink", "process": "sink", "state": sink_state})
+    def _chain(node_specs: list[tuple[str, str]]) -> dict:
+        """A composite that threads one `plate` through the given (node id,
+        process) list in order: the first reads the composite input, each next
+        reads its predecessor, and the last is returned."""
+        nodes: list[dict] = []
+        src = "inputs.plate"
+        for node_id, process in node_specs:
+            nodes.append({"id": node_id, "process": process, "state": {"plate": {"from": src}}})
+            src = f"{node_id}.plate"
+        return {
+            "kind": "composite",
+            "inputs": _plate_ports("plate"),
+            "outputs": _plate_ports("plate"),
+            "body": {"nodes": nodes, "returns": {"plate": {"from": src}}},
+        }
 
+    # repeat_unit: peal -> dispense -> seal -> thermal -> rotate (thermal_cycle's
+    # node is named `thermal`, per _NODE_BASE).
+    processes["repeat_unit"] = _chain([(_NODE_BASE.get(s, s), s) for s in _STAGES])
+    # branch: repeat_unit x repeats, chained plate-to-plate.
+    processes["branch"] = _chain([(f"rep{r}", "repeat_unit") for r in range(1, repeats + 1)])
+
+    # main: source fans a branch per port; the sink gathers each branch's output.
+    main_nodes: list[dict] = [{"id": "source", "process": "source"}]
+    for b in range(1, branches + 1):
+        main_nodes.append({"id": f"b{b}", "process": "branch", "state": {"plate": {"from": f"source.plate_{b}"}}})
+    sink_state = {f"plate_{b}": {"from": f"b{b}.plate"} for b in range(1, branches + 1)}
+    main_nodes.append({"id": "sink", "process": "sink", "state": sink_state})
     processes["main"] = {
         "kind": "composite",
         "inputs": {},
         "outputs": {},
-        "body": {"nodes": nodes, "returns": {}},
+        "body": {"nodes": main_nodes, "returns": {}},
     }
+
     return {
         "spec_version": "0.0",
         "types": {"Plate": {"domain": "object"}},

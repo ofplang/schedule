@@ -89,6 +89,71 @@ processes:
       plate:
         type: Plate
         phase: data
+  repeat_unit:
+    kind: composite
+    inputs:
+      plate:
+        type: Plate
+        phase: data
+    outputs:
+      plate:
+        type: Plate
+        phase: data
+    body:
+      nodes:
+      - id: peal
+        process: peal
+        state:
+          plate:
+            from: inputs.plate
+      - id: dispense
+        process: dispense
+        state:
+          plate:
+            from: peal.plate
+      - id: seal
+        process: seal
+        state:
+          plate:
+            from: dispense.plate
+      - id: thermal
+        process: thermal_cycle
+        state:
+          plate:
+            from: seal.plate
+      - id: rotate
+        process: rotate
+        state:
+          plate:
+            from: thermal.plate
+      returns:
+        plate:
+          from: rotate.plate
+  branch:
+    kind: composite
+    inputs:
+      plate:
+        type: Plate
+        phase: data
+    outputs:
+      plate:
+        type: Plate
+        phase: data
+    body:
+      nodes:
+      - id: rep1
+        process: repeat_unit
+        state:
+          plate:
+            from: inputs.plate
+      - id: rep2
+        process: repeat_unit
+        state:
+          plate:
+            from: rep1.plate
+      returns:
+        plate:
+          from: rep2.plate
   main:
     kind: composite
     inputs: {}
@@ -97,112 +162,22 @@ processes:
       nodes:
       - id: source
         process: source
-      - id: peal_b1_r1
-        process: peal
+      - id: b1
+        process: branch
         state:
           plate:
             from: source.plate_1
-      - id: dispense_b1_r1
-        process: dispense
-        state:
-          plate:
-            from: peal_b1_r1.plate
-      - id: seal_b1_r1
-        process: seal
-        state:
-          plate:
-            from: dispense_b1_r1.plate
-      - id: thermal_b1_r1
-        process: thermal_cycle
-        state:
-          plate:
-            from: seal_b1_r1.plate
-      - id: rotate_b1_r1
-        process: rotate
-        state:
-          plate:
-            from: thermal_b1_r1.plate
-      - id: peal_b1_r2
-        process: peal
-        state:
-          plate:
-            from: rotate_b1_r1.plate
-      - id: dispense_b1_r2
-        process: dispense
-        state:
-          plate:
-            from: peal_b1_r2.plate
-      - id: seal_b1_r2
-        process: seal
-        state:
-          plate:
-            from: dispense_b1_r2.plate
-      - id: thermal_b1_r2
-        process: thermal_cycle
-        state:
-          plate:
-            from: seal_b1_r2.plate
-      - id: rotate_b1_r2
-        process: rotate
-        state:
-          plate:
-            from: thermal_b1_r2.plate
-      - id: peal_b2_r1
-        process: peal
+      - id: b2
+        process: branch
         state:
           plate:
             from: source.plate_2
-      - id: dispense_b2_r1
-        process: dispense
-        state:
-          plate:
-            from: peal_b2_r1.plate
-      - id: seal_b2_r1
-        process: seal
-        state:
-          plate:
-            from: dispense_b2_r1.plate
-      - id: thermal_b2_r1
-        process: thermal_cycle
-        state:
-          plate:
-            from: seal_b2_r1.plate
-      - id: rotate_b2_r1
-        process: rotate
-        state:
-          plate:
-            from: thermal_b2_r1.plate
-      - id: peal_b2_r2
-        process: peal
-        state:
-          plate:
-            from: rotate_b2_r1.plate
-      - id: dispense_b2_r2
-        process: dispense
-        state:
-          plate:
-            from: peal_b2_r2.plate
-      - id: seal_b2_r2
-        process: seal
-        state:
-          plate:
-            from: dispense_b2_r2.plate
-      - id: thermal_b2_r2
-        process: thermal_cycle
-        state:
-          plate:
-            from: seal_b2_r2.plate
-      - id: rotate_b2_r2
-        process: rotate
-        state:
-          plate:
-            from: thermal_b2_r2.plate
       - id: sink
         process: sink
         state:
           plate_1:
-            from: rotate_b1_r2.plate
+            from: b1.plate
           plate_2:
-            from: rotate_b2_r2.plate
+            from: b2.plate
       returns: {}
 entry: main
