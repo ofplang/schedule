@@ -68,7 +68,7 @@ def _build_parser() -> argparse.ArgumentParser:
     z = sub.add_parser("visualize", help="render an execution plan as an HTML/SVG Gantt chart")
     z.add_argument("plan", metavar="PLAN", help="execution plan/document YAML")
     z.add_argument("--view", choices=["station", "workflow"], default="station", help="lane layout")
-    z.add_argument("--format", choices=["html", "svg"], default=None, help="output format (default: infer from -o extension, else html)")
+    z.add_argument("--format", choices=["html", "svg"], default=None, help="output format (default: svg, or html when -o ends in .html)")
     z.add_argument("-o", "--out", metavar="FILE", help="write the chart here (default: stdout)")
 
     return parser
@@ -225,11 +225,11 @@ def _cmd_visualize(args) -> int:
         print(f"ofp-schedule: {args.plan!r} is not an execution document (no 'activities')", file=sys.stderr)
         return EXIT_USAGE
 
-    # Format: explicit --format wins; otherwise infer from the -o extension
-    # (.svg -> svg), else default to html.
+    # Format: explicit --format wins; otherwise the default is svg, except when
+    # the -o path clearly asks for html (.html / .htm).
     fmt = args.format
     if fmt is None:
-        fmt = "svg" if (args.out and args.out.lower().endswith(".svg")) else "html"
+        fmt = "html" if (args.out and args.out.lower().endswith((".html", ".htm"))) else "svg"
 
     text = render_svg(plan, view=args.view) if fmt == "svg" else render_html(plan, view=args.view)
     if args.out:
@@ -241,6 +241,13 @@ def _cmd_visualize(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Emit UTF-8 to stdout regardless of the console's default encoding (e.g. a
+    # cp932 Windows console), so piped SVG/YAML never hits an encode error.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):  # pragma: no cover - not a real TextIO (e.g. under capture)
+        pass
+
     args = _build_parser().parse_args(argv)
     if args.command == "validate":
         return _cmd_validate(args)

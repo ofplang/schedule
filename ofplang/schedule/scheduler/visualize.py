@@ -318,7 +318,8 @@ def _proc_label(a: dict) -> str:
 def _xfer_label(a: dict) -> str:
     to = (a.get("arc") or {}).get("to") or {}
     node = to.get("node") or []
-    return "▸ " + ("/".join(str(x) for x in node) if node else "transport")
+    # ASCII prefix (">") keeps output printable on any console encoding.
+    return "> " + ("/".join(str(x) for x in node) if node else "transport")
 
 
 def _max_end(activities) -> float:
