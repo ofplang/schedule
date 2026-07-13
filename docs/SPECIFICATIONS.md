@@ -612,12 +612,13 @@ Not part of a schema validator; checked by the execution layer while building th
 solver instance. The catalog of codes these checks emit is §10.4.
 
 The scheduler is capability-driven by the processes it actually schedules: it
-expands the entry composite into the atomic, in-scope invocations it will run and
-validates the capability of each. Existence, atomic-ness, and scope (§2) hold by
-construction for those invocations (a structured node or a nested composite is
-diagnosed separately as `unsupported_feature`, not scheduled). Capabilities
-declared in the environment for processes the workflow never invokes are not
-checked.
+expands the entry composite — flattening nested composite invocations by splicing
+dataflow across their boundaries — into the atomic, in-scope invocations it will
+run and validates the capability of each. Existence, atomic-ness, and scope (§2)
+hold by construction for those invocations (a structured node is diagnosed
+separately as `unsupported_feature`, and a recursive composite definition as
+`recursive_composite`, neither being scheduled). Capabilities declared in the
+environment for processes the workflow never invokes are not checked.
 
 - **Against the workflow** — for each invoked process, its capability's modes are
   checked port by port against the process's signature. A mapped port the process
@@ -695,9 +696,10 @@ building the solver instance. All are error severity.
 
 | code | meaning |
 | --- | --- |
-| `unsupported_feature` | a workflow feature outside the scheduler's v0 subset (a structured node, a nested composite) |
+| `unsupported_feature` | a workflow feature outside the scheduler's v0 subset (a structured node) |
 | `no_entry_process` | the workflow has no resolvable entry process |
 | `process_not_defined` | a node invokes, or an arc references, a process/node not defined in the workflow |
+| `recursive_composite` | a composite is (transitively) defined in terms of itself; v0 forbids recursion |
 | `no_capability` | an invoked atomic process has no capability (or no modes) in the environment |
 | `unknown_process_port` | a mode's `input_spots` / `output_spots` names a port the process does not have |
 | `wrong_port_direction` | a port is mapped on the wrong side (an output under `input_spots`, or an input under `output_spots`) |

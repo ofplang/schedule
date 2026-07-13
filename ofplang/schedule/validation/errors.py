@@ -48,6 +48,10 @@ MALFORMED_PLACEMENT = "malformed_placement"
 UNSUPPORTED_FEATURE = "unsupported_feature"
 NO_ENTRY_PROCESS = "no_entry_process"
 PROCESS_NOT_DEFINED = "process_not_defined"
+# A composite is (transitively) defined in terms of itself; v0 forbids recursion,
+# so the expander cannot flatten it. Caught defensively because the scheduler does
+# not run ofplang.validate (which would reject it as recursive_process_dependency).
+RECURSIVE_COMPOSITE = "recursive_composite"
 NO_CAPABILITY = "no_capability"
 # A mode's `input_spots` / `output_spots` names a port the process does not have.
 UNKNOWN_PROCESS_PORT = "unknown_process_port"
@@ -102,6 +106,7 @@ ERROR_CODES = frozenset(
         UNSUPPORTED_FEATURE,
         NO_ENTRY_PROCESS,
         PROCESS_NOT_DEFINED,
+        RECURSIVE_COMPOSITE,
         NO_CAPABILITY,
         UNKNOWN_PROCESS_PORT,
         WRONG_PORT_DIRECTION,

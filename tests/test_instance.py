@@ -62,6 +62,46 @@ def test_build_reformatter_instance():
     assert len(zero) == 2
 
 
+def test_nested_workflow_builds_equivalent_instance(tmp_path):
+    # A nested variant of `simple` (source/target each wrapped in a composite)
+    # flattens to the same two-activity, one-arc graph, so it schedules against the
+    # unchanged simple environment — the pipeline downstream of the parser is
+    # oblivious to how deep the composites were.
+    from ofplang.schedule.scheduler.workflow import parse_workflow as _pw
+
+    doc = tmp_path / "nested.yaml"
+    doc.write_text(
+        "spec_version: \"0.0\"\n"
+        "types: {Sample: {domain: object}}\n"
+        "processes:\n"
+        "  source: {kind: atomic, outputs: {source_out: {type: Sample, phase: data}}, objects: {create: [outputs.source_out]}}\n"
+        "  target: {kind: atomic, inputs: {target_in: {type: Sample, phase: data}}, objects: {consume: [inputs.target_in]}}\n"
+        "  producer:\n"
+        "    kind: composite\n"
+        "    outputs: {p_out: {type: Sample, phase: data}}\n"
+        "    body: {nodes: [{id: S, process: source}], returns: {p_out: {from: S.source_out}}}\n"
+        "  main:\n"
+        "    kind: composite\n"
+        "    body:\n"
+        "      nodes:\n"
+        "        - {id: Prod, process: producer}\n"
+        "        - {id: SampleTarget, process: target, state: {target_in: {from: Prod.p_out}}}\n"
+        "entry: main\n",
+        encoding="utf-8",
+    )
+    wf, wdiags = _pw(doc)
+    assert not [d for d in wdiags.items if d.severity == ERROR]
+    _, env = _load("simple")
+
+    inst, diags = build_instance(wf, env)
+    assert not [d for d in diags.items if d.severity == ERROR]
+    assert inst is not None
+    assert len(inst.activities) == 2
+    assert len(inst.arcs) == 1
+    opt = inst.arcs[0].options[0]
+    assert opt.from_spot == "station_0.core" and opt.to_spot == "station_1.core" and opt.duration == 1
+
+
 def test_unreachable_arc_is_reported():
     wf, env = _load("simple")
     # Drop the only transport entry -> the arc becomes unreachable.
