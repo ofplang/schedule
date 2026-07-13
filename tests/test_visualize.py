@@ -55,12 +55,15 @@ def test_light_svg_is_powerpoint_safe():
     assert 'fill="#3b82f6"' in svg          # processing
     assert 'fill="#f59e0b"' in svg          # transport
     assert 'fill="#f59e0b" fill-opacity="0.2"' in svg  # ghost (device occupancy)
+    # Transparent: no full-canvas background rect.
+    assert 'x="0" y="0" width=' not in svg
 
 
 def test_dark_svg_is_fixed_and_inline():
     svg = render_svg(_plan("job_sample"), view="workflow", theme="dark")
     assert "<style>" not in svg and "var(" not in svg
-    assert 'fill="#0f1115"' in svg  # dark background painted explicitly
+    assert 'fill="#60a5fa"' in svg  # dark processing colour, painted explicitly
+    assert 'x="0" y="0" width=' not in svg  # transparent background
 
 
 def test_auto_svg_uses_css_for_browsers():

@@ -187,14 +187,14 @@ _TITLE = 48  # top band for the title/subtitle
 # dark fixed theme. Values mirror the CSS variables used by the "auto" theme.
 _PALETTES = {
     "light": {
-        "bg": "#ffffff", "fg": "#1a1a1a", "muted": "#666666",
+        "fg": "#1a1a1a", "muted": "#666666",
         "grid": "#e3e3e3", "lane": "#f0f0f0",
         "proc": "#3b82f6", "proc_fg": "#ffffff",
         "xfer": "#f59e0b", "xfer_fg": "#3a2a00",
         "ghost": "#f59e0b", "arrow": "#9333ea", "now": "#dc2626",
     },
     "dark": {
-        "bg": "#0f1115", "fg": "#e6e6e6", "muted": "#9aa0a6",
+        "fg": "#e6e6e6", "muted": "#9aa0a6",
         "grid": "#262a31", "lane": "#1a1d23",
         "proc": "#60a5fa", "proc_fg": "#06131f",
         "xfer": "#fbbf24", "xfer_fg": "#241a00",
@@ -206,7 +206,6 @@ _PALETTES = {
 # attributes (opacity, stroke width, dash). Opacity is kept separate from the
 # colour so no 8-digit hex is ever emitted (PowerPoint renders those as black).
 _ROLE = {
-    "bg": ("fill", "bg", {}),
     "title": ("fill", "fg", {}),
     "subtitle": ("fill", "muted", {}),
     "tick": ("fill", "muted", {}),
@@ -227,7 +226,7 @@ _ROLE = {
 
 # Class names for the CSS ("auto") theme, matching _STYLE.
 _CLASS = {
-    "bg": "bg", "title": "title", "subtitle": "subtitle", "tick": "tick",
+    "title": "title", "subtitle": "subtitle", "tick": "tick",
     "axis": "axis", "lanelabel": "lanelabel", "nowlabel": "nowlabel",
     "grid": "grid", "lane": "lane", "now": "now",
     "proc": "bar proc", "xfer": "bar xfer", "ghost": "bar xfer-ghost",
@@ -291,7 +290,8 @@ def _svg(lane_labels, bars, arrows, *, t_max: float, now, unit, view, makespan, 
     # light/dark themes paint every element with inline attributes instead.
     if theme == "auto":
         parts.append("<style>" + _STYLE + "</style>")
-    parts.append(f'<rect {_attr("bg", theme)} x="0" y="0" width="{width:.0f}" height="{height:.0f}"/>')
+    # No background rect: the chart background is transparent so it blends into
+    # whatever it is placed on (slide, page, dark/light UI).
     parts.append(
         f'<text {_attr("title", theme)} font-size="15" font-weight="600" x="16" y="24">'
         f'Schedule &#8212; {_esc(view)} view</text>'
@@ -360,18 +360,17 @@ def _svg(lane_labels, bars, arrows, *, t_max: float, now, unit, view, makespan, 
 # adapts to light/dark. SVG text is coloured via `fill`; lines via `stroke`.
 _STYLE = """
   :root {
-    --bg: #ffffff; --fg: #1a1a1a; --muted: #666; --grid: #e3e3e3; --lane: #f0f0f0;
+    --fg: #1a1a1a; --muted: #666; --grid: #e3e3e3; --lane: #f0f0f0;
     --proc: #3b82f6; --proc-fg: #ffffff; --xfer: #f59e0b; --xfer-fg: #3a2a00;
     --ghost: #f59e0b33; --arrow: #9333ea; --now: #dc2626;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #0f1115; --fg: #e6e6e6; --muted: #9aa0a6; --grid: #262a31; --lane: #1a1d23;
+      --fg: #e6e6e6; --muted: #9aa0a6; --grid: #262a31; --lane: #1a1d23;
       --proc: #60a5fa; --proc-fg: #06131f; --xfer: #fbbf24; --xfer-fg: #241a00;
       --ghost: #fbbf2433; --arrow: #c084fc; --now: #f87171;
     }
   }
-  .bg { fill: var(--bg); }
   .title { font-size: 15px; font-weight: 600; fill: var(--fg); }
   .subtitle { font-size: 12px; fill: var(--muted); }
   .grid { stroke: var(--grid); stroke-width: 1; }
