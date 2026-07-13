@@ -1,4 +1,4 @@
-"""Enable `python -m ofplang.schedule <file>...`.
+"""Enable `python -m ofplang.schedule <command> ...`.
 
 Intent: mirror the console-script entry point so the CLI is reachable without an
 installed script, which is convenient in dev checkouts and CI.

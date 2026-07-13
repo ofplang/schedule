@@ -1,7 +1,23 @@
 """ofplang.schedule -- scheduler for Object-flow Programming Language v0.
 
-This package is under active construction: only the packaging scaffold and CLI
-entry point exist so far. The scheduler itself (spec 23-24: scheduling policies,
-temporal references, intervals, and Object policy targets) is not implemented
-yet.
+Currently the package provides the layer-1 schema validators (SPECIFICATIONS.md
+§9) for the two documents the scheduler consumes; the scheduler itself is not
+implemented yet.
 """
+
+from ofplang.schedule.core.diagnostics import (
+    ERROR,
+    WARNING,
+    Diagnostic,
+    ValidationResult,
+)
+from ofplang.schedule.validation import validate_document, validate_environment
+
+__all__ = [
+    "validate_environment",
+    "validate_document",
+    "ValidationResult",
+    "Diagnostic",
+    "ERROR",
+    "WARNING",
+]
