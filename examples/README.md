@@ -69,6 +69,9 @@ re-optimises the transport and `SampleTarget` at or after `now`. They slip from
 (`outputs/simple.replan.yaml`) carries the full timeline — the fixed
 `completed` history plus the re-optimised future, with `now` echoed — and is
 itself a valid execution document that round-trips as the next status input.
+Its `lane` chart (`outputs/simple.replan.lane.svg`,
+`visualize --view lane`) draws the `now = 3` marker as a dashed line, with the
+fixed `source` to its left and the re-optimised work to its right.
 
 ## `two_arms` — two jobs on a two-transporter fleet
 
