@@ -18,6 +18,18 @@ def is_identifier(value) -> bool:
     return isinstance(value, str) and _IDENTIFIER.match(value) is not None
 
 
+def format_node_path(path) -> str:
+    """Render a node path as `a/b/c` for diagnostics and messages — the
+    hierarchical node-path form (SPECIFICATIONS.md §6.3), readable where the raw
+    tuple/list would leak Python syntax."""
+    return "/".join(path)
+
+
+def format_endpoint(node_path, port) -> str:
+    """Render an arc endpoint (`node` path + `port`) as `a/b/c.port`."""
+    return f"{format_node_path(node_path)}.{port}"
+
+
 def parse_qualified_spot(value) -> tuple[str, str] | None:
     """Split `<device>.<spot>` into (device, spot).
 

@@ -112,7 +112,12 @@ def test_unreachable_arc_is_reported():
     env = replace(env, transports={})
     inst, diags = build_instance(wf, env)
     assert inst is None
-    assert "arc_unreachable" in {d.code for d in diags.items if d.severity == ERROR}
+    unreachable = [d for d in diags.items if d.code == "arc_unreachable"]
+    assert unreachable
+    # The message names the arc as `node.port -> node.port`, not a Python tuple.
+    msg = unreachable[0].message
+    assert "SampleSource.source_out -> SampleTarget.target_in" in msg
+    assert "(" not in msg and "[" not in msg
 
 
 # --- §9.3 per-port mode checks -------------------------------------------

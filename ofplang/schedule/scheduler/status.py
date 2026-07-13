@@ -26,6 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ofplang.schedule.core.diagnostics import Diagnostics
+from ofplang.schedule.core.identifiers import format_node_path
 from ofplang.schedule.core.yamlnode import YMap, YNode, YScalar, YSeq
 from ofplang.schedule.scheduler.instance import Instance
 from ofplang.schedule.scheduler.model import NodePath
@@ -127,13 +128,13 @@ def _match_processing(
     if idx is None:
         diags.error(
             errors.STATUS_NODE_UNKNOWN,
-            f"status references a processing node not in the workflow: {list(path)}",
+            f"status references a processing node not in the workflow: {format_node_path(path)}",
             f"{base}.node",
             at=node_node or item,
         )
         return
     if idx in activities:
-        diags.error(errors.STATUS_DUPLICATE, f"processing node {list(path)} is fixed more than once", base, at=item)
+        diags.error(errors.STATUS_DUPLICATE, f"processing node {format_node_path(path)} is fixed more than once", base, at=item)
         return
 
     mode_node = item.get("mode")
@@ -142,7 +143,7 @@ def _match_processing(
     if mode_index is None:
         diags.error(
             errors.STATUS_MODE_UNKNOWN,
-            f"process does not offer mode {mode_id!r} for node {list(path)}",
+            f"process does not offer mode {mode_id!r} for node {format_node_path(path)}",
             f"{base}.mode",
             at=mode_node or item,
         )

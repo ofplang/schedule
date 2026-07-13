@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ofplang.schedule.core.diagnostics import Diagnostics
+from ofplang.schedule.core.identifiers import format_endpoint
 from ofplang.schedule.scheduler.model import (
     Arc,
     Environment,
@@ -86,13 +87,16 @@ def build_instance(workflow: Workflow, env: Environment) -> tuple[Instance | Non
         si = index_by_node.get(arc.src.node)
         di = index_by_node.get(arc.dst.node)
         if si is None or di is None:
-            diags.error(errors.PROCESS_NOT_DEFINED, f"arc references an unknown node: {arc}")
+            diags.error(
+                errors.PROCESS_NOT_DEFINED,
+                f"arc references an unknown node: {format_endpoint(arc.src.node, arc.src.port)} -> {format_endpoint(arc.dst.node, arc.dst.port)}",
+            )
             continue
         options = _transport_options(activities[si], arc.src.port, activities[di], arc.dst.port, env)
         if not options:
             diags.error(
                 errors.ARC_UNREACHABLE,
-                f"no transporter can serve the arc {arc.src.node}.{arc.src.port} -> {arc.dst.node}.{arc.dst.port}",
+                f"no transporter can serve the arc {format_endpoint(arc.src.node, arc.src.port)} -> {format_endpoint(arc.dst.node, arc.dst.port)}",
             )
         arcs.append(ArcInstance(arc, si, di, tuple(options)))
 
