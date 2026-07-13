@@ -1,0 +1,49 @@
+# Minimal workflow — an ofplang v0 dataflow graph.
+#
+# Ported from ofp-scheduler's `examples/app/job_sample.json`: a `source` step
+# that produces one Sample and a `target` step that consumes it, connected by a
+# single Object-bearing arc (one transport). ofp-scheduler's reagent
+# consumption + replenishment is dropped (device-local resources are outside the
+# initial ofplang.schedule scope, docs/FORMULATION.md).
+#
+# This is the smallest end-to-end case: one transport, two devices, one spot
+# each. Useful for bringing the scheduler up before the larger `reformatter`.
+spec_version: "0.0"
+
+types:
+  Sample:
+    domain: object
+
+processes:
+
+  source:                                       # produces one Sample
+    kind: atomic
+    outputs:
+      source_out: { type: Sample, phase: data }
+    objects:
+      create: [outputs.source_out]
+
+  target:                                       # consumes the Sample
+    kind: atomic
+    inputs:
+      target_in: { type: Sample, phase: data }
+    objects:
+      consume: [inputs.target_in]
+
+  main:
+    kind: composite
+    inputs: {}
+    outputs: {}
+    body:
+      nodes:
+        - id: SampleSource
+          process: source
+
+        - id: SampleTarget
+          process: target
+          state:                                # the one Object-bearing arc
+            target_in:
+              from: SampleSource.source_out
+      returns: {}
+
+entry: main

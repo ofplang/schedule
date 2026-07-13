@@ -1,0 +1,175 @@
+# Reformatter workflow — an ofplang v0 dataflow graph.
+#
+# Ported from ofp-scheduler's `examples/reformatter_workflow_demo.py`. Eight
+# atomic plate-handling operations form a DAG that fans out from a preparation
+# step and merges back through reformatter / biomek / motoman devices.
+#
+# Each ofp-scheduler "task" has its own port signature and duration, so each
+# becomes its own atomic process definition here (capability is keyed per
+# process definition in the execution environment, docs/SPECIFICATIONS.md §5.5).
+# Every port carries a Plate Object; each operation consumes its input plates
+# and creates its output plates (a simple, linearly-complete Object accounting).
+spec_version: "0.0"
+
+types:
+  Plate:
+    domain: object
+
+processes:
+
+  # --- atomic operations (one per ofp-scheduler task) ---
+
+  preparation:                                  # source: creates three plates
+    kind: atomic
+    outputs:
+      prep_out_rf12:    { type: Plate, phase: data }
+      prep_out_motoman: { type: Plate, phase: data }
+      prep_out_a3_24:   { type: Plate, phase: data }
+    objects:
+      create:
+        - outputs.prep_out_rf12
+        - outputs.prep_out_motoman
+        - outputs.prep_out_a3_24
+
+  reformatter_12:
+    kind: atomic
+    inputs:
+      rf12_in: { type: Plate, phase: data }
+    outputs:
+      rf12_out_rf20: { type: Plate, phase: data }
+      rf12_out_a4:   { type: Plate, phase: data }
+    objects:
+      consume: [inputs.rf12_in]
+      create: [outputs.rf12_out_rf20, outputs.rf12_out_a4]
+
+  motoman_7:
+    kind: atomic
+    inputs:
+      motoman_in: { type: Plate, phase: data }
+    outputs:
+      motoman_out_a4:   { type: Plate, phase: data }
+      motoman_out_rf20: { type: Plate, phase: data }
+    objects:
+      consume: [inputs.motoman_in]
+      create: [outputs.motoman_out_a4, outputs.motoman_out_rf20]
+
+  biomek_a3_24:
+    kind: atomic
+    inputs:
+      a3_24_in: { type: Plate, phase: data }
+    outputs:
+      a3_24_out_rf20: { type: Plate, phase: data }
+    objects:
+      consume: [inputs.a3_24_in]
+      create: [outputs.a3_24_out_rf20]
+
+  biomek_a4_16:
+    kind: atomic
+    inputs:
+      a4_in_rf12:    { type: Plate, phase: data }
+      a4_in_motoman: { type: Plate, phase: data }
+    outputs:
+      a4_out_rf3: { type: Plate, phase: data }
+    objects:
+      consume: [inputs.a4_in_rf12, inputs.a4_in_motoman]
+      create: [outputs.a4_out_rf3]
+
+  reformatter_20:
+    kind: atomic
+    inputs:
+      rf20_in_rf12:    { type: Plate, phase: data }
+      rf20_in_motoman: { type: Plate, phase: data }
+      rf20_in_a3_24:   { type: Plate, phase: data }
+    outputs:
+      rf20_out_rf3:   { type: Plate, phase: data }
+      rf20_out_a3_19: { type: Plate, phase: data }
+    objects:
+      consume: [inputs.rf20_in_rf12, inputs.rf20_in_motoman, inputs.rf20_in_a3_24]
+      create: [outputs.rf20_out_rf3, outputs.rf20_out_a3_19]
+
+  biomek_a3_19:
+    kind: atomic
+    inputs:
+      a3_19_in: { type: Plate, phase: data }
+    outputs:
+      a3_19_out_rf3: { type: Plate, phase: data }
+    objects:
+      consume: [inputs.a3_19_in]
+      create: [outputs.a3_19_out_rf3]
+
+  reformatter_3:
+    kind: atomic                                # sink: consumes three plates
+    inputs:
+      rf3_in_a4:    { type: Plate, phase: data }
+      rf3_in_rf20:  { type: Plate, phase: data }
+      rf3_in_a3_19: { type: Plate, phase: data }
+    objects:
+      consume: [inputs.rf3_in_a4, inputs.rf3_in_rf20, inputs.rf3_in_a3_19]
+
+  # --- entry composite: wires the operations into the reformatter DAG ---
+  # Each `state` binding is one Object-bearing arc (source node.port -> this
+  # node's input port); it drives one transport activity when scheduled.
+
+  main:
+    kind: composite
+    inputs: {}
+    outputs: {}
+    body:
+      nodes:
+        - id: Preparation
+          process: preparation
+
+        - id: Reformatter12
+          process: reformatter_12
+          state:
+            rf12_in:
+              from: Preparation.prep_out_rf12
+
+        - id: Motoman7
+          process: motoman_7
+          state:
+            motoman_in:
+              from: Preparation.prep_out_motoman
+
+        - id: BiomekA3_24
+          process: biomek_a3_24
+          state:
+            a3_24_in:
+              from: Preparation.prep_out_a3_24
+
+        - id: BiomekA4_16
+          process: biomek_a4_16
+          state:
+            a4_in_rf12:
+              from: Reformatter12.rf12_out_a4
+            a4_in_motoman:
+              from: Motoman7.motoman_out_a4
+
+        - id: Reformatter20
+          process: reformatter_20
+          state:
+            rf20_in_rf12:
+              from: Reformatter12.rf12_out_rf20
+            rf20_in_motoman:
+              from: Motoman7.motoman_out_rf20
+            rf20_in_a3_24:
+              from: BiomekA3_24.a3_24_out_rf20
+
+        - id: BiomekA3_19
+          process: biomek_a3_19
+          state:
+            a3_19_in:
+              from: Reformatter20.rf20_out_a3_19
+
+        - id: Reformatter3
+          process: reformatter_3
+          state:
+            rf3_in_a4:
+              from: BiomekA4_16.a4_out_rf3
+            rf3_in_rf20:
+              from: Reformatter20.rf20_out_rf3
+            rf3_in_a3_19:
+              from: BiomekA3_19.a3_19_out_rf3
+      returns: {}
+
+entry: main
