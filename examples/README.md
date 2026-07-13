@@ -4,6 +4,28 @@ Development / verification fixtures for the scheduler. These are not conformance
 cases (those live under `tests/conformance/`); they are complete, realistic
 inputs used to drive and eyeball the scheduler.
 
+Generated artifacts (a produced workflow, rendered charts) live under
+`outputs/`.
+
+## `basic_workflow` — a parametric generator + shared environment
+
+- `gen_basic_workflow.py` — generates a v0 workflow: `--branches` independent
+  chains, each `source → (peal → dispense → seal → thermal_cycle → rotate) ×
+  --repeats → sink`. Ported (structure only) from ofp-scheduler's
+  `basic_workflow_demo.py`.
+- `basic_workflow.env.yaml` — the shared environment. It does **not** depend on
+  the branch/repeat count: every generated node invokes one of a fixed set of
+  process definitions. Single-device stages (peal/dispense/seal/rotate, and the
+  loader used by source/sink) are contended across branches; `thermal_cycle` has
+  a two-device pool, so parallel branches cycle at once via mode selection.
+- `outputs/basic_workflow.workflow.yaml` — a sample generated with
+  `--branches 2 --repeats 2`.
+
+```sh
+python examples/gen_basic_workflow.py --branches 3 --repeats 2 -o wf.yaml
+python -m ofplang.schedule schedule wf.yaml --env examples/basic_workflow.env.yaml
+```
+
 ## `job_sample` — minimal source → target
 
 - `job_sample.workflow.yaml` — the v0 workflow.
