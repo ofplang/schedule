@@ -1,9 +1,6 @@
 time: {unit: second}
 devices: reader_0
 processes:
-  measure_od:
+  compute:
     modes:
-    - devices: [reader_0]
-      duration: 45
-      input_spots: {plate: reader_0.stage}
-      output_spots: {plate: reader_0.stage}
+    - {duration: 5}
