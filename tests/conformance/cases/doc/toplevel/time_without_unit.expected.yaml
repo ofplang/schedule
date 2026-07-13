@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: missing_required_field}
+notes: '`time` is present but has no `unit`; when `time` appears its `unit` is required and validated as in the environment (§6.1 / §5.1).'

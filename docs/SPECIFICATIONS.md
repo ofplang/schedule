@@ -198,10 +198,12 @@ A non-empty list of devices. Each device is an exclusive resource (§4.4) and gr
 spots.
 
 - `id` — unique device id.
-- `spots` — a list of spot names belonging to this device (may be empty). A spot name is unique
-  **within its device**; the globally unique spot id is the qualified form
-  `<device>.<spot>` (see §8). Because neither part contains a `.`, the qualified
-  form parses unambiguously.
+- `spots` (optional) — a list of spot names belonging to this device; may be
+  empty, and may be omitted entirely (equivalent to an empty list — a device that
+  is an exclusive resource but names no spot, occupied only via a mode's
+  `devices`). A spot name is unique **within its device**; the globally unique
+  spot id is the qualified form `<device>.<spot>` (see §8). Because neither part
+  contains a `.`, the qualified form parses unambiguously.
 
 ### 5.3 `transporters`
 
@@ -336,13 +338,19 @@ environment.
 
 ### 6.1 Top level
 
-- `time` (optional) — `unit`; echoed from the environment.
+- `time` (optional) — echoed from the environment. When present it carries a
+  `unit`, required and validated exactly as in the environment (§5.1: a non-empty
+  string); a document may omit `time` entirely.
 - `now` (optional) — the reference time. A plan usually omits it; a replanning
-  status sets it, and the remaining work is scheduled at or after it.
+  status sets it, and the remaining work is scheduled at or after it. A status
+  supplied to replanning must set it (§9.3, `status_missing_now`).
 - `outcome` (optional) — the solver result: `optimal`, `feasible`, `infeasible`,
   or `unknown` (`unknown` = feasible but optimality unproven, e.g. on timeout).
   Present on a plan; absent on a status input.
-- `objective` (optional) — `kind` (`makespan`) and `value`.
+- `objective` (optional) — `kind` (`makespan`) and, optionally, `value`. A plan
+  output always carries `value` (the achieved makespan), but it is not required:
+  a document may give `kind` alone (e.g. to name the objective whose value is to
+  be computed), and there is no value to report when a solve is infeasible.
 - `activities` (required).
 - `placements` (optional) — where Object-bearing material sits at `now` (§6.5).
 - `meta` (optional) — provenance, e.g. `workflow` and `environment` source
@@ -353,8 +361,11 @@ environment.
 - `kind` (required) — `processing` or `transport`.
 - `status` (optional) — `pending`, `running`, or `completed`; default `pending`.
   A plan leaves it out (all activities are pending). A status sets `completed` /
-  `running` on the activities that have started; pending activities are omitted
-  from a status (the scheduler re-derives them from the workflow).
+  `running` on the activities that have started. Pending activities are normally
+  omitted from a status, but a replanning input **may** carry them (with any
+  planned times): the scheduler ignores every `pending` / status-less entry and
+  re-derives that work from the workflow, so a prior plan can be fed straight
+  back in as the next replanning input (its future is simply re-optimised).
 - `start`, `end` (required) — integers in `time.unit`. Planned times on a plan;
   actual times on a `completed` activity; on a `running` activity `start` is
   actual and `end` is the expected finish. On a replan the scheduler does not
@@ -505,9 +516,16 @@ activities:
 ## 7. Execution status
 
 The execution status is the replanning input. It is the **same document as the
-execution plan (§6)**, used with `now` set, a `status` on each started activity,
-and `placements` giving the current material positions; see §6, and the status
-example in §6.7.
+execution plan (§6)**, used with `now` set (required for a replanning input,
+§9.3), a `status` on each started activity, and `placements` giving the current
+material positions; see §6, and the status example in §6.7. Entries that are
+`pending` or carry no `status` are ignored and re-derived from the workflow, so a
+prior plan can be fed back verbatim (§6.2).
+
+Note: the §6.7 status example is *not* normalized — a `running` transport feeds a
+`pending` `assay` — so the current scheduler rejects it as `status_unnormalized`
+(§9.3); such inputs need the normalization step (a later slice) before they can
+be replanned.
 
 ## 8. Identifiers
 
@@ -717,7 +735,9 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `malformed_placement` | a `placements` `object` is not exactly one of `input` or `node` + `port` |
 
 Absent `process` / `mode` / `from_spot` and similar use the shared
-`missing_required_field`; type violations use `wrong_type`.
+`missing_required_field`; type violations use `wrong_type`. When `time` is
+present, its `unit` is validated as in the environment (§5.1): absent →
+`missing_required_field`, empty / non-string → `empty_time_unit`.
 
 ### 10.4 Execution layer (§9.3)
 

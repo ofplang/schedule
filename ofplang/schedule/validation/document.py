@@ -58,11 +58,19 @@ def _check(root: YNode | None, diags: Diagnostics) -> None:
 
 
 def _check_time(node: YNode | None, diags: Diagnostics) -> None:
-    # `time` is an optional echo here; only its shape is checked.
+    # `time` is an optional echo, but when present it must carry a well-formed
+    # `unit`, checked exactly as the environment validator does (§5.1) so the same
+    # field is treated the same in both documents.
     tmap = shape.as_map(node, "time", diags)
     if tmap is None:
         return
     shape.unknown_keys(tmap, TIME_KEYS, "time", diags)
+    unit = tmap.get("unit")
+    if unit is None and "unit" not in tmap:
+        diags.error(errors.MISSING_REQUIRED_FIELD, "time.unit is required", "time.unit", at=tmap)
+        return
+    if not (isinstance(unit, YScalar) and unit.is_str and unit.text.strip()):
+        diags.error(errors.EMPTY_TIME_UNIT, "time.unit must be a non-empty string", "time.unit", at=unit or tmap)
 
 
 def _check_outcome(node: YNode | None, diags: Diagnostics) -> None:
