@@ -29,8 +29,8 @@ def _assert_valid_document(doc, tmp_path):
     assert result.ok, [(d.code, d.path) for d in result.errors]
 
 
-def test_job_sample_plan_is_valid_document(tmp_path):
-    doc = _plan("job_sample")
+def test_simple_plan_is_valid_document(tmp_path):
+    doc = _plan("simple")
     assert doc["outcome"] == "optimal"
     assert doc["objective"] == {"kind": "makespan", "value": 5}
     kinds = [a["kind"] for a in doc["activities"]]

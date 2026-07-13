@@ -32,10 +32,10 @@ python -m ofplang.schedule schedule /tmp/bw/plate_batch.workflow.yaml \
     --env /tmp/bw/plate_batch.env.yaml
 ```
 
-## `job_sample` — minimal source → target
+## `simple` — minimal source → target
 
-- `job_sample.workflow.yaml` — the v0 workflow.
-- `job_sample.env.yaml` — the matching environment definition.
+- `simple.workflow.yaml` — the v0 workflow.
+- `simple.env.yaml` — the matching environment definition.
 
 Ported from `ofp-scheduler`'s `examples/app/job_sample.json`: a `source` step
 produces one `Sample`, a `target` step consumes it, connected by a single

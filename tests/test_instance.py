@@ -20,8 +20,8 @@ def _load(name):
     return wf, env
 
 
-def test_build_job_sample_instance():
-    wf, env = _load("job_sample")
+def test_build_simple_instance():
+    wf, env = _load("simple")
     inst, diags = build_instance(wf, env)
     assert not [d for d in diags.items if d.severity == ERROR]
     assert inst is not None
@@ -53,7 +53,7 @@ def test_build_reformatter_instance():
 
 
 def test_unreachable_arc_is_reported():
-    wf, env = _load("job_sample")
+    wf, env = _load("simple")
     # Drop the only transport entry -> the arc becomes unreachable.
     from dataclasses import replace
 

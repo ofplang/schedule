@@ -9,8 +9,8 @@ from ofplang.schedule.scheduler.envload import load_environment
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
 
-def test_load_job_sample_env():
-    env, result = load_environment(EXAMPLES / "job_sample.env.yaml")
+def test_load_simple_env():
+    env, result = load_environment(EXAMPLES / "simple.env.yaml")
     assert result.ok
     assert env is not None
     assert env.time_unit == "second"

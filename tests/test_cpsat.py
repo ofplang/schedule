@@ -20,8 +20,8 @@ def _instance(name):
     return inst
 
 
-def test_solve_job_sample_makespan_5():
-    sol = solve(_instance("job_sample"))
+def test_solve_simple_makespan_5():
+    sol = solve(_instance("simple"))
     assert sol.outcome == "optimal"
     # source (2) -> transport (1) -> target (2) on the critical path.
     assert sol.makespan == 5

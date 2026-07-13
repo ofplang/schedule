@@ -15,8 +15,8 @@ def _errors(diags):
     return [d for d in diags.items if d.severity == ERROR]
 
 
-def test_parse_job_sample():
-    wf, diags = parse_workflow(EXAMPLES / "job_sample.workflow.yaml")
+def test_parse_simple():
+    wf, diags = parse_workflow(EXAMPLES / "simple.workflow.yaml")
     assert not _errors(diags)
     assert wf is not None
 

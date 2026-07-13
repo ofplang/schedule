@@ -33,9 +33,9 @@ def test_schedule_produces_valid_plan(tmp_path):
     code = cli.main(
         [
             "schedule",
-            str(EXAMPLES / "job_sample.workflow.yaml"),
+            str(EXAMPLES / "simple.workflow.yaml"),
             "--env",
-            str(EXAMPLES / "job_sample.env.yaml"),
+            str(EXAMPLES / "simple.env.yaml"),
             "-o",
             str(out),
         ]
@@ -49,9 +49,9 @@ def test_schedule_stdout_yaml(capsys):
     code = cli.main(
         [
             "schedule",
-            str(EXAMPLES / "job_sample.workflow.yaml"),
+            str(EXAMPLES / "simple.workflow.yaml"),
             "--env",
-            str(EXAMPLES / "job_sample.env.yaml"),
+            str(EXAMPLES / "simple.env.yaml"),
         ]
     )
     assert code == cli.EXIT_OK

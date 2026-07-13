@@ -20,7 +20,7 @@ def _plan(name):
 
 
 def test_device_view_has_device_lanes():
-    html = render_html(_plan("job_sample"), view="device")
+    html = render_html(_plan("simple"), view="device")
     assert "<svg" in html and "</svg>" in html
     assert "station_0" in html and "station_1" in html
     assert "transport (transporter)" in html
@@ -28,7 +28,7 @@ def test_device_view_has_device_lanes():
 
 
 def test_workflow_view_has_nodes_and_arrows():
-    html = render_html(_plan("job_sample"), view="workflow")
+    html = render_html(_plan("simple"), view="workflow")
     assert "SampleSource" in html and "SampleTarget" in html
     assert _MARKER in html  # the arc yields dependency arrows
 
@@ -45,9 +45,9 @@ def test_lane_view_packs_into_fewer_lanes():
     assert _MARKER in lane                         # arcs still traced
 
 
-def test_reformatter_both_views_render():
+def test_reformatter_all_views_render():
     plan = _plan("reformatter")
-    for view in ("station", "workflow"):
+    for view in ("device", "workflow", "lane"):
         html = render_html(plan, view=view)
         assert "<svg" in html
         assert html.strip().startswith("<!doctype html>")
@@ -72,22 +72,22 @@ def test_light_svg_is_powerpoint_safe():
 
 
 def test_dark_svg_is_fixed_and_inline():
-    svg = render_svg(_plan("job_sample"), view="workflow", theme="dark")
+    svg = render_svg(_plan("simple"), view="workflow", theme="dark")
     assert "<style>" not in svg and "var(" not in svg
     assert 'fill="#60a5fa"' in svg  # dark processing colour, painted explicitly
     assert 'x="0" y="0" width=' not in svg  # transparent background
 
 
 def test_auto_svg_uses_css_for_browsers():
-    svg = render_svg(_plan("job_sample"), view="device", theme="auto")
+    svg = render_svg(_plan("simple"), view="device", theme="auto")
     assert "<style>" in svg
     assert "prefers-color-scheme" in svg
 
 
 def test_visualize_cli_writes_html(tmp_path):
     plan = tmp_path / "plan.yaml"
-    assert cli.main(["schedule", str(EXAMPLES / "job_sample.workflow.yaml"),
-                     "--env", str(EXAMPLES / "job_sample.env.yaml"), "-o", str(plan)]) == cli.EXIT_OK
+    assert cli.main(["schedule", str(EXAMPLES / "simple.workflow.yaml"),
+                     "--env", str(EXAMPLES / "simple.env.yaml"), "-o", str(plan)]) == cli.EXIT_OK
     out = tmp_path / "gantt.html"  # .html extension -> HTML format inferred
     assert cli.main(["visualize", str(plan), "--view", "workflow", "-o", str(out)]) == cli.EXIT_OK
     assert "<svg" in out.read_text(encoding="utf-8")
@@ -95,8 +95,8 @@ def test_visualize_cli_writes_html(tmp_path):
 
 def test_visualize_cli_svg_by_extension_is_powerpoint_safe(tmp_path):
     plan = tmp_path / "plan.yaml"
-    assert cli.main(["schedule", str(EXAMPLES / "job_sample.workflow.yaml"),
-                     "--env", str(EXAMPLES / "job_sample.env.yaml"), "-o", str(plan)]) == cli.EXIT_OK
+    assert cli.main(["schedule", str(EXAMPLES / "simple.workflow.yaml"),
+                     "--env", str(EXAMPLES / "simple.env.yaml"), "-o", str(plan)]) == cli.EXIT_OK
     out = tmp_path / "gantt.svg"  # .svg -> SVG; default theme light
     assert cli.main(["visualize", str(plan), "-o", str(out)]) == cli.EXIT_OK
     text = out.read_text(encoding="utf-8")
