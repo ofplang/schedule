@@ -158,8 +158,10 @@ device: the transport activities assigned to a given transporter may not overlap
 in time (one move at a time per transporter). Multiple transporters are multiple
 distinct ids, and each transport activity is assigned to one of them.
 
-- The **initial version uses a single transporter**, so all transports are
-  serialized on it.
+- Any number of transporters is supported. Each is exclusive, so transports on the
+  **same** transporter serialise, while transports on **different** transporters
+  may run concurrently. One transporter is the special case where all transports
+  serialise.
 - The transporter's position and any empty-travel (repositioning) time are **not**
   modelled. Transport duration depends only on the chosen transporter and the
   source/destination spot pair.
@@ -207,7 +209,8 @@ A list of transporters (§4.6). Each entry is an individual transporter:
 
 - `id` — unique transporter id.
 
-The initial version uses a single transporter; the schema permits several.
+One or more transporters may be listed; each transport is assigned to one of them
+(§4.6). A single-transporter list is allowed and serialises all transports.
 
 ### 5.4 `transports`
 

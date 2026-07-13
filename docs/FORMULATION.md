@@ -49,8 +49,7 @@ exclusive (mutual-exclusion applies to each; SPEC §4.4).
 - $L$: device set. A device is an exclusive resource that owns spots and carries
   out work (SPEC §4.4).
 - $L^{\mathrm{tr}} \subseteq L$: transporters — individual devices used for moves
-  (SPEC §4.6). The initial version uses a single transporter, $|L^{\mathrm{tr}}| =
-  1$, with unique element $\ell^{\mathrm{tr}}$.
+  (SPEC §4.6). Each transport activity is assigned to exactly one transporter.
 - $P$: spot set. A spot is a holding/processing position on a device and holds at
   most one item at a time (SPEC §4.4).
 - $M_i$: candidate mode set of processing activity $i$. Each mode fixes the
@@ -79,15 +78,17 @@ Processing and transport:
 - $S_{i,m} = \{\sigma^{\mathrm{in}}_{i,m,k} \mid k \in I_i\}
   \cup \{\sigma^{\mathrm{out}}_{i,m,k} \mid k \in O_i\}$: spots occupied by
   activity $i$ under mode $m$.
-- $d_{p,q} \in \mathbb{Z}_{\ge 0}$: transport duration from spot $p$ to spot $q$.
-  May be treated as symmetric; $d_{p,p} = 0$. With a single transporter the
-  duration depends on the spot pair only; multiple transporters with
-  per-transporter durations $d_{\mathrm{transporter},p,q}$ (SPEC §5.4) are a
-  future extension.
-- $L_{r,m,n} \subseteq L$: devices occupied by the transport activity for arc
-  $r = (i,j)$ under source mode $m \in M_i$ and destination mode $n \in M_j$. It
-  contains at least the source device, the destination device, and the
-  transporter (so typically $|L_{r,m,n}| = 3$; SPEC §4.5).
+- $d_{t,p,q} \in \mathbb{Z}_{\ge 0}$: duration for transporter $t \in
+  L^{\mathrm{tr}}$ to move from spot $p$ to spot $q$ (SPEC §5.4). Durations are
+  per-transporter (transporters may differ in speed). May be treated as symmetric;
+  $d_{t,p,p} = 0$. A missing entry means transporter $t$ **cannot** perform that
+  move — the pair $(t,p,q)$ is then simply excluded from the route choice below
+  (reachability is expressed by presence in the table).
+- $L_{r,m,n,t} \subseteq L$: devices occupied by the transport activity for arc
+  $r = (i,j)$ under source mode $m \in M_i$, destination mode $n \in M_j$, and
+  transporter $t \in L^{\mathrm{tr}}$. It contains the source device, the
+  destination device, and the transporter $t$ (so typically $|L_{r,m,n,t}| = 3$;
+  SPEC §4.5).
 - $k_r^{\mathrm{out}}$, $k_r^{\mathrm{in}}$: the source output port and
   destination input port of arc $r$.
 
@@ -112,8 +113,15 @@ Processing activities:
 
 Transport activities:
 
-- $q_{r,m,n} \in \{0,1\}$: arc $r=(i,j)$'s transport uses source mode
-  $m \in M_i$ and destination mode $n \in M_j$.
+- $q_{r,m,n,t} \in \{0,1\}$: arc $r=(i,j)$'s transport uses source mode
+  $m \in M_i$, destination mode $n \in M_j$, and transporter $t \in
+  L^{\mathrm{tr}}$. A variable exists only for a **feasible** combination — one
+  whose duration $d_{t,\sigma^{\mathrm{out}}_{i,m,k_r^{\mathrm{out}}},\,
+  \sigma^{\mathrm{in}}_{j,n,k_r^{\mathrm{in}}}}$ is defined; infeasible
+  combinations are omitted, which is how reachability enters the model.
+- $z_{r,t} = \sum_{m \in M_i}\sum_{n \in M_j} q_{r,m,n,t} \in \{0,1\}$: whether
+  arc $r$'s transport uses transporter $t$ (derived; the per-transporter resource
+  in §7).
 - $a_r, b_r \in \mathbb{Z}_{\ge 0}$: start and end of transport activity
   $\tau_r$.
 
@@ -133,8 +141,9 @@ $\ell$ (used by §7). Occupancy follows the selected modes:
 
 - a processing activity $i$ occupies the devices $L_{i,m}$ and the spots
   $S_{i,m}$ of its selected mode;
-- a transport activity $\tau_r$ occupies the devices $L_{r,m,n}$ of its selected
-  source/destination mode pair, and its source and destination spots (§6).
+- a transport activity $\tau_r$ occupies the devices $L_{r,m,n,t}$ of its selected
+  source mode, destination mode, and transporter, and its source and destination
+  spots (§6).
 
 Device occupancy spans the whole activity interval (§7); spot occupancy can
 differ per spot and is given interval-by-interval in §6.
@@ -170,25 +179,32 @@ $$
 
 ### 4. Transport route selection
 
-The transport source/destination modes must agree with the endpoint activities'
-mode selection:
+Exactly one feasible route (source mode, destination mode, transporter) is chosen
+per arc, and it must agree with the endpoint activities' mode selection:
 
 $$
-\sum_{n \in M_j} q_{r,m,n} = x_{i,m}, \quad \forall r=(i,j)\in R,\ \forall m \in M_i
+\sum_{n \in M_j}\sum_{t \in L^{\mathrm{tr}}} q_{r,m,n,t} = x_{i,m},
+\quad \forall r=(i,j)\in R,\ \forall m \in M_i
 $$
 $$
-\sum_{m \in M_i} q_{r,m,n} = x_{j,n}, \quad \forall r=(i,j)\in R,\ \forall n \in M_j
+\sum_{m \in M_i}\sum_{t \in L^{\mathrm{tr}}} q_{r,m,n,t} = x_{j,n},
+\quad \forall r=(i,j)\in R,\ \forall n \in M_j
 $$
+
+Summed over all $m,n,t$, these force exactly one $q_{r,m,n,t} = 1$ per arc, so
+each transport selects one transporter. An arc with no feasible combination has
+no route to select and the instance is infeasible (SPEC §9.3 `arc_unreachable`).
 
 ### 5. Transport duration
 
 $$
-b_r = a_r + \sum_{m \in M_i}\sum_{n \in M_j}
-d_{\sigma^{\mathrm{out}}_{i,m,k_r^{\mathrm{out}}},\ \sigma^{\mathrm{in}}_{j,n,k_r^{\mathrm{in}}}}\,
-q_{r,m,n}, \quad \forall r=(i,j) \in R
+b_r = a_r + \sum_{m \in M_i}\sum_{n \in M_j}\sum_{t \in L^{\mathrm{tr}}}
+d_{t,\sigma^{\mathrm{out}}_{i,m,k_r^{\mathrm{out}}},\ \sigma^{\mathrm{in}}_{j,n,k_r^{\mathrm{in}}}}\,
+q_{r,m,n,t}, \quad \forall r=(i,j) \in R
 $$
 
-For a zero-distance transport ($d_{p,p}=0$) one may fix $a_r = b_r = e_i$ by
+The duration depends on the chosen transporter as well as the spot pair. For a
+zero-distance transport ($d_{t,p,p}=0$) one may fix $a_r = b_r = e_i$ by
 convention to avoid time indeterminacy.
 
 ### 6. Spot resource constraint
@@ -216,17 +232,19 @@ spot with each other; an input port and an output port may share a spot.
 
 For each device $\ell \in L$, the activities occupying it are mutually
 non-overlapping. A processing activity occupies its mode's devices $L_{i,m}$ over
-$[s_i,e_i]$; a transport activity occupies $L_{r,m,n}$ over its transport
+$[s_i,e_i]$; a transport activity occupies $L_{r,m,n,t}$ over its transport
 interval $[a_r,b_r]$ (the conservative formulation: source device, destination
-device, and transporter are all held during transport).
+device, and the chosen transporter are all held during transport).
 
 $$
 (end_\alpha \le start_\beta) \lor (end_\beta \le start_\alpha),
 \quad \forall \ell \in L,\ \forall \alpha \ne \beta \in \mathcal{A}_\ell
 $$
 
-Since $|L^{\mathrm{tr}}| = 1$, all transport activities are mutually exclusive
-through the transporter $\ell^{\mathrm{tr}}$.
+A transporter is one of these devices, so the same rule governs it: for each
+transporter $t \in L^{\mathrm{tr}}$, the transports with $z_{r,t} = 1$ are
+mutually non-overlapping (one move at a time per transporter), while transports
+assigned to different transporters may run concurrently.
 
 ### 8. Makespan
 
@@ -238,8 +256,8 @@ $$
 
 Completed and running activities are fixed; pending ones are re-optimised. This
 applies to processing and transport activities alike; the processing case is
-shown below and transport is analogous (its times and route $q_{r,m,n}$ are
-fixed).
+shown below and transport is analogous (its times and route $q_{r,m,n,t}$ — which
+fixes the transporter too — are fixed).
 
 $$
 s_i = \hat{s}_i,\ e_i = \hat{e}_i,\ x_{i,m} = \hat{x}_{i,m},
@@ -284,10 +302,15 @@ above (e.g. big-M ordering) are reference models; CP-SAT expresses the same
 structure more directly with optional intervals.
 
 - Each processing/transport activity is one or more optional intervals whose
-  presence is its mode/route selector.
+  presence is its mode/route selector. A transport's route options enumerate the
+  feasible $(m,n,t)$ combinations; the presence literal of each is $q_{r,m,n,t}$,
+  and `AddExactlyOne` over them realises the §4 route selection.
 - Spot non-overlap: feed each processing interval and each transport's
   source-spot interval $[e_i,b_r]$ and destination-spot interval $[a_r,s_j]$ into
-  the spot's `NoOverlap`.
+  the spot's `NoOverlap`. (Spot assignment depends on the mode pair, not on $t$.)
 - Device non-overlap: feed processing intervals and the transport body interval
-  $[a_r,b_r]$ into each device's `NoOverlap`.
+  $[a_r,b_r]$ into each device's `NoOverlap`. The transporter is a device like any
+  other: route each transport option's body interval into its chosen transporter's
+  `NoOverlap` (present iff $q_{r,m,n,t}$), so each transporter serialises only its
+  own moves while different transporters run in parallel.
 - Makespan: bind $C_{\max}$ as the max over all $e_i$ (e.g. `AddMaxEquality`).
