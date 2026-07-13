@@ -54,6 +54,22 @@ reagent consumption + replenishment in the original context is dropped
 (device-local resources are outside the initial scope). This is the smallest
 end-to-end case, for bringing the scheduler up before the larger `reformatter`.
 
+- `simple.status.yaml` — a **replanning input** (execution status, §7) for this
+  example: the `source` step has finished (`completed`, `[0, 2]`) but nothing
+  else has, replanned at `now = 3`.
+
+```sh
+ofp-schedule schedule examples/simple.workflow.yaml --env examples/simple.env.yaml \
+    --status examples/simple.status.yaml
+```
+
+The scheduler fixes `SampleSource` to its reported times and mode, and
+re-optimises the transport and `SampleTarget` at or after `now`. They slip from
+`[2..5]` to `[3..6]`, so the makespan grows from 5 to 6. The output
+(`outputs/simple.replan.yaml`) carries the full timeline — the fixed
+`completed` history plus the re-optimised future, with `now` echoed — and is
+itself a valid execution document that round-trips as the next status input.
+
 ## `two_arms` — two jobs on a two-transporter fleet
 
 - `two_arms.workflow.yaml` — the v0 workflow.

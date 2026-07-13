@@ -13,6 +13,7 @@ from ofplang.schedule import cli, schedule, validate_document
 from ofplang.schedule.scheduler.plan import to_yaml
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
+OUTPUTS = EXAMPLES / "outputs"
 WORKFLOW = EXAMPLES / "simple.workflow.yaml"
 ENV = EXAMPLES / "simple.env.yaml"
 
@@ -126,3 +127,21 @@ def test_cli_replan_unnormalized_is_invalid(tmp_path):
     status = _status_file(tmp_path, _UNNORMALIZED)
     code = cli.main(["schedule", str(WORKFLOW), "--env", str(ENV), "--status", str(status)])
     assert code == cli.EXIT_INVALID
+
+
+# --- committed example (examples/simple.status.yaml) ----------------------
+#
+# Golden anchor for the tracked replan example, mirroring test_example_makespans
+# for the initial plan and test_plan for the committed output.
+
+
+def test_committed_simple_status_replans_to_6():
+    report = schedule(WORKFLOW, ENV, status_path=EXAMPLES / "simple.status.yaml")
+    assert report.outcome == "optimal"
+    assert report.makespan == 6
+
+
+def test_committed_replan_output_is_valid_document():
+    path = OUTPUTS / "simple.replan.yaml"
+    assert path.is_file(), f"missing committed replan: {path}"
+    assert validate_document(path).ok

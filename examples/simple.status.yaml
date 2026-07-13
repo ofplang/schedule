@@ -1,0 +1,27 @@
+# A replanning input (execution status, SPEC §7) for the `simple` example.
+#
+# Same document schema as a plan (§6), used with `now` set and a `status` on the
+# activities that have started. Here the `source` step has finished but nothing
+# else has: we replan the remaining transport and `target` at now = 3.
+#
+#   ofp-schedule schedule simple.workflow.yaml --env simple.env.yaml \
+#       --status simple.status.yaml
+#
+# The scheduler fixes `SampleSource` to its reported [0, 2] and re-optimises the
+# transport and `SampleTarget` at or after now (they slip from [2..5] to [3..6],
+# so the makespan grows 5 -> 6). Pending activities are omitted here; the
+# scheduler re-derives them from the workflow. No `placements` are needed: the
+# produced Sample's position is implied by the completed source and the pending
+# transport that will move it (§6.5).
+time:
+  unit: second
+now: 3
+activities:
+  - kind: processing
+    status: completed
+    start: 0
+    end: 2
+    process: source
+    mode: '0'
+    node:
+      - SampleSource
