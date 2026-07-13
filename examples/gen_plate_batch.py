@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a parametric "basic workflow" as an ofplang v0 workflow YAML plus its
+"""Generate a parametric "plate batch" as an ofplang v0 workflow YAML plus its
 matching execution environment.
 
 Ported (structure only, no benchmarking) from ofp-scheduler's
@@ -19,8 +19,8 @@ spreads parallel branches over via mode selection. Stages are `elidable_iso` (a
 single `plate` port passes through).
 
 Usage:
-    python examples/gen_basic_workflow.py --branches 2 --repeats 2 --out-dir examples/outputs
-    python examples/gen_basic_workflow.py --branches 3 --repeats 2   # both docs to stdout
+    python examples/gen_plate_batch.py --branches 2 --repeats 2 --out-dir examples/outputs
+    python examples/gen_plate_batch.py --branches 3 --repeats 2   # both docs to stdout
 """
 
 from __future__ import annotations
@@ -207,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repeats", type=int, default=2, help="stage-chain repeats per branch")
     parser.add_argument("--thermal-cycler-pool", type=int, default=_DEFAULT_THERMAL_CYCLER_POOL, help="thermal_cycle device count (environment only)")
     parser.add_argument("--out-dir", metavar="DIR", help="write <name>.workflow.yaml and <name>.env.yaml here (default: stdout)")
-    parser.add_argument("--name", default="basic_workflow", help="base file name when --out-dir is given")
+    parser.add_argument("--name", default="plate_batch", help="base file name when --out-dir is given")
     args = parser.parse_args(argv)
 
     workflow = build_workflow(args.branches, args.repeats)

@@ -7,9 +7,9 @@ inputs used to drive and eyeball the scheduler.
 Generated artifacts (a produced workflow, rendered charts) live under
 `outputs/`.
 
-## `basic_workflow` — a parametric generator (workflow + environment)
+## `plate_batch` — a parametric generator (workflow + environment)
 
-- `gen_basic_workflow.py` — generates **both** a v0 workflow and a matching
+- `gen_plate_batch.py` — generates **both** a v0 workflow and a matching
   environment. One `source` fans out to `--branches` branches, each running
   `source → (peal → dispense → seal → thermal_cycle → rotate) × --repeats`, and
   one `sink` gathers them. Ported (structure only) from ofp-scheduler's
@@ -23,13 +23,13 @@ Generated artifacts (a produced workflow, rendered charts) live under
   selection. Stages are `elidable_iso`
   (a single `plate` port passes through); the source creates each plate and the
   sink consumes it.
-- `outputs/basic_workflow.{workflow,env}.yaml` — a sample pair generated with
+- `outputs/plate_batch.{workflow,env}.yaml` — a sample pair generated with
   `--branches 2 --repeats 2` (plus its rendered charts).
 
 ```sh
-python examples/gen_basic_workflow.py --branches 3 --repeats 2 --out-dir /tmp/bw
-python -m ofplang.schedule schedule /tmp/bw/basic_workflow.workflow.yaml \
-    --env /tmp/bw/basic_workflow.env.yaml
+python examples/gen_plate_batch.py --branches 3 --repeats 2 --out-dir /tmp/bw
+python -m ofplang.schedule schedule /tmp/bw/plate_batch.workflow.yaml \
+    --env /tmp/bw/plate_batch.env.yaml
 ```
 
 ## `job_sample` — minimal source → target

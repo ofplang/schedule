@@ -19,7 +19,7 @@ _STAGES = ["peal", "dispense", "seal", "thermal_cycle", "rotate"]
 
 
 def _generator():
-    spec = importlib.util.spec_from_file_location("gen_basic_workflow", EXAMPLES / "gen_basic_workflow.py")
+    spec = importlib.util.spec_from_file_location("gen_plate_batch", EXAMPLES / "gen_plate_batch.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -56,7 +56,7 @@ def test_generator_is_parametric(tmp_path):
 
 
 def test_committed_sample_schedules():
-    report = schedule(OUTPUTS / "basic_workflow.workflow.yaml", OUTPUTS / "basic_workflow.env.yaml")
+    report = schedule(OUTPUTS / "plate_batch.workflow.yaml", OUTPUTS / "plate_batch.env.yaml")
     assert report.outcome == "optimal"
 
 
