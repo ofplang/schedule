@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: unknown_device}
+notes: A mode's `devices` names an undefined device, with no spot referencing it; the mode-devices themselves must be defined (§5.5 / §9.1).

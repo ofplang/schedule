@@ -251,6 +251,8 @@ def _check_mode(node: YNode, base: str, devices: dict[str, set[str]], diags: Dia
             diags.error(errors.INVALID_IDENTIFIER, f"invalid mode id {idn.value!r}", shape.join(base, "id"), at=idn)
 
     # Optional devices list -> the set this mode occupies (for spot_device checks).
+    # Each entry must be a defined device (§5.5); an undefined one is caught here
+    # even when no spot references it (a device the mode merely occupies).
     mode_devices: set[str] | None = None
     dev_node = mmap.get("devices")
     if dev_node is not None:
@@ -258,10 +260,13 @@ def _check_mode(node: YNode, base: str, devices: dict[str, set[str]], diags: Dia
         if dseq is not None:
             mode_devices = set()
             for k, dv in enumerate(dseq.items):
-                if isinstance(dv, YScalar) and dv.is_str:
-                    mode_devices.add(dv.value)
-                else:
-                    diags.error(errors.WRONG_TYPE, "device id must be a string", shape.join(base, f"devices[{k}]"), at=dv)
+                path = shape.join(base, f"devices[{k}]")
+                if not (isinstance(dv, YScalar) and dv.is_str):
+                    diags.error(errors.WRONG_TYPE, "device id must be a string", path, at=dv)
+                    continue
+                mode_devices.add(dv.value)
+                if dv.value not in devices:
+                    diags.error(errors.UNKNOWN_DEVICE, f"unknown device {dv.value!r}", path, at=dv)
 
     # Required positive-integer duration.
     dur = shape.require(mmap, "duration", base, diags)

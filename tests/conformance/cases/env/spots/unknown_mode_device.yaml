@@ -1,0 +1,9 @@
+time: {unit: second}
+devices:
+- id: reader_0
+  spots: [stage]
+processes:
+  compute:
+    modes:
+    - devices: [ghost]
+      duration: 5

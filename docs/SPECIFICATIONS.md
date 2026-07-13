@@ -593,9 +593,10 @@ given a valid v0 workflow.
   transport `duration` is a non-negative YAML integer; `time.unit` is a non-empty
   string; if `objective` is present, its `kind` is `makespan`.
 - Env-internal references: each `transports.transporter` is a defined transporter;
-  every `from` / `to` and every `input_spots` / `output_spots` value is a
-  well-formed qualified spot `<device>.<spot>` (exactly one `.`) naming a defined
-  device and a spot defined on it.
+  every entry of a mode's `devices` is a defined device; every `from` / `to` and
+  every `input_spots` / `output_spots` value is a well-formed qualified spot
+  `<device>.<spot>` (exactly one `.`) naming a defined device and a spot defined on
+  it.
 - Duplicate detection: duplicate ids within a kind (two devices, two transporters,
   or two spots on one device sharing an id); duplicate `transports` entries for the
   same `(transporter, from, to)`.
@@ -714,7 +715,7 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `nonpositive_duration` | a processing mode `duration` is not positive |
 | `empty_time_unit` | `time.unit` is empty or not a string |
 | `unknown_transporter` | `transports.transporter` is not a defined transporter |
-| `unknown_device` | the device part of a qualified spot is not defined |
+| `unknown_device` | a mode's `devices` entry, or the device part of a qualified spot, is not a defined device |
 | `unknown_spot` | the spot part of a qualified spot is not defined on that device |
 | `duplicate_transport_entry` | a `(transporter, from, to)` triple repeats |
 | `input_spots_share_spot` | two input ports of a mode use the same spot |
