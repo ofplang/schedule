@@ -1,8 +1,8 @@
 # ofplang.schedule — Specification (draft)
 
 > **Status: draft.** This document captures the current design. The scheduling
-> model and the execution environment schema are settled; the execution plan and
-> execution status schemas are still to be defined (see §6, §7).
+> model, the execution environment schema (§5), and the execution document schema
+> that serves as both plan and status (§6, §7) are settled.
 
 ## 1. Overview
 
@@ -56,7 +56,7 @@ In scope:
 | --- | --- | --- |
 | ofplang workflow YAML | The logical DAG (what to do; data / Object flow) | Logical, invariant |
 | Execution environment YAML (§5) | Where / how long (capabilities, durations, transport) | Physical, static, reusable |
-| Execution status YAML (§7) | What has happened (actuals, fixed state); replanning only | Dynamic |
+| Execution status YAML (§6, §7) | What has happened (actuals, fixed state); replanning only | Dynamic |
 | **Execution plan YAML (§6)** | Output: what runs where and when | Result |
 
 The initial state at the start of a run (device positions, where material sits)
@@ -296,144 +296,175 @@ objective:
   kind: makespan
 ```
 
-## 6. Execution plan schema
+## 6. Execution document (plan and status)
 
-The execution plan is the scheduler's output: a list of timed activities plus
-top-level metadata. Times are non-negative integers in `time.unit`.
+The scheduler's output (an **execution plan**) and the replanning input (an
+**execution status**) share one schema — an *execution document*. A plan and a
+status are the same shape filled differently:
 
-An activity is **action-first**: its main fields say what is actually done (when,
-and the concrete operation), while the workflow provenance is attached as a
-supplementary field. The two kinds are parallel:
+- a **plan** carries a solved schedule (every activity `pending`, with its planned
+  times and assignments);
+- a **status** carries what has happened so far (some activities `completed` or
+  `running`, with actual times) plus the current material placement.
 
-- A **processing** activity's main fields are `process` (the operation) and `mode`
-  (how it runs). Its provenance is `node` — the specific invocation in the
-  workflow.
-- A **transport** activity's main fields are `from_spot`, `to_spot`, and
-  `transporter` (the move and the mover). Its provenance is `arc` — the
-  Object-bearing arc it serves.
+Fields that appear in only one use are optional. Times are non-negative integers
+in `time.unit`.
 
-The two kinds of supplementary field differ in nature:
-
-- `node` and `arc` are **provenance** and **cannot be reconstructed from the other
-  files**. The workflow lists every node and arc, but which one a given activity
-  corresponds to is recorded only here — a `process` + `mode` does not fix which
-  `node` (a process may be invoked at several nodes), just as a spot pair +
-  transporter does not fix which `arc`. So each is the activity's identity for
-  replanning (§6.4); a plan that will be replanned must carry it.
-- `devices`, `input_spots`, and `output_spots` are a **derivable echo**: they can
-  be reconstructed in full from `process` + `mode` + the environment, and are
-  present only for self-containment. Omitting them loses nothing.
+An activity is **action-first**: its main fields say what is actually done (the
+concrete operation and when), and the workflow provenance is carried alongside.
+`node` (processing) and `arc` (transport) are **required**: they map an activity to
+its workflow position, which is the identity used to line a status up against a
+plan (§6.6) and cannot be reconstructed from the other files. The derivable echo
+(`devices`, spots) may be omitted — it follows from `process` + `mode` + the
+environment.
 
 ### 6.1 Top level
 
-- `time` (optional) — `unit`; derivable from the environment, echoed for
-  self-containment.
-- `status` (required) — one of `optimal`, `feasible`, `infeasible`, `unknown`
-  (`unknown` = a feasible plan whose optimality was not proven, e.g. on timeout).
-- `objective` (required) — `kind` (`makespan`) and `value` (for makespan, the
-  makespan).
-- `activities` (required) — the scheduled activities.
+- `time` (optional) — `unit`; echoed from the environment.
+- `now` (optional) — the reference time. A plan usually omits it; a replanning
+  status sets it, and the remaining work is scheduled at or after it.
+- `outcome` (optional) — the solver result: `optimal`, `feasible`, `infeasible`,
+  or `unknown` (`unknown` = feasible but optimality unproven, e.g. on timeout).
+  Present on a plan; absent on a status input.
+- `objective` (optional) — `kind` (`makespan`) and `value`.
+- `activities` (required).
+- `placements` (optional) — where Object-bearing material sits at `now` (§6.5).
 - `meta` (optional) — provenance, e.g. `workflow` and `environment` source
   references.
 
-### 6.2 Processing activity
+### 6.2 Activity — common fields
 
-Main (required):
+- `kind` (required) — `processing` or `transport`.
+- `status` (optional) — `pending`, `running`, or `completed`; default `pending`.
+  A plan leaves it out (all activities are pending). A status sets `completed` /
+  `running` on the activities that have started; pending activities are omitted
+  from a status (the scheduler re-derives them from the workflow).
+- `start`, `end` (required) — integers in `time.unit`. Planned times on a plan;
+  actual times on a `completed` activity; on a `running` activity `start` is
+  actual and `end` is the expected finish.
 
-- `kind: processing`.
-- `start`, `end` — integers in `time.unit`.
-- `process` — the atomic process definition invoked.
-- `mode` — the selected mode id (process-local, §5.5; the auto-assigned id if the
-  mode had none). Resolved against `process`.
+### 6.3 Processing activity
 
-Supplementary (optional):
+- `kind: processing`; plus `status` / `start` / `end` (§6.2).
+- `process` (required) — the atomic process definition invoked.
+- `mode` (required) — the selected mode id (process-local, §5.5; the auto-assigned
+  id if the mode had none), resolved against `process`.
+- `node` (required) — provenance / identity: the node path, i.e. node ids from the
+  entry composite's body down to the atomic node invoked, as a list (e.g.
+  `[brew, heat]`); a single-level workflow yields a one-element list.
+- `devices`, `input_spots`, `output_spots` (optional) — derivable echo of the
+  mode's devices and qualified spot mappings. A Pure-Data-only activity has none.
 
-- `node` — provenance: the node path, i.e. the node ids from the entry composite's
-  body down to the atomic node invoked, as a list (e.g. `[brew, heat]`); a
-  single-level workflow yields a one-element list. Not derivable from `process` +
-  `mode`; it is the activity's identity for replanning (§6.4) when present.
-- `devices`, `input_spots` / `output_spots` — derivable echo of the mode's devices
-  and qualified spot mappings (from `process` + `mode` + the environment).
+### 6.4 Transport activity
 
-A Pure-Data-only processing activity has no device or spot, so its only
-supplementary field is `node`.
-
-### 6.3 Transport activity
-
-Main (required):
-
-- `kind: transport`.
-- `start`, `end` — the transport interval `[start, end]`.
-- `from_spot` — the qualified source spot `<device>.<spot>`.
-- `to_spot` — the qualified destination spot.
-- `transporter` — the selected transporter id. The transporter is the only device
-  the activity occupies (§4.5), so there is no separate `devices` field.
-
-Supplementary (optional; provenance):
-
-- `arc` — the Object-bearing arc served: `from` / `to`, each `{ node: <path>,
-  port: <name> }`. When present it is the activity's identity for replanning
-  (§6.4).
-
-### 6.4 Identity for replanning
-
-The execution status (§7) matches plan activities by their workflow provenance: a
-processing activity by its `node`, a transport activity by its `arc`. Both are
-supplementary, so include them when the plan will be replanned. The main fields
-are not identities — a process/mode or a spot/transporter combination does not
-distinguish repeated occurrences, and the times change from one plan to the next.
+- `kind: transport`; plus `status` / `start` / `end` (§6.2).
+- `from_spot` (required) — the qualified source spot `<device>.<spot>`.
+- `to_spot` (required) — the qualified destination spot.
+- `transporter` (required) — the selected transporter id (the only device it
+  occupies, §4.5; there is no separate `devices` field).
+- `arc` (required) — provenance / identity: the Object-bearing arc served, as
+  `from` / `to`, each `{ node: <path>, port: <name> }`.
 
 Durations are not stored (`end - start`).
 
-### 6.5 Example
+### 6.5 Placements
+
+`placements` records where Object-bearing material sits at `now` when that is not
+already implied by the activities — chiefly the workflow's entry inputs at the
+start of a run. Each entry is:
+
+- `object` — the material: `{ input: <name> }` for an entry input of the workflow,
+  or `{ node: <path>, port: <name> }` for the output of a produced Object.
+- `spot` — the qualified spot `<device>.<spot>` it occupies.
+
+### 6.6 Identity and replanning
+
+A status is matched against the workflow (and any prior plan) by each activity's
+provenance: a processing activity by its `node`, a transport activity by its
+`arc`. On a replan the scheduler fixes `completed` and `running` activities to
+their reported times and assignments, takes material positions from `placements`,
+and re-optimises the rest at or after `now`. The main fields are not identities —
+a process/mode or a spot/transporter combination does not distinguish repeated
+occurrences, and the times change from one plan to the next.
+
+### 6.7 Examples
+
+The same schema, filled two ways.
+
+**As a plan** (solver output):
 
 ```yaml
-time:
-  unit: second
-
-status: optimal
+outcome: optimal
 objective:
   kind: makespan
   value: 80
+time:
+  unit: second
 
 activities:
   - kind: processing
     start: 0
     end: 60
-    process: heat_sample                      # main
+    process: heat_sample
     mode: fast
-    node: [brew, heat]                        # supplementary provenance (identity)
-    devices: [reader_0]                       # supplementary echo
+    node: [brew, heat]                        # required provenance / identity
+    devices: [reader_0]                       # optional echo
     input_spots:  { plate: reader_0.stage }
     output_spots: { plate: reader_0.stage }
-
-  - kind: processing                          # Pure Data compute: no device/spot
-    start: 60
-    end: 65
-    process: compute_mean                     # main
-    mode: mean_v1
-    node: [compute]                           # supplementary provenance
 
   - kind: transport
     start: 60
     end: 80
-    from_spot: reader_0.stage                 # main
+    from_spot: reader_0.stage
     to_spot:   incubator_0.slot_0
     transporter: arm_0
-    arc:                                      # supplementary provenance
+    arc:                                      # required provenance / identity
       from: { node: [brew, heat], port: plate }
       to:   { node: [assay],      port: sample }
 
-meta:                                         # optional provenance
+meta:
   workflow: workflow.yaml
   environment: env.yaml
 ```
 
-## 7. Execution status schema
+**As a status** (replanning input):
 
-*Forthcoming.* This is the replanning input: completed and running activities with
-their actual times and assignments, plus the initial state (device positions,
-where material currently sits). It will be aligned with the execution plan schema.
+```yaml
+time:
+  unit: second
+now: 70
+
+activities:
+  - kind: processing
+    status: completed
+    start: 0
+    end: 60
+    process: heat_sample
+    mode: fast
+    node: [brew, heat]
+
+  - kind: transport
+    status: running
+    start: 60
+    end: 80                                   # expected finish
+    from_spot: reader_0.stage
+    to_spot:   incubator_0.slot_0
+    transporter: arm_0
+    arc:
+      from: { node: [brew, heat], port: plate }
+      to:   { node: [assay],      port: sample }
+
+placements:                                   # current material positions
+  - object: { input: batch }
+    spot: hotel_0.h0
+```
+
+## 7. Execution status
+
+The execution status is the replanning input. It is the **same document as the
+execution plan (§6)**, used with `now` set, a `status` on each started activity,
+and `placements` giving the current material positions; see §6, and the status
+example in §6.7.
 
 ## 8. Identifiers
 
