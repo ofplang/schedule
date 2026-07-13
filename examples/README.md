@@ -7,26 +7,28 @@ inputs used to drive and eyeball the scheduler.
 Generated artifacts (a produced workflow, rendered charts) live under
 `outputs/`.
 
-## `basic_workflow` — a parametric generator + shared environment
+## `basic_workflow` — a parametric generator (workflow + environment)
 
-- `gen_basic_workflow.py` — generates a v0 workflow: `--branches` independent
-  chains, each `source → (peal → dispense → seal → thermal_cycle → rotate) ×
-  --repeats → sink`. Ported (structure only) from ofp-scheduler's
+- `gen_basic_workflow.py` — generates **both** a v0 workflow and a matching
+  environment. One `source` fans out to `--branches` branches, each running
+  `source → (peal → dispense → seal → thermal_cycle → rotate) × --repeats`, and
+  one `sink` gathers them. Ported (structure only) from ofp-scheduler's
   `basic_workflow_demo.py`.
-- `basic_workflow.env.yaml` — the shared environment. It does **not** depend on
-  the branch/repeat count: every generated node invokes one of a fixed set of
-  process definitions. Single-device stages (peal/dispense/seal/rotate, and the
-  loader used by source/sink) are contended across branches; `thermal_cycle` has
-  a two-device pool, so parallel branches cycle at once via mode selection. Every
-  process has a single `plate` port; the stages are `elidable_iso` (the plate
-  passes through unchanged), while the source creates the plate and the sink
-  consumes it.
-- `outputs/basic_workflow.workflow.yaml` — a sample generated with
-  `--branches 2 --repeats 2`.
+- The source has one output port per branch and the sink one input port per
+  branch, so their signatures — and the loader's spots — scale with the branch
+  count; that is why the environment is generated alongside the workflow rather
+  than shared. Single-device stages (peal/dispense/seal/rotate) are contended
+  across branches; `thermal_cycle` has a fixed two-device pool the scheduler
+  spreads parallel branches over via mode selection. Stages are `elidable_iso`
+  (a single `plate` port passes through); the source creates each plate and the
+  sink consumes it.
+- `outputs/basic_workflow.{workflow,env}.yaml` — a sample pair generated with
+  `--branches 2 --repeats 2` (plus its rendered charts).
 
 ```sh
-python examples/gen_basic_workflow.py --branches 3 --repeats 2 -o wf.yaml
-python -m ofplang.schedule schedule wf.yaml --env examples/basic_workflow.env.yaml
+python examples/gen_basic_workflow.py --branches 3 --repeats 2 --out-dir /tmp/bw
+python -m ofplang.schedule schedule /tmp/bw/basic_workflow.workflow.yaml \
+    --env /tmp/bw/basic_workflow.env.yaml
 ```
 
 ## `job_sample` — minimal source → target

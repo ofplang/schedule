@@ -1,87 +1,87 @@
 #!/usr/bin/env python3
-"""Generate a parametric "basic workflow" as an ofplang v0 workflow YAML.
+"""Generate a parametric "basic workflow" as an ofplang v0 workflow YAML plus its
+matching execution environment.
 
 Ported (structure only, no benchmarking) from ofp-scheduler's
-`examples/basic_workflow_demo.py`: a set of independent branches, each running a
-chain of stages repeated `repeats` times —
+`examples/basic_workflow_demo.py`: a single source fans out to `--branches`
+branches, each running a chain of stages repeated `--repeats` times, and a single
+sink gathers them back —
 
-    source -> [peal -> dispense -> seal -> thermal_cycle -> rotate] x repeats -> sink
+    source ={plate_b}=> [peal -> dispense -> seal -> thermal_cycle -> rotate] x repeats =>{plate_b}= sink
 
-Every process has a fixed signature (a single Object-bearing port named
-`plate`), so one shared execution environment (examples/basic_workflow.env.yaml)
-works for any branch/repeat count. The stages are `elidable_iso` (input and
-output share the `plate` name, so the plate passes through with its identity
-preserved), while the source creates the plate and the sink consumes it. Branches contend on the shared single-device stages
-(peal/dispense/seal/rotate and the loader); the environment gives thermal_cycle a
-small device pool, so the scheduler can run those steps in parallel via mode
-selection.
+The source has one output port per branch and the sink one input port per branch,
+so their signatures — and the loader's spots — scale with the branch count. The
+environment therefore cannot be a single fixed file; this script emits a matching
+`env.yaml` alongside the `workflow.yaml`. The single-device stages
+(peal/dispense/seal/rotate) are contended across branches, while thermal_cycle has
+a fixed two-device pool the scheduler spreads parallel branches over via mode
+selection. Stages are `elidable_iso` (a single `plate` port passes through).
 
 Usage:
-    python examples/gen_basic_workflow.py --branches 2 --repeats 2 -o out.yaml
-    python examples/gen_basic_workflow.py            # 2x2 to stdout
+    python examples/gen_basic_workflow.py --branches 2 --repeats 2 --out-dir examples/outputs
+    python examples/gen_basic_workflow.py --branches 3 --repeats 2   # both docs to stdout
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 import yaml
 
-# Per-repeat stage chain and each stage's process definition name. The node id
-# base is the process name (kept short); `thermal_cycle` nodes are named `thermal`.
+# Per-repeat stage chain; each stage's process definition name equals the list
+# entry. Node id base (`thermal_cycle` nodes are named `thermal`), executing
+# device, and processing duration:
 _STAGES = ["peal", "dispense", "seal", "thermal_cycle", "rotate"]
 _NODE_BASE = {"thermal_cycle": "thermal"}
+_STAGE_DEVICE = {"peal": "peal", "dispense": "dispense", "seal": "seal", "rotate": "rotate"}
+_STAGE_DURATION = {"peal": 1, "dispense": 3, "seal": 1, "thermal_cycle": 10, "rotate": 1}
+_THERMAL_POOL = 2  # fixed pool size for thermal_cycle (parallel via mode selection)
 
 
-def _atomic(inputs: list[str], outputs: list[str]) -> dict:
-    """An atomic Plate process: consumes every input, creates every output.
-    Used for the pure source (creates a plate) and sink (consumes it)."""
-    proc: dict = {"kind": "atomic"}
-    if inputs:
-        proc["inputs"] = {name: {"type": "Plate", "phase": "data"} for name in inputs}
-    if outputs:
-        proc["outputs"] = {name: {"type": "Plate", "phase": "data"} for name in outputs}
-    objects: dict = {}
-    if inputs:
-        objects["consume"] = [f"inputs.{name}" for name in inputs]
-    if outputs:
-        objects["create"] = [f"outputs.{name}" for name in outputs]
-    proc["objects"] = objects
-    return proc
+def _plate_ports(*names: str) -> dict:
+    return {name: {"type": "Plate", "phase": "data"} for name in names}
 
 
-def _iso_stage() -> dict:
-    """A stage that passes the same plate through unchanged: `elidable_iso`
-    (identity-preserving), not consume+create. The input and output share the
-    port name `plate`, so v0 infers the same-name identity map and no `objects`
-    section is written (§15)."""
-    return {
-        "kind": "atomic",
-        "traits": ["elidable_iso"],
-        "inputs": {"plate": {"type": "Plate", "phase": "data"}},
-        "outputs": {"plate": {"type": "Plate", "phase": "data"}},
-    }
+# --------------------------------------------------------------------------
+# Workflow
+# --------------------------------------------------------------------------
 
 
 def build_workflow(branches: int, repeats: int) -> dict:
-    """Build the v0 workflow document for `branches` chains of length `repeats`."""
+    """Build the v0 workflow: one source/sink with a port per branch, and
+    `branches` independent stage chains of length `repeats`."""
     if branches < 1 or repeats < 1:
         raise ValueError("branches and repeats must be >= 1")
 
-    # Fixed process definitions (independent of branches/repeats).
+    branch_ports = [f"plate_{b}" for b in range(1, branches + 1)]
     processes: dict = {
-        "source": _atomic([], ["plate"]),
-        "sink": _atomic(["plate"], []),
+        # Source creates one plate per branch; sink consumes them all.
+        "source": {
+            "kind": "atomic",
+            "outputs": _plate_ports(*branch_ports),
+            "objects": {"create": [f"outputs.{p}" for p in branch_ports]},
+        },
+        "sink": {
+            "kind": "atomic",
+            "inputs": _plate_ports(*branch_ports),
+            "objects": {"consume": [f"inputs.{p}" for p in branch_ports]},
+        },
     }
+    # Stages pass the plate through unchanged: elidable_iso on a single `plate`
+    # port (v0 infers the same-name identity map, so no `objects` section).
     for stage in _STAGES:
-        processes[stage] = _iso_stage()
+        processes[stage] = {
+            "kind": "atomic",
+            "traits": ["elidable_iso"],
+            "inputs": _plate_ports("plate"),
+            "outputs": _plate_ports("plate"),
+        }
 
-    # Composite body: one independent chain per branch.
-    nodes: list[dict] = []
+    nodes: list[dict] = [{"id": "source", "process": "source"}]
     for b in range(1, branches + 1):
-        nodes.append({"id": f"source_b{b}", "process": "source"})
-        prev = f"source_b{b}"
+        prev_node, prev_port = "source", f"plate_{b}"
         for r in range(1, repeats + 1):
             for stage in _STAGES:
                 base = _NODE_BASE.get(stage, stage)
@@ -90,17 +90,16 @@ def build_workflow(branches: int, repeats: int) -> dict:
                     {
                         "id": node_id,
                         "process": stage,
-                        "state": {"plate": {"from": f"{prev}.plate"}},
+                        "state": {"plate": {"from": f"{prev_node}.{prev_port}"}},
                     }
                 )
-                prev = node_id
-        nodes.append(
-            {
-                "id": f"sink_b{b}",
-                "process": "sink",
-                "state": {"plate": {"from": f"{prev}.plate"}},
-            }
-        )
+                prev_node, prev_port = node_id, "plate"
+    # One sink node gathering each branch's last output.
+    sink_state = {
+        f"plate_{b}": {"from": f"rotate_b{b}_r{repeats}.plate"}
+        for b in range(1, branches + 1)
+    }
+    nodes.append({"id": "sink", "process": "sink", "state": sink_state})
 
     processes["main"] = {
         "kind": "composite",
@@ -108,7 +107,6 @@ def build_workflow(branches: int, repeats: int) -> dict:
         "outputs": {},
         "body": {"nodes": nodes, "returns": {}},
     }
-
     return {
         "spec_version": "0.0",
         "types": {"Plate": {"domain": "object"}},
@@ -117,20 +115,109 @@ def build_workflow(branches: int, repeats: int) -> dict:
     }
 
 
+# --------------------------------------------------------------------------
+# Environment (matches the workflow's branch count)
+# --------------------------------------------------------------------------
+
+
+def build_env(branches: int) -> dict:
+    """Build the execution environment for `branches` branches. The loader (used
+    by source/sink) gets one spot per branch; stage devices and the thermal pool
+    are fixed."""
+    if branches < 1:
+        raise ValueError("branches must be >= 1")
+
+    loader_spots = [f"s{b}" for b in range(1, branches + 1)]
+    devices = [{"id": "loader", "spots": loader_spots}]
+    for name in ("peal", "dispense", "seal", "rotate"):
+        devices.append({"id": name, "spots": ["core"]})
+    for k in range(1, _THERMAL_POOL + 1):
+        devices.append({"id": f"thermal_cycle_{k}", "spots": ["core"]})
+
+    def move(frm: str, to: str) -> dict:
+        return {"transporter": "transport", "from": frm, "to": to, "duration": 1}
+
+    transports: list[dict] = []
+    for b in range(1, branches + 1):
+        transports.append(move(f"loader.s{b}", "peal.core"))    # source -> first stage
+        transports.append(move("rotate.core", f"loader.s{b}"))  # last stage -> sink
+    transports += [move("peal.core", "dispense.core"), move("dispense.core", "seal.core")]
+    for k in range(1, _THERMAL_POOL + 1):
+        transports.append(move("seal.core", f"thermal_cycle_{k}.core"))
+        transports.append(move(f"thermal_cycle_{k}.core", "rotate.core"))
+    transports.append(move("rotate.core", "peal.core"))         # next repeat
+
+    def stage_mode(device: str, duration: int) -> dict:
+        return {
+            "devices": [device],
+            "duration": duration,
+            "input_spots": {"plate": f"{device}.core"},
+            "output_spots": {"plate": f"{device}.core"},
+        }
+
+    processes: dict = {
+        "source": {
+            "modes": [
+                {
+                    "devices": ["loader"],
+                    "duration": 1,
+                    "output_spots": {f"plate_{b}": f"loader.s{b}" for b in range(1, branches + 1)},
+                }
+            ]
+        },
+        "sink": {
+            "modes": [
+                {
+                    "devices": ["loader"],
+                    "duration": 1,
+                    "input_spots": {f"plate_{b}": f"loader.s{b}" for b in range(1, branches + 1)},
+                }
+            ]
+        },
+    }
+    for stage in ("peal", "dispense", "seal", "rotate"):
+        processes[stage] = {"modes": [stage_mode(_STAGE_DEVICE[stage], _STAGE_DURATION[stage])]}
+    processes["thermal_cycle"] = {
+        "modes": [stage_mode(f"thermal_cycle_{k}", _STAGE_DURATION["thermal_cycle"]) for k in range(1, _THERMAL_POOL + 1)]
+    }
+
+    return {
+        "time": {"unit": "second"},
+        "devices": devices,
+        "transporters": [{"id": "transport"}],
+        "transports": transports,
+        "processes": processes,
+        "objective": {"kind": "makespan"},
+    }
+
+
+def _dump(doc: dict) -> str:
+    return yaml.safe_dump(doc, sort_keys=False, allow_unicode=True)
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Generate a basic-workflow v0 YAML.")
+    parser = argparse.ArgumentParser(description="Generate a basic-workflow v0 YAML and its environment.")
     parser.add_argument("--branches", type=int, default=2, help="number of parallel branches")
     parser.add_argument("--repeats", type=int, default=2, help="stage-chain repeats per branch")
-    parser.add_argument("-o", "--out", metavar="FILE", help="write here (default: stdout)")
+    parser.add_argument("--out-dir", metavar="DIR", help="write <name>.workflow.yaml and <name>.env.yaml here (default: stdout)")
+    parser.add_argument("--name", default="basic_workflow", help="base file name when --out-dir is given")
     args = parser.parse_args(argv)
 
-    doc = build_workflow(args.branches, args.repeats)
-    text = yaml.safe_dump(doc, sort_keys=False, allow_unicode=True)
-    if args.out:
-        with open(args.out, "w", encoding="utf-8") as f:
-            f.write(text)
+    workflow = build_workflow(args.branches, args.repeats)
+    env = build_env(args.branches)
+
+    if args.out_dir:
+        os.makedirs(args.out_dir, exist_ok=True)
+        wf_path = os.path.join(args.out_dir, f"{args.name}.workflow.yaml")
+        env_path = os.path.join(args.out_dir, f"{args.name}.env.yaml")
+        with open(wf_path, "w", encoding="utf-8") as f:
+            f.write(_dump(workflow))
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.write(_dump(env))
+        print(f"wrote {wf_path} and {env_path}", file=sys.stderr)
     else:
-        sys.stdout.write(text)
+        sys.stdout.write("# === workflow ===\n" + _dump(workflow))
+        sys.stdout.write("# === environment ===\n" + _dump(env))
     return 0
 
 

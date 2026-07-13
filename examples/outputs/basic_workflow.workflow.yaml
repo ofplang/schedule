@@ -6,21 +6,29 @@ processes:
   source:
     kind: atomic
     outputs:
-      plate:
+      plate_1:
+        type: Plate
+        phase: data
+      plate_2:
         type: Plate
         phase: data
     objects:
       create:
-      - outputs.plate
+      - outputs.plate_1
+      - outputs.plate_2
   sink:
     kind: atomic
     inputs:
-      plate:
+      plate_1:
+        type: Plate
+        phase: data
+      plate_2:
         type: Plate
         phase: data
     objects:
       consume:
-      - inputs.plate
+      - inputs.plate_1
+      - inputs.plate_2
   peal:
     kind: atomic
     traits:
@@ -87,13 +95,13 @@ processes:
     outputs: {}
     body:
       nodes:
-      - id: source_b1
+      - id: source
         process: source
       - id: peal_b1_r1
         process: peal
         state:
           plate:
-            from: source_b1.plate
+            from: source.plate_1
       - id: dispense_b1_r1
         process: dispense
         state:
@@ -139,18 +147,11 @@ processes:
         state:
           plate:
             from: thermal_b1_r2.plate
-      - id: sink_b1
-        process: sink
-        state:
-          plate:
-            from: rotate_b1_r2.plate
-      - id: source_b2
-        process: source
       - id: peal_b2_r1
         process: peal
         state:
           plate:
-            from: source_b2.plate
+            from: source.plate_2
       - id: dispense_b2_r1
         process: dispense
         state:
@@ -196,10 +197,12 @@ processes:
         state:
           plate:
             from: thermal_b2_r2.plate
-      - id: sink_b2
+      - id: sink
         process: sink
         state:
-          plate:
+          plate_1:
+            from: rotate_b1_r2.plate
+          plate_2:
             from: rotate_b2_r2.plate
       returns: {}
 entry: main
