@@ -1,8 +1,9 @@
 # ofplang.schedule — Specification (draft)
 
 > **Status: draft.** This document captures the current design. The scheduling
-> model, the execution environment schema (§5), and the execution document schema
-> that serves as both plan and status (§6, §7) are settled.
+> model, the execution environment schema (§5), the execution document schema that
+> serves as both plan and status (§6, §7), the identifiers (§8), the schema-
+> validator scope (§9), and the error-code catalog (§10) are settled.
 
 ## 1. Overview
 
@@ -536,15 +537,21 @@ follow the v0 rules for those positions.
 
 ## 9. Validation
 
-Validation splits into a standalone **schema validator** and **execution-layer
-validation**.
+Validation splits into **schema validators** (shape only, standalone) and
+**execution-layer validation** (needs the workflow or solvability).
 
-The **schema validator** is owned by `ofplang.schedule` and checks only the shape
-of the environment definition on its own (§9.1). It does not read the workflow.
-`ofplang.validate` is not involved. Its diagnostics follow the same convention as
-`ofplang.validate`: stable **error codes** with a `file:line:col` source position.
+`ofplang.schedule` provides a schema validator for each document it defines: the
+execution environment definition (§9.1) and the execution document — plan or
+status (§9.2). Each checks only the shape of its own document and does not read the
+workflow; `ofplang.validate` is not involved.
 
-**Execution-layer validation** (§9.2) covers everything that needs the workflow or
+Diagnostics follow the same convention as `ofplang.validate`: stable **error
+codes** with a `file:line:col` source position (§10). Each diagnostic has a
+`severity` of `error` or `warning`; warnings (e.g. cross-kind id coincidence, §8.2)
+do not make a document invalid. The codes are shared across `ofplang.schedule`'s
+own validators, but are a separate catalog from `ofplang.validate`'s.
+
+**Execution-layer validation** (§9.3) covers everything that needs the workflow or
 depends on solvability. The execution layer reads the workflow itself with
 `ofplang.schedule`'s own minimal parser — extracting only what it needs (process
 kinds, type domains, per-port Object-bearing-ness) — without depending on
@@ -552,7 +559,7 @@ kinds, type domains, per-port Object-bearing-ness) — without depending on
 expected to be done separately (by `ofplang.validate`); the scheduler assumes it is
 given a valid v0 workflow.
 
-### 9.1 Schema validator — shape only (standalone; no workflow needed)
+### 9.1 Schema validator — the environment definition (shape only)
 
 - Identifier syntax (§8.1) and per-kind uniqueness (§8.2); cross-kind coincidence
   raises a warning.
@@ -574,9 +581,34 @@ given a valid v0 workflow.
 - **Unknown or extra keys are errors** (strict only; there is no
   extension-tolerant mode).
 
-### 9.2 Execution-layer validation (needs the workflow / solvability)
+### 9.2 Schema validator — the execution document (shape only)
 
-Not part of the schema validator; checked by the execution layer.
+The same shape-only approach applies to an execution document (§6), used as a plan
+or a status. Cross-document checks (that a `node` / `arc` / `process` exists in the
+workflow, or that a spot exists in the environment) are execution-layer (§9.3).
+
+- Top level: `activities` is required; `time` / `now` / `outcome` / `objective` /
+  `placements` / `meta` are optional. Unknown or extra keys are errors.
+- `now` (if present) is a non-negative integer; `outcome` (if present) is one of
+  `optimal` / `feasible` / `infeasible` / `unknown`; `objective` (if present) has
+  `kind: makespan` and a non-negative integer `value`.
+- Each activity: `kind` is required and is `processing` or `transport`; `status`
+  (if present) is `pending` / `running` / `completed`; `start` and `end` are
+  required non-negative integers with `end >= start`. Unknown keys are errors.
+  - processing: `process`, `mode`, and `node` (a non-empty list of identifiers) are
+    required; `devices`, `input_spots`, `output_spots` are optional.
+  - transport: `from_spot`, `to_spot` (qualified spots), `transporter`, and `arc`
+    (`from` / `to`, each `{ node: <list>, port: <id> }`) are required.
+- `placements` (if present): each entry is `{ object, spot }`, where `object` is
+  exactly one of `{ input: <name> }` or `{ node: <list>, port: <id> }`, and `spot`
+  is a qualified spot.
+- Form rules: identifiers match `[A-Za-z_][A-Za-z0-9_]*`; a qualified spot has
+  exactly one `.` with identifier parts; a node path is a non-empty list of
+  identifiers.
+
+### 9.3 Execution-layer validation (needs the workflow / solvability)
+
+Not part of a schema validator; checked by the execution layer.
 
 - **Against the workflow**: each `processes` key names a process that exists in the
   workflow, is **atomic**, and is in scope (§2); each port in `input_spots` /
@@ -589,3 +621,58 @@ Not part of the schema validator; checked by the execution layer.
   combination of endpoint modes and a transporter that can move between the
   chosen spots exists. This depends on mode selection and is a solvability
   concern, not a schema check.
+
+## 10. Error codes
+
+Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
+`ofplang.schedule`'s validators, and are a separate catalog from
+`ofplang.validate`'s. Severity is `error` unless marked *warning*.
+
+### 10.1 Shared
+
+| code | meaning |
+| --- | --- |
+| `unknown_key` | an unknown or extra key (strict) |
+| `missing_required_field` | a required field is absent (the path locates it) |
+| `wrong_type` | a value has the wrong YAML type (mapping / list / integer / string) |
+| `invalid_identifier` | an id does not match `[A-Za-z_][A-Za-z0-9_]*` |
+| `malformed_qualified_spot` | a spot is not in `<device>.<spot>` form (exactly one `.`) |
+| `unknown_objective_kind` | `objective.kind` is not `makespan` |
+| `negative_value` | an integer that must be non-negative is negative |
+
+### 10.2 Environment definition (§9.1)
+
+| code | meaning |
+| --- | --- |
+| `missing_required_section` | `time`, `devices`, or `processes` is absent |
+| `empty_devices` | `devices` is empty |
+| `empty_modes` | a process has no modes |
+| `duplicate_device_id` | a device id repeats |
+| `duplicate_transporter_id` | a transporter id repeats |
+| `duplicate_spot_id` | a spot name repeats within a device |
+| `cross_kind_id_coincidence` | a device / spot / transporter share an id (*warning*) |
+| `nonpositive_duration` | a processing mode `duration` is not positive |
+| `empty_time_unit` | `time.unit` is empty or not a string |
+| `unknown_transporter` | `transports.transporter` is not a defined transporter |
+| `unknown_device` | the device part of a qualified spot is not defined |
+| `unknown_spot` | the spot part of a qualified spot is not defined on that device |
+| `duplicate_transport_entry` | a `(transporter, from, to)` triple repeats |
+| `input_spots_share_spot` | two input ports of a mode use the same spot |
+| `output_spots_share_spot` | two output ports of a mode use the same spot |
+| `spot_device_not_in_mode` | a mode's spot is on a device not in that mode's `devices` |
+
+### 10.3 Execution document (§9.2)
+
+| code | meaning |
+| --- | --- |
+| `missing_activities` | `activities` is absent |
+| `unknown_activity_kind` | `kind` is not `processing` or `transport` |
+| `unknown_status` | `status` is not `pending` / `running` / `completed` |
+| `unknown_outcome` | `outcome` is not one of the defined values |
+| `end_before_start` | `end` is earlier than `start` |
+| `empty_node_path` | `node` is an empty list |
+| `malformed_arc` | an `arc`'s `from` / `to` / `node` / `port` structure is wrong |
+| `malformed_placement` | a `placements` `object` is not exactly one of `input` or `node` + `port` |
+
+Absent `process` / `mode` / `from_spot` and similar use the shared
+`missing_required_field`; type violations use `wrong_type`.
