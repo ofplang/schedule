@@ -42,6 +42,17 @@ EMPTY_NODE_PATH = "empty_node_path"
 MALFORMED_ARC = "malformed_arc"
 MALFORMED_PLACEMENT = "malformed_placement"
 
+# Execution layer (§9.3) and scheduling. These are produced by the scheduler
+# (not the schema validators) while reading the workflow and building/solving the
+# instance. They are error-severity like the rest.
+UNSUPPORTED_FEATURE = "unsupported_feature"
+NO_ENTRY_PROCESS = "no_entry_process"
+PROCESS_NOT_DEFINED = "process_not_defined"
+NO_CAPABILITY = "no_capability"
+MODE_PORTS_MISMATCH = "mode_ports_mismatch"
+ARC_UNREACHABLE = "arc_unreachable"
+INFEASIBLE = "infeasible"
+
 # The `cross_kind_id_coincidence` code is the only warning; everything else is an
 # error. The runner and CLI use this to check severity.
 WARNING_CODES = frozenset({CROSS_KIND_ID_COINCIDENCE})
@@ -79,6 +90,13 @@ ERROR_CODES = frozenset(
         EMPTY_NODE_PATH,
         MALFORMED_ARC,
         MALFORMED_PLACEMENT,
+        UNSUPPORTED_FEATURE,
+        NO_ENTRY_PROCESS,
+        PROCESS_NOT_DEFINED,
+        NO_CAPABILITY,
+        MODE_PORTS_MISMATCH,
+        ARC_UNREACHABLE,
+        INFEASIBLE,
     }
 )
 

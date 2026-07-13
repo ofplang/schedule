@@ -7,7 +7,7 @@ name = "ofplang-schedule"
 version = "0.0.0"
 description = "Object-flow programming language v0 scheduler"
 requires-python = ">=3.10"
-dependencies = ["PyYAML>=6.0"]
+dependencies = ["PyYAML>=6.0", "ortools>=9.10"]
 
 [project.optional-dependencies]
 test = ["pytest>=7.0"]

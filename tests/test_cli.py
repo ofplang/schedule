@@ -2,9 +2,10 @@
 
 from pathlib import Path
 
-from ofplang.schedule import cli
+from ofplang.schedule import cli, validate_document
 
 CASES = Path(__file__).parent / "conformance" / "cases"
+EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
 
 def test_missing_file_is_usage_error():
@@ -23,7 +24,37 @@ def test_valid_document_is_ok():
     assert cli.main(["validate", str(CASES / "doc" / "_baseline.yaml")]) == cli.EXIT_OK
 
 
-def test_schedule_is_not_implemented(tmp_path):
-    doc = tmp_path / "workflow.yaml"
-    doc.write_text("activities: []\n", encoding="utf-8")
-    assert cli.main(["schedule", str(doc)]) == cli.EXIT_NOT_IMPLEMENTED
+def test_schedule_missing_file_is_usage_error():
+    assert cli.main(["schedule", "nope.yaml", "--env", "also-nope.yaml"]) == cli.EXIT_USAGE
+
+
+def test_schedule_produces_valid_plan(tmp_path):
+    out = tmp_path / "plan.yaml"
+    code = cli.main(
+        [
+            "schedule",
+            str(EXAMPLES / "job_sample.workflow.yaml"),
+            "--env",
+            str(EXAMPLES / "job_sample.env.yaml"),
+            "-o",
+            str(out),
+        ]
+    )
+    assert code == cli.EXIT_OK
+    # The emitted plan must itself validate as an execution document.
+    assert validate_document(out).ok
+
+
+def test_schedule_stdout_yaml(capsys):
+    code = cli.main(
+        [
+            "schedule",
+            str(EXAMPLES / "job_sample.workflow.yaml"),
+            "--env",
+            str(EXAMPLES / "job_sample.env.yaml"),
+        ]
+    )
+    assert code == cli.EXIT_OK
+    out = capsys.readouterr().out
+    assert "outcome: optimal" in out
+    assert "makespan" in out

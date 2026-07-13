@@ -3,18 +3,16 @@
 Thin presentation layer over the library. Two subcommands:
 
     ofp-schedule validate [--kind ...] [--format ...] <file>...
-    ofp-schedule schedule <file>...          # not implemented yet (stub)
+    ofp-schedule schedule <workflow> --env <env> [-o <file>] [--format yaml|json]
 
-`validate` runs the schema validators (SPECIFICATIONS.md §9) and renders their
-diagnostics as `file:line:col: <severity> <code>` lines, matching the
-ofplang.validate convention. All validation logic lives in the library so the
-CLI cannot drift from it.
+`validate` runs the schema validators (SPECIFICATIONS.md §9); `schedule` produces
+an execution plan (§6) from a v0 workflow and an execution environment. All logic
+lives in the library so the CLI cannot drift from it.
 
 Exit codes:
-    0  every file is valid (warnings do not count as failure)
-    1  at least one file has validation errors
+    0  success (valid, or a plan was produced)
+    1  validation errors, or no feasible schedule
     2  usage / input error
-    3  not implemented yet (the `schedule` command)
 """
 
 from __future__ import annotations
@@ -26,13 +24,14 @@ from pathlib import Path
 
 import yaml
 
+from ofplang.schedule import schedule as run_schedule
 from ofplang.schedule import validate_document, validate_environment
 from ofplang.schedule.core.diagnostics import ERROR, ValidationResult
+from ofplang.schedule.scheduler.plan import to_yaml
 
 EXIT_OK = 0
 EXIT_INVALID = 1
 EXIT_USAGE = 2
-EXIT_NOT_IMPLEMENTED = 3
 
 _RED = "\033[31m"
 _YELLOW = "\033[33m"
@@ -57,8 +56,11 @@ def _build_parser() -> argparse.ArgumentParser:
     v.add_argument("-q", "--quiet", action="store_true", help="show only the summary")
     v.add_argument("--no-color", action="store_true", help="disable ANSI color")
 
-    s = sub.add_parser("schedule", help="produce an execution plan (not implemented yet)")
-    s.add_argument("paths", nargs="+", metavar="FILE")
+    s = sub.add_parser("schedule", help="produce an execution plan from a workflow and environment")
+    s.add_argument("workflow", metavar="WORKFLOW", help="ofplang v0 workflow YAML")
+    s.add_argument("--env", required=True, metavar="ENV", help="execution environment definition YAML")
+    s.add_argument("-o", "--out", metavar="FILE", help="write the plan here (default: stdout)")
+    s.add_argument("--format", choices=["yaml", "json"], default="yaml", help="plan output format")
 
     return parser
 
@@ -176,13 +178,29 @@ def _cmd_validate(args) -> int:
 
 
 def _cmd_schedule(args) -> int:
-    missing = [p for p in args.paths if not Path(p).is_file()]
-    if missing:
-        for p in missing:
+    for p in (args.workflow, args.env):
+        if not Path(p).is_file():
             print(f"ofp-schedule: cannot open {p!r}: no such file", file=sys.stderr)
-        return EXIT_USAGE
-    print("ofp-schedule: scheduling is not implemented yet", file=sys.stderr)
-    return EXIT_NOT_IMPLEMENTED
+            return EXIT_USAGE
+
+    report = run_schedule(args.workflow, args.env)
+    if not report.ok:
+        # Surface every error diagnostic (missing location falls back to a path).
+        for diag in report.diagnostics:
+            if diag.severity != ERROR:
+                continue
+            locator = diag.location or diag.path or "<input>"
+            message = f"  {diag.message}" if diag.message else ""
+            print(f"{locator}: error {diag.code}{message}", file=sys.stderr)
+        return EXIT_INVALID
+
+    text = to_yaml(report.plan) if args.format == "yaml" else json.dumps(report.plan, indent=2, ensure_ascii=False)
+    if args.out:
+        Path(args.out).write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+        print(f"ofp-schedule: wrote plan to {args.out} (outcome={report.outcome}, makespan={report.makespan})", file=sys.stderr)
+    else:
+        print(text if not text.endswith("\n") else text, end="" if text.endswith("\n") else "\n")
+    return EXIT_OK
 
 
 def main(argv: list[str] | None = None) -> int:
