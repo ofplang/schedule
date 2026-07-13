@@ -188,14 +188,14 @@ _TITLE = 48  # top band for the title/subtitle
 _PALETTES = {
     "light": {
         "fg": "#1a1a1a", "muted": "#666666",
-        "grid": "#e3e3e3", "lane": "#f0f0f0",
+        "grid": "#b3b3b3", "lane": "#d9d9d9",
         "proc": "#3b82f6", "proc_fg": "#ffffff",
         "xfer": "#f59e0b", "xfer_fg": "#3a2a00",
         "ghost": "#f59e0b", "arrow": "#9333ea", "now": "#dc2626",
     },
     "dark": {
         "fg": "#e6e6e6", "muted": "#9aa0a6",
-        "grid": "#262a31", "lane": "#1a1d23",
+        "grid": "#3a3f47", "lane": "#2a2e35",
         "proc": "#60a5fa", "proc_fg": "#06131f",
         "xfer": "#fbbf24", "xfer_fg": "#241a00",
         "ghost": "#fbbf24", "arrow": "#c084fc", "now": "#f87171",
@@ -360,13 +360,13 @@ def _svg(lane_labels, bars, arrows, *, t_max: float, now, unit, view, makespan, 
 # adapts to light/dark. SVG text is coloured via `fill`; lines via `stroke`.
 _STYLE = """
   :root {
-    --fg: #1a1a1a; --muted: #666; --grid: #e3e3e3; --lane: #f0f0f0;
+    --fg: #1a1a1a; --muted: #666; --grid: #b3b3b3; --lane: #d9d9d9;
     --proc: #3b82f6; --proc-fg: #ffffff; --xfer: #f59e0b; --xfer-fg: #3a2a00;
     --ghost: #f59e0b33; --arrow: #9333ea; --now: #dc2626;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --fg: #e6e6e6; --muted: #9aa0a6; --grid: #262a31; --lane: #1a1d23;
+      --fg: #e6e6e6; --muted: #9aa0a6; --grid: #3a3f47; --lane: #2a2e35;
       --proc: #60a5fa; --proc-fg: #06131f; --xfer: #fbbf24; --xfer-fg: #241a00;
       --ghost: #fbbf2433; --arrow: #c084fc; --now: #f87171;
     }
