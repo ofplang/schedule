@@ -2,7 +2,8 @@
 
 This is where the execution-layer checks live (SPECIFICATIONS.md §9.3 subset):
 every invoked atomic process must have a capability with at least one mode, each
-mode must map exactly the process's Object-bearing ports, and every arc must be
+mode's `input_spots` / `output_spots` must name only real Object-bearing ports of
+the process in the correct direction and map all of them, and every arc must be
 transportable (some mode pair + transporter can move the source spot to the
 destination spot). The instance precomputes, per activity, its candidate modes,
 and per arc, the concrete transport options (source/destination spot, duration,
@@ -107,18 +108,69 @@ def build_instance(workflow: Workflow, env: Environment) -> tuple[Instance | Non
 
 
 def _check_mode_ports(process: str, workflow: Workflow, modes: tuple[Mode, ...], diags: Diagnostics) -> None:
-    """Each mode must map exactly the process's Object-bearing ports — no missing
-    port, no spot for a Pure Data port (§9.3 coverage)."""
+    """Validate each mode's spot mapping against the process's port signature
+    (§9.3 "against the workflow" + coverage), reporting each kind of violation
+    with its own code rather than one catch-all:
+
+    - a mapped port the process does not have at all -> `unknown_process_port`;
+    - a port mapped on the wrong side (an output under `input_spots`, or vice
+      versa) -> `wrong_port_direction`;
+    - a Pure Data port given a spot -> `pure_data_port_mapped`;
+    - an Object-bearing port left unmapped -> `mode_ports_incomplete`.
+    """
     sig = workflow.processes.get(process)
     if sig is None:
         return
-    want_in = set(sig.object_input_names())
-    want_out = set(sig.object_output_names())
+    # Port names live in a per-direction namespace (§8.2), so the same name may be
+    # both an input and an output; classification checks the correct side first.
+    input_names = {p.name for p in sig.inputs}
+    output_names = {p.name for p in sig.outputs}
+    obj_input = set(sig.object_input_names())
+    obj_output = set(sig.object_output_names())
+
     for mode in modes:
-        if set(mode.input_spots) != want_in or set(mode.output_spots) != want_out:
+        _check_side(process, mode, "input_spots", mode.input_spots, input_names, output_names, obj_input, diags)
+        _check_side(process, mode, "output_spots", mode.output_spots, output_names, input_names, obj_output, diags)
+        # Coverage: every Object-bearing port must receive a spot in this mode.
+        missing = (obj_input - set(mode.input_spots)) | (obj_output - set(mode.output_spots))
+        if missing:
             diags.error(
-                errors.MODE_PORTS_MISMATCH,
-                f"process {process!r} mode {mode.id!r} does not map exactly its Object-bearing ports",
+                errors.MODE_PORTS_INCOMPLETE,
+                f"process {process!r} mode {mode.id!r} does not map Object-bearing port(s) {sorted(missing)}",
+            )
+
+
+def _check_side(
+    process: str,
+    mode: Mode,
+    section: str,
+    mapping: dict[str, str],
+    own_names: set[str],
+    other_names: set[str],
+    object_names: set[str],
+    diags: Diagnostics,
+) -> None:
+    """Check one side (`input_spots` or `output_spots`) of a mode. `own_names` are
+    the process's ports on this side, `other_names` those on the opposite side,
+    and `object_names` the Object-bearing subset of `own_names`."""
+    for port in mapping:
+        if port in own_names:
+            # A real port on this side; it must be Object-bearing to occupy a spot.
+            if port not in object_names:
+                diags.error(
+                    errors.PURE_DATA_PORT_MAPPED,
+                    f"process {process!r} mode {mode.id!r} maps Pure Data port {port!r} in {section}",
+                )
+        elif port in other_names:
+            # The name exists on the process, but on the opposite side.
+            diags.error(
+                errors.WRONG_PORT_DIRECTION,
+                f"process {process!r} mode {mode.id!r} maps port {port!r} in {section}, but it is on the other side",
+            )
+        else:
+            diags.error(
+                errors.UNKNOWN_PROCESS_PORT,
+                f"process {process!r} mode {mode.id!r} maps unknown port {port!r} in {section}",
             )
 
 

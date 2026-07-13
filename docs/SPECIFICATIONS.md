@@ -608,19 +608,30 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
 
 ### 9.3 Execution-layer validation (needs the workflow / solvability)
 
-Not part of a schema validator; checked by the execution layer.
+Not part of a schema validator; checked by the execution layer while building the
+solver instance. The catalog of codes these checks emit is §10.4.
 
-- **Against the workflow**: each `processes` key names a process that exists in the
-  workflow, is **atomic**, and is in scope (§2); each port in `input_spots` /
-  `output_spots` exists on that process, in the correct direction, and is
-  **Object-bearing** (Pure Data ports must not appear).
+The scheduler is capability-driven by the processes it actually schedules: it
+expands the entry composite into the atomic, in-scope invocations it will run and
+validates the capability of each. Existence, atomic-ness, and scope (§2) hold by
+construction for those invocations (a structured node or a nested composite is
+diagnosed separately as `unsupported_feature`, not scheduled). Capabilities
+declared in the environment for processes the workflow never invokes are not
+checked.
+
+- **Against the workflow** — for each invoked process, its capability's modes are
+  checked port by port against the process's signature. A mapped port the process
+  does not have is `unknown_process_port`; a port mapped on the wrong side (an
+  output under `input_spots`, or an input under `output_spots`) is
+  `wrong_port_direction`; a Pure Data port given a spot is `pure_data_port_mapped`
+  (only Object-bearing ports occupy spots).
 - **Coverage / completeness**: every atomic process actually invoked by the
-  workflow has at least one mode, and every mode maps exactly the Object-bearing
-  ports of its process.
+  workflow has at least one mode (`no_capability` otherwise), and every mode maps
+  every Object-bearing port of its process (`mode_ports_incomplete` otherwise).
 - **Reachability / solvability**: for each Object-bearing arc, a feasible
   combination of endpoint modes and a transporter that can move between the
-  chosen spots exists. This depends on mode selection and is a solvability
-  concern, not a schema check.
+  chosen spots exists (`arc_unreachable` otherwise). This depends on mode
+  selection and is a solvability concern, not a schema check.
 
 ## 10. Error codes
 
@@ -676,3 +687,21 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 
 Absent `process` / `mode` / `from_spot` and similar use the shared
 `missing_required_field`; type violations use `wrong_type`.
+
+### 10.4 Execution layer (§9.3)
+
+Emitted by the scheduler (not a schema validator) while reading the workflow and
+building the solver instance. All are error severity.
+
+| code | meaning |
+| --- | --- |
+| `unsupported_feature` | a workflow feature outside the scheduler's v0 subset (a structured node, a nested composite) |
+| `no_entry_process` | the workflow has no resolvable entry process |
+| `process_not_defined` | a node invokes, or an arc references, a process/node not defined in the workflow |
+| `no_capability` | an invoked atomic process has no capability (or no modes) in the environment |
+| `unknown_process_port` | a mode's `input_spots` / `output_spots` names a port the process does not have |
+| `wrong_port_direction` | a port is mapped on the wrong side (an output under `input_spots`, or an input under `output_spots`) |
+| `pure_data_port_mapped` | a mode maps a Pure Data (non-Object-bearing) port to a spot |
+| `mode_ports_incomplete` | a mode does not map every Object-bearing port of its process |
+| `arc_unreachable` | no endpoint-mode pair and transporter can serve an Object-bearing arc |
+| `infeasible` | the solver proved the instance has no feasible schedule |

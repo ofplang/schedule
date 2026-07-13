@@ -49,7 +49,16 @@ UNSUPPORTED_FEATURE = "unsupported_feature"
 NO_ENTRY_PROCESS = "no_entry_process"
 PROCESS_NOT_DEFINED = "process_not_defined"
 NO_CAPABILITY = "no_capability"
-MODE_PORTS_MISMATCH = "mode_ports_mismatch"
+# A mode's `input_spots` / `output_spots` names a port the process does not have.
+UNKNOWN_PROCESS_PORT = "unknown_process_port"
+# A port is mapped on the wrong side (an output port under `input_spots`, or an
+# input port under `output_spots`).
+WRONG_PORT_DIRECTION = "wrong_port_direction"
+# A Pure Data (non-Object-bearing) port is mapped to a spot; only Object-bearing
+# ports occupy spots (§5.5).
+PURE_DATA_PORT_MAPPED = "pure_data_port_mapped"
+# A mode does not map every Object-bearing port of its process (§9.3 coverage).
+MODE_PORTS_INCOMPLETE = "mode_ports_incomplete"
 ARC_UNREACHABLE = "arc_unreachable"
 INFEASIBLE = "infeasible"
 
@@ -94,7 +103,10 @@ ERROR_CODES = frozenset(
         NO_ENTRY_PROCESS,
         PROCESS_NOT_DEFINED,
         NO_CAPABILITY,
-        MODE_PORTS_MISMATCH,
+        UNKNOWN_PROCESS_PORT,
+        WRONG_PORT_DIRECTION,
+        PURE_DATA_PORT_MAPPED,
+        MODE_PORTS_INCOMPLETE,
         ARC_UNREACHABLE,
         INFEASIBLE,
     }
