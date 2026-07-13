@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: unknown_spot}
+notes: Qualified spot names a spot not on that device; spec §9.1.

@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: unknown_activity_kind}
+notes: '`kind` is not processing/transport; spec §6.2, §9.2.'

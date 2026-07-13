@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: output_spots_share_spot}
+notes: Two output ports of a mode use the same spot; spec §5.5, §9.1.

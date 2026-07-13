@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: negative_value}
+notes: Transport duration is negative; spec §5.4, §9.1.

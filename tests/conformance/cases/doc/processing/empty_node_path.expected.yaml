@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: empty_node_path}
+notes: '`node` is an empty list; spec §9.2.'

@@ -1,0 +1,3 @@
+activities:
+- {kind: transport, start: 60, end: 80, from_spot: incubator_0.slot_0, to_spot: reader_0.stage,
+  transporter: arm_0}

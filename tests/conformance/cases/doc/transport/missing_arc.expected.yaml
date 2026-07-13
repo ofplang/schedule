@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: missing_required_field}
+notes: Transport `arc` absent; spec §6.4, §9.2.

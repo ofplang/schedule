@@ -1,0 +1,7 @@
+activities:
+- kind: processing
+  start: 60
+  end: 30
+  process: measure_od
+  mode: fast
+  node: [assay]

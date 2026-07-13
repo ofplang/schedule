@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: unknown_objective_kind}
+notes: '`objective.kind` is not makespan; spec §9.2.'

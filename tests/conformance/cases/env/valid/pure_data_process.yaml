@@ -1,0 +1,14 @@
+time: {unit: second}
+devices:
+- id: reader_0
+  spots: [stage]
+processes:
+  measure_od:
+    modes:
+    - devices: [reader_0]
+      duration: 45
+      input_spots: {plate: reader_0.stage}
+      output_spots: {plate: reader_0.stage}
+  compute_mean:
+    modes:
+    - {id: mean_v1, duration: 5}

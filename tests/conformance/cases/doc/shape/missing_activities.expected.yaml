@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: missing_activities}
+notes: '`activities` absent; spec §6.1, §9.2.'

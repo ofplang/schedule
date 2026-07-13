@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: unknown_device}
+notes: Qualified spot names an undefined device; spec §9.1.

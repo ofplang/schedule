@@ -1,0 +1,13 @@
+activities:
+- kind: transport
+  start: 60
+  end: 80
+  to_spot: reader_0.stage
+  transporter: arm_0
+  arc:
+    from:
+      node: [heat]
+      port: plate
+    to:
+      node: [assay]
+      port: plate

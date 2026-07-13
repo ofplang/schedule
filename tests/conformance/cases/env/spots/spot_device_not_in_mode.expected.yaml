@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: spot_device_not_in_mode}
+notes: A mode's spot is on a device not in its `devices`; spec §5.5, §9.1.

@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: malformed_placement}
+notes: '`object` is not exactly one of input / node+port; spec §6.5, §9.2.'

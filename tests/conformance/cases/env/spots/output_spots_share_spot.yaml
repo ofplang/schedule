@@ -1,0 +1,11 @@
+time: {unit: second}
+devices:
+- id: reader_0
+  spots: [stage]
+processes:
+  two_out:
+    modes:
+    - devices: [reader_0]
+      duration: 10
+      input_spots: {}
+      output_spots: {a: reader_0.stage, b: reader_0.stage}

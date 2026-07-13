@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: empty_modes}
+notes: A process has no modes; spec §5.5, §9.1.

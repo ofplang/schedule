@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: duplicate_transporter_id}
+notes: Two transporters share an id; spec §8.2, §9.1.

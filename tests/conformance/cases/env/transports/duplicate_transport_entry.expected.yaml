@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: duplicate_transport_entry}
+notes: A (transporter, from, to) triple repeats; spec §9.1.

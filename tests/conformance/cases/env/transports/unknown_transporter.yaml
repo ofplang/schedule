@@ -1,0 +1,17 @@
+time: {unit: second}
+devices:
+- id: reader_0
+  spots: [stage]
+- id: incubator_0
+  spots: [slot_0]
+processes:
+  measure_od:
+    modes:
+    - devices: [reader_0]
+      duration: 45
+      input_spots: {plate: reader_0.stage}
+      output_spots: {plate: reader_0.stage}
+transporters:
+- {id: arm_0}
+transports:
+- {transporter: ghost, from: incubator_0.slot_0, to: reader_0.stage, duration: 20}

@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: wrong_type}
+notes: '`devices` is a string, not a list; spec §9.1.'

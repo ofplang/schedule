@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: end_before_start}
+notes: '`end` earlier than `start`; spec §9.2.'

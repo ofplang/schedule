@@ -1,0 +1,27 @@
+time: {unit: second}
+now: 70
+activities:
+- kind: processing
+  status: completed
+  start: 0
+  end: 60
+  process: heat_sample
+  mode: fast
+  node: [heat]
+- kind: transport
+  start: 60
+  end: 80
+  from_spot: incubator_0.slot_0
+  to_spot: reader_0.stage
+  transporter: arm_0
+  arc:
+    from:
+      node: [heat]
+      port: plate
+    to:
+      node: [assay]
+      port: plate
+  status: running
+placements:
+- object: {input: sample}
+  spot: incubator_0.slot_0

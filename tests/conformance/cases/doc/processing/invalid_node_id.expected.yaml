@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: invalid_identifier}
+notes: A node-path element has a hyphen; spec §8.1, §9.2.

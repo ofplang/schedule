@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: malformed_qualified_spot}
+notes: Spot ref lacks the `.`; spec §8.2, §9.1.

@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: negative_value}
+notes: '`now` is negative; spec §9.2.'

@@ -1,0 +1,13 @@
+time: {unit: second}
+devices:
+- id: reader_0
+  spots: [stage]
+- id: incubator_0
+  spots: [slot_0]
+processes:
+  split_step:
+    modes:
+    - devices: [reader_0, incubator_0]
+      duration: 30
+      input_spots: {plate: incubator_0.slot_0}
+      output_spots: {plate: reader_0.stage}

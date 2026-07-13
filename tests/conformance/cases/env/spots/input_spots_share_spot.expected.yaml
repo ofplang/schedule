@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: input_spots_share_spot}
+notes: Two input ports of a mode use the same spot; spec §5.5, §9.1.

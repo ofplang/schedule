@@ -1,0 +1,4 @@
+time: {unit: second}
+devices:
+- id: reader_0
+  spots: [stage]

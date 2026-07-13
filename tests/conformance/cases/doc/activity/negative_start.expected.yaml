@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: negative_value}
+notes: '`start` is negative; spec §9.2.'

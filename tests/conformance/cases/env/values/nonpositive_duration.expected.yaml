@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: nonpositive_duration}
+notes: Processing mode duration is 0; spec §5.5, §9.1.

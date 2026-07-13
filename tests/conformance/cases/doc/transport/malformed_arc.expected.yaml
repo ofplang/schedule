@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: malformed_arc}
+notes: '`arc.from` lacks `port`; spec §6.4, §9.2.'

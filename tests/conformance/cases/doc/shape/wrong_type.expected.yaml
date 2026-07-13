@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: wrong_type}
+notes: '`activities` is a string, not a list; spec §9.2.'

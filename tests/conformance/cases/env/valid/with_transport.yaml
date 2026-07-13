@@ -1,0 +1,23 @@
+time: {unit: second}
+devices:
+- id: reader_0
+  spots: [stage]
+- id: incubator_0
+  spots: [slot_0]
+processes:
+  measure_od:
+    modes:
+    - devices: [reader_0]
+      duration: 45
+      input_spots: {plate: reader_0.stage}
+      output_spots: {plate: reader_0.stage}
+  compute_mean:
+    modes:
+    - {id: mean_v1, duration: 5}
+transporters:
+- {id: arm_0}
+- {id: arm_1}
+transports:
+- {transporter: arm_0, from: incubator_0.slot_0, to: reader_0.stage, duration: 20}
+- {transporter: arm_1, from: incubator_0.slot_0, to: reader_0.stage, duration: 15}
+objective: {kind: makespan}

@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: missing_required_field}
+notes: Processing `process` absent; spec §6.3, §9.2.

@@ -1,0 +1,20 @@
+activities:
+- kind: processing
+  start: 60
+  end: 65
+  process: compute_mean
+  mode: mean_v1
+  node: [compute]
+- kind: transport
+  start: 60
+  end: 80
+  from_spot: incubator_0.slot_0
+  to_spot: reader_0.stage
+  transporter: arm_0
+  arc:
+    from:
+      node: [heat]
+      port: plate
+    to:
+      node: [assay]
+      port: plate

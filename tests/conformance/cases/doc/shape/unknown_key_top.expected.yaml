@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: unknown_key}
+notes: Unknown top-level key; spec §9.2 (strict).

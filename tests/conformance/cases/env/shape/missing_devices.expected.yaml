@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: missing_required_section}
+notes: Required section `devices` absent; spec §5, §9.1.

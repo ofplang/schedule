@@ -1,0 +1,4 @@
+outcome: valid
+warnings:
+- {code: cross_kind_id_coincidence}
+notes: A device and a transporter share the id `reader_0`; spec §8.2 (warning).

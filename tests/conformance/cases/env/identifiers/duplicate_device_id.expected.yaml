@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: duplicate_device_id}
+notes: Two devices share an id; spec §8.2, §9.1.

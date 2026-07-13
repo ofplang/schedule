@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: unknown_key}
+notes: Unknown key in an activity; spec §9.2 (strict).

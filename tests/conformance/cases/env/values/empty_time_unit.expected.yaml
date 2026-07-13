@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: empty_time_unit}
+notes: '`time.unit` is empty; spec §5.1, §9.1.'

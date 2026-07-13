@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: unknown_transporter}
+notes: '`transports.transporter` is undefined; spec §9.1.'

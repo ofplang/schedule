@@ -1,0 +1,27 @@
+outcome: optimal
+objective: {kind: makespan, value: 130}
+time: {unit: second}
+activities:
+- kind: processing
+  start: 0
+  end: 60
+  process: heat_sample
+  mode: fast
+  node: [heat]
+  devices: [incubator_0]
+  input_spots: {plate: incubator_0.slot_0}
+  output_spots: {plate: incubator_0.slot_0}
+- kind: transport
+  start: 60
+  end: 80
+  from_spot: incubator_0.slot_0
+  to_spot: reader_0.stage
+  transporter: arm_0
+  arc:
+    from:
+      node: [heat]
+      port: plate
+    to:
+      node: [assay]
+      port: plate
+meta: {workflow: workflow.yaml, environment: env.yaml}
