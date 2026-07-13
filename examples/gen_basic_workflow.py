@@ -7,11 +7,11 @@ chain of stages repeated `repeats` times —
 
     source -> [peal -> dispense -> seal -> thermal_cycle -> rotate] x repeats -> sink
 
-Every stage invokes a fixed-signature atomic process (`plate_in` / `plate_out`),
-so one shared execution environment (examples/basic_workflow.env.yaml) works for
-any branch/repeat count. The stages are `elidable_iso` (the plate passes through
-with its identity preserved), while the source creates the plate and the sink
-consumes it. Branches contend on the shared single-device stages
+Every process has a fixed signature (a single Object-bearing port named
+`plate`), so one shared execution environment (examples/basic_workflow.env.yaml)
+works for any branch/repeat count. The stages are `elidable_iso` (input and
+output share the `plate` name, so the plate passes through with its identity
+preserved), while the source creates the plate and the sink consumes it. Branches contend on the shared single-device stages
 (peal/dispense/seal/rotate and the loader); the environment gives thermal_cycle a
 small device pool, so the scheduler can run those steps in parallel via mode
 selection.
@@ -52,17 +52,15 @@ def _atomic(inputs: list[str], outputs: list[str]) -> dict:
 
 
 def _iso_stage() -> dict:
-    """A 1-in/1-out stage that passes the same plate through unchanged, i.e.
-    `elidable_iso` (identity-preserving), not consume+create. The ports are named
-    plate_in/plate_out rather than sharing one name, so the identity map is
-    written explicitly (elidable_iso's implicit same-name inference does not apply
-    to differently-named ports)."""
+    """A stage that passes the same plate through unchanged: `elidable_iso`
+    (identity-preserving), not consume+create. The input and output share the
+    port name `plate`, so v0 infers the same-name identity map and no `objects`
+    section is written (§15)."""
     return {
         "kind": "atomic",
         "traits": ["elidable_iso"],
-        "inputs": {"plate_in": {"type": "Plate", "phase": "data"}},
-        "outputs": {"plate_out": {"type": "Plate", "phase": "data"}},
-        "objects": {"map": {"outputs.plate_out": "inputs.plate_in"}},
+        "inputs": {"plate": {"type": "Plate", "phase": "data"}},
+        "outputs": {"plate": {"type": "Plate", "phase": "data"}},
     }
 
 
@@ -73,8 +71,8 @@ def build_workflow(branches: int, repeats: int) -> dict:
 
     # Fixed process definitions (independent of branches/repeats).
     processes: dict = {
-        "source": _atomic([], ["plate_out"]),
-        "sink": _atomic(["plate_in"], []),
+        "source": _atomic([], ["plate"]),
+        "sink": _atomic(["plate"], []),
     }
     for stage in _STAGES:
         processes[stage] = _iso_stage()
@@ -92,7 +90,7 @@ def build_workflow(branches: int, repeats: int) -> dict:
                     {
                         "id": node_id,
                         "process": stage,
-                        "state": {"plate_in": {"from": f"{prev}.plate_out"}},
+                        "state": {"plate": {"from": f"{prev}.plate"}},
                     }
                 )
                 prev = node_id
@@ -100,7 +98,7 @@ def build_workflow(branches: int, repeats: int) -> dict:
             {
                 "id": f"sink_b{b}",
                 "process": "sink",
-                "state": {"plate_in": {"from": f"{prev}.plate_out"}},
+                "state": {"plate": {"from": f"{prev}.plate"}},
             }
         )
 

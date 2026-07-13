@@ -17,9 +17,10 @@ Generated artifacts (a produced workflow, rendered charts) live under
   the branch/repeat count: every generated node invokes one of a fixed set of
   process definitions. Single-device stages (peal/dispense/seal/rotate, and the
   loader used by source/sink) are contended across branches; `thermal_cycle` has
-  a two-device pool, so parallel branches cycle at once via mode selection. The
-  stages are `elidable_iso` (the plate passes through unchanged); the source
-  creates the plate and the sink consumes it.
+  a two-device pool, so parallel branches cycle at once via mode selection. Every
+  process has a single `plate` port; the stages are `elidable_iso` (the plate
+  passes through unchanged), while the source creates the plate and the sink
+  consumes it.
 - `outputs/basic_workflow.workflow.yaml` — a sample generated with
   `--branches 2 --repeats 2`.
 

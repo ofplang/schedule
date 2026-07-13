@@ -66,8 +66,9 @@ def test_stages_are_elidable_iso():
     for stage in ["peal", "dispense", "seal", "thermal_cycle", "rotate"]:
         proc = doc["processes"][stage]
         assert proc.get("traits") == ["elidable_iso"]
-        # Identity-preserving map, not consume+create.
-        assert proc["objects"] == {"map": {"outputs.plate_out": "inputs.plate_in"}}
-    # Source still creates and sink still consumes.
-    assert doc["processes"]["source"]["objects"] == {"create": ["outputs.plate_out"]}
-    assert doc["processes"]["sink"]["objects"] == {"consume": ["inputs.plate_in"]}
+        # Same-name `plate` port in and out; no `objects` (identity map inferred).
+        assert set(proc["inputs"]) == {"plate"} and set(proc["outputs"]) == {"plate"}
+        assert "objects" not in proc
+    # Source still creates and sink still consumes (single `plate` port).
+    assert doc["processes"]["source"]["objects"] == {"create": ["outputs.plate"]}
+    assert doc["processes"]["sink"]["objects"] == {"consume": ["inputs.plate"]}
