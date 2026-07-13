@@ -59,7 +59,7 @@ In scope:
 | Execution status YAML (§6, §7) | What has happened (actuals, fixed state); replanning only | Dynamic |
 | **Execution plan YAML (§6)** | Output: what runs where and when | Result |
 
-The initial state at the start of a run (device positions, where material sits)
+The initial state at the start of a run — where Object-bearing material sits —
 belongs to the execution status input, not the environment definition.
 
 ## 4. Scheduling model
@@ -71,9 +71,11 @@ unit come from the environment definition (`time.unit`).
 
 ### 4.2 What is scheduled
 
-Only **atomic** process invocations consume time and resources. Composite
-processes are structural and expand into their constituent atomic invocations.
-Each schedulable atomic invocation is an **activity** with a start and an end.
+The scheduled units are **activities**, each with a start and an end. There are
+two kinds: a **processing** activity for each atomic process invocation (composite
+processes are structural and expand into their atomic invocations), and a
+**transport** activity for each Object-bearing arc (§4.5). Future versions may add
+further activity kinds (e.g. replenishment).
 
 ### 4.3 Object-bearing values vs Pure Data
 
@@ -90,22 +92,27 @@ model:
 Both **devices** and **spots** are exclusive resources; the model applies
 mutual-exclusion to each.
 
-A **device** is a machine that carries out work. A device runs at most one
-activity at a time: the activities that occupy a device may not overlap in time.
-
 A **spot** is a holding/processing position on a device. A spot holds at most one
-item at a time: the intervals that occupy a spot may not overlap.
+item at a time: the intervals that occupy a spot may not overlap. Material simply
+resting in a spot occupies that spot and nothing else.
+
+A **device** is a machine that owns spots and carries out work. A device is
+occupied only while one of its spots is being **accessed** by an activity — a
+processing activity over its `[start, end]`, or a transport picking up from or
+dropping off at a spot over the transport interval (§4.5). Idle material resting in
+a spot does **not** occupy the device. A device permits at most one access at a
+time: activities that occupy a device may not overlap.
+
+Consequently one device may own several spots and hold several items at once (e.g.
+a storage hotel, or an incubator with several plate positions) — the items merely
+occupy their spots. What a device cannot do is *access* two spots at once: two
+activities that touch the same device are serialised.
 
 - A processing activity occupies its device(s) (see §4.4.1) and the spots bound to
-  its Object-bearing input and output ports over the interval `[start, end]`.
-- Spots additionally capture material held **beyond** an activity's own interval —
-  in particular, material waiting in a spot before and after transport (§4.5) —
-  which device occupation does not.
-
-Because a device runs one activity at a time, a resource that must hold several
-items concurrently (a storage hotel, a multi-slot incubator) is modelled as
-several devices — typically one device per position — rather than one device with
-many spots.
+  its Object-bearing input and output ports over `[start, end]`.
+- Spot occupation can extend **beyond** an activity's own interval — material waits
+  in a spot before and after transport (§4.5) — while the device is free during
+  that wait.
 
 #### 4.4.1 Multi-device activities
 
@@ -131,14 +138,15 @@ activity start `s_j`:
     the moment the source activity finishes until it has been transported away;
   - the **destination spot** over `[a, s_j]` — reserved from the start of
     transport until the destination activity begins;
-  - the chosen **transporter** (which is itself a device, §4.6) over `[a, b]`.
+  - the **source device**, the **destination device**, and the **transporter**
+    (all devices, §4.4 / §4.6) over `[a, b]` — the transporter is busy for the
+    whole move, and accessing the source and destination spots occupies their
+    devices for that interval.
 - If `p == q` the two spot intervals collapse to `[e_i, s_j]` and the duration is
   zero.
 
-For now a transport activity occupies only the **transporter** among devices; it
-does not lock the source or destination devices (their spots are still occupied,
-above). This is the looser of the two formulations ofp-scheduler describes and may
-be revisited.
+(This three-device occupation is the conservative formulation of ofp-scheduler's
+final model; a looser alternative would occupy only the transporter.)
 
 Ordering: `a >= e_i` and `s_j >= b`.
 
@@ -261,11 +269,11 @@ time:
 
 devices:                              # ids use [A-Za-z_][A-Za-z0-9_]* (no hyphens)
   - id: incubator_0
-    spots: [slot_0, slot_1, slot_2]   # holding positions on one device
+    spots: [slot_0, slot_1]           # two plate positions on one device
   - id: reader_0
     spots: [stage]
   - id: hotel_0                       # storage / buffer
-    spots: [h0, h1, h2, h3]
+    spots: [h0, h1]
 
 transporters:
   - id: arm_0
@@ -278,19 +286,23 @@ transports:  # from/to are qualified <device>.<spot>
   # no arm_1 entry for reader_0.stage -> hotel_0.h0, so arm_1 cannot make that move
 
 processes:
-  measure_od:                         # keyed by the v0 process definition name
+  heat_sample:                        # keyed by the v0 process definition name
     modes:
-      - devices: [reader_0]           # a list; may name several devices
+      - id: fast
+        devices: [incubator_0]        # a list; may name several devices
         duration: 60
-        input_spots:  { plate: reader_0.stage }   # qualified <device>.<spot>
-        output_spots: { plate: reader_0.stage }
-      - devices: [incubator_0]
-        duration: 45
-        input_spots:  { plate: incubator_0.slot_0 }
+        input_spots:  { plate: incubator_0.slot_0 }   # qualified <device>.<spot>
         output_spots: { plate: incubator_0.slot_0 }
+  measure_od:
+    modes:
+      - devices: [reader_0]           # no id -> auto-assigned (e.g. "0")
+        duration: 45
+        input_spots:  { plate: reader_0.stage }
+        output_spots: { plate: reader_0.stage }
   compute_mean:                       # Pure Data only -> duration only
     modes:
-      - duration: 5
+      - id: mean_v1
+        duration: 5
 
 objective:
   kind: makespan
@@ -360,8 +372,9 @@ environment.
 - `kind: transport`; plus `status` / `start` / `end` (§6.2).
 - `from_spot` (required) — the qualified source spot `<device>.<spot>`.
 - `to_spot` (required) — the qualified destination spot.
-- `transporter` (required) — the selected transporter id (the only device it
-  occupies, §4.5; there is no separate `devices` field).
+- `transporter` (required) — the selected transporter id. The activity also
+  occupies the source and destination devices (§4.5); all three are derivable
+  (from `transporter`, `from_spot`, `to_spot`), so there is no `devices` field.
 - `arc` (required) — provenance / identity: the Object-bearing arc served, as
   `from` / `to`, each `{ node: <path>, port: <name> }`.
 
@@ -376,6 +389,15 @@ start of a run. Each entry is:
 - `object` — the material: `{ input: <name> }` for an entry input of the workflow,
   or `{ node: <path>, port: <name> }` for the output of a produced Object.
 - `spot` — the qualified spot `<device>.<spot>` it occupies.
+
+For example, at the start of a run the entry input sits where the first step
+expects it:
+
+```yaml
+placements:
+  - object: { input: sample }
+    spot: incubator_0.slot_0
+```
 
 ### 6.6 Identity and replanning
 
@@ -397,7 +419,7 @@ The same schema, filled two ways.
 outcome: optimal
 objective:
   kind: makespan
-  value: 80
+  value: 130
 time:
   unit: second
 
@@ -407,27 +429,41 @@ activities:
     end: 60
     process: heat_sample
     mode: fast
-    node: [brew, heat]                        # required provenance / identity
-    devices: [reader_0]                       # optional echo
-    input_spots:  { plate: reader_0.stage }
-    output_spots: { plate: reader_0.stage }
+    node: [heat]                              # required provenance / identity
+    devices: [incubator_0]                    # optional echo
+    input_spots:  { plate: incubator_0.slot_0 }
+    output_spots: { plate: incubator_0.slot_0 }
 
   - kind: transport
     start: 60
     end: 80
-    from_spot: reader_0.stage
-    to_spot:   incubator_0.slot_0
+    from_spot: incubator_0.slot_0
+    to_spot:   reader_0.stage
     transporter: arm_0
     arc:                                      # required provenance / identity
-      from: { node: [brew, heat], port: plate }
-      to:   { node: [assay],      port: sample }
+      from: { node: [heat],  port: plate }
+      to:   { node: [assay], port: plate }
+
+  - kind: processing
+    start: 80
+    end: 125
+    process: measure_od
+    mode: "0"                                 # auto-assigned (the mode had no id)
+    node: [assay]                             # echo omitted here
+
+  - kind: processing                          # Pure Data compute: no device / spot
+    start: 125
+    end: 130
+    process: compute_mean
+    mode: mean_v1
+    node: [compute]
 
 meta:
   workflow: workflow.yaml
   environment: env.yaml
 ```
 
-**As a status** (replanning input):
+**As a status** (replanning input at `now = 70`):
 
 ```yaml
 time:
@@ -441,22 +477,22 @@ activities:
     end: 60
     process: heat_sample
     mode: fast
-    node: [brew, heat]
+    node: [heat]
 
   - kind: transport
     status: running
     start: 60
     end: 80                                   # expected finish
-    from_spot: reader_0.stage
-    to_spot:   incubator_0.slot_0
+    from_spot: incubator_0.slot_0
+    to_spot:   reader_0.stage
     transporter: arm_0
     arc:
-      from: { node: [brew, heat], port: plate }
-      to:   { node: [assay],      port: sample }
+      from: { node: [heat],  port: plate }
+      to:   { node: [assay], port: plate }
 
-placements:                                   # current material positions
-  - object: { input: batch }
-    spot: hotel_0.h0
+# No `placements` here: the plate is handled by the running transport, and the
+# entry input was already consumed by `heat`. `placements` lists only material not
+# implied by the activities (see §6.5).
 ```
 
 ## 7. Execution status
@@ -524,13 +560,14 @@ given a valid v0 workflow.
   each process has at least one mode.
 - Value constraints: a processing `duration` is a positive YAML integer, a
   transport `duration` is a non-negative YAML integer; `time.unit` is a non-empty
-  string; `objective.kind` is `makespan`.
+  string; if `objective` is present, its `kind` is `makespan`.
 - Env-internal references: each `transports.transporter` is a defined transporter;
   every `from` / `to` and every `input_spots` / `output_spots` value is a
   well-formed qualified spot `<device>.<spot>` (exactly one `.`) naming a defined
   device and a spot defined on it.
-- Duplicate detection: duplicate ids; duplicate `transports` entries for the same
-  `(transporter, from, to)`.
+- Duplicate detection: duplicate ids within a kind (two devices, two transporters,
+  or two spots on one device sharing an id); duplicate `transports` entries for the
+  same `(transporter, from, to)`.
 - Intra-mode spot rules: within a mode, input ports do not share a spot, output
   ports do not share a spot, and every referenced spot's device is one of the
   mode's `devices`.
