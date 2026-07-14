@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from ortools.sat.python import cp_model
 
 from ofplang.schedule.core.identifiers import parse_qualified_spot
-from ofplang.schedule.scheduler.instance import ArcInstance, Instance, TransportOption
+from ofplang.schedule.scheduler.instance import ArcInstance, Instance, RelayInfo, TransportOption
 from ofplang.schedule.scheduler.model import Arc, Mode, NodePath
 from ofplang.schedule.scheduler.status import Fixation
 
@@ -33,6 +33,9 @@ class ProcessingResult:
     end: int
     # On a replan, the reported status of a fixed activity; None when pending.
     status: str | None = None
+    # Set (opaquely, by the solver) when this activity is a relay junction; drives
+    # rendering (`kind: relay`). None for a normal processing activity.
+    relay: RelayInfo | None = None
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,8 @@ class TransportResult:
     start: int
     end: int
     status: str | None = None
+    # A leg's chain position (§6.6); None for a single-leg transport.
+    seq: int | None = None
 
 
 @dataclass(frozen=True)
@@ -209,6 +214,7 @@ def solve(
             start=solver.Value(starts[i]),
             end=solver.Value(ends[i]),
             status=act_fix[i].status if i in act_fix else None,
+            relay=act.relay,
         )
         for i, act in enumerate(instance.activities)
     )
@@ -219,6 +225,7 @@ def solve(
             start=solver.Value(arc_starts[r]),
             end=solver.Value(arc_ends[r]),
             status=arc_fix[r].status if r in arc_fix else None,
+            seq=arc.seq,
         )
         for r, arc in enumerate(instance.arcs)
     )

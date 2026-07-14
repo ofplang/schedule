@@ -569,10 +569,23 @@ material positions; see §6, and the status example in §6.7. Entries that are
 `pending` or carry no `status` are ignored and re-derived from the workflow, so a
 prior plan can be fed back verbatim (§6.2).
 
-Note: the §6.7 status example is *not* normalized — a `running` transport feeds a
-`pending` `assay` — so the current scheduler rejects it as `status_unnormalized`
-(§9.3); such inputs need the normalization step (a later slice) before they can
-be replanned.
+**Fixed parts are historical facts.** A `completed` / `running` activity or
+transport is pinned from its *reported* assignment — a processing's echo
+(`mode` / spots / `devices`), a transport's route (`from_spot` / `to_spot` /
+`transporter`) — and is **not** re-validated against the current environment.
+Only pending work is resolved and optimised against the current env. So a device
+can be removed from the environment between replans (its process mode dropped, its
+device / spot / transport routes kept) without invalidating the history that used
+it — which is exactly how a re-route is triggered (§9.3).
+
+**Started transport into a pending successor is normalized, not rejected.** When a
+committed transport has delivered (or is delivering) an Object to a spot but its
+destination processing is still pending — e.g. that device just became
+unavailable — the scheduler inserts a relay (§6.4.1) at the arrival spot and a
+pending re-transport leg to the destination, whose mode is then free to be
+re-chosen. The re-transport is a zero-distance hop if the destination stays put,
+or a real move to the re-routed spot. Repeated re-routes chain (relay after
+relay); a spot may be revisited (distinguished by `seq`).
 
 ## 8. Identifiers
 
@@ -711,29 +724,33 @@ environment for processes the workflow never invokes are not checked.
   chosen spots exists (`arc_unreachable` otherwise). This depends on mode
   selection and is a solvability concern, not a schema check.
 
-When a replanning status is supplied (`--status`), it is matched against the
-instance after these checks, emitting the codes in §10.4:
+When a replanning status is supplied (`--status`), it is **normalized** against
+the instance (building the augmented instance the solver runs) after these
+checks, emitting the codes in §10.4. Reachability (`arc_unreachable`) is not
+checked per workflow arc for a replan; it is re-checked per **pending** leg of
+the normalized instance, so a committed transport with no direct current-env
+route (it re-routes through a relay) is not falsely rejected.
 
 - **Reference time**: the status sets `now` (`status_missing_now` otherwise).
-- **Provenance resolves**: each started (`completed` / `running`) activity's
-  `node` matches a processing activity (`status_node_unknown` otherwise) and each
-  transport's `arc` matches an Object-bearing arc (`status_arc_unknown`
-  otherwise); no activity or arc is fixed twice (`status_duplicate` otherwise).
-  `pending` / status-less entries are ignored and re-derived from the workflow,
-  so a prior plan feeds back verbatim.
-- **Assignment exists**: a processing `mode` is one its capability offers
-  (`status_mode_unknown` otherwise); a transport route (transporter + from/to
-  spot) is a viable option for its arc (`status_route_unknown` otherwise).
+- **Provenance resolves**: each started (`completed` / `running`) processing's
+  `node` matches a workflow activity (`status_node_unknown` otherwise) and each
+  transport leg's `arc` matches a workflow arc (`status_arc_unknown` otherwise);
+  no processing is fixed twice, and no transport leg repeats an (`arc`, `seq`)
+  (`status_duplicate` otherwise). `pending` / relay / status-less entries are
+  ignored and regenerated (relays and re-transports are derived from the
+  committed legs), so a prior plan feeds back verbatim.
+- **Fixed parts are pinned, not re-validated**: a fixed processing is pinned from
+  its echo, falling back to the current env's mode of the reported id, and erroring
+  only if neither resolves (`status_mode_unknown`); a fixed transport leg is pinned
+  from its reported route. Neither is checked against the current env's options —
+  a removed device does not invalidate committed history.
 - **Consistency with `now`**: a `completed` activity ends at or before `now`, and
   a `running` activity starts at or before `now` (`status_time_inconsistent`
   otherwise). A `running` activity whose expected finish is already past `now` is
   a legitimate overrun and is not rejected (§6.2, clamped in FORMULATION §9).
-- **Route agreement**: a fixed transport's route implies the same endpoint mode
-  that endpoint activity is itself fixed to (`status_route_inconsistent`
-  otherwise).
-- **Normalized input**: a `running` / `completed` transport does not feed a
-  `pending` processing activity (`status_unnormalized` otherwise); such cases
-  must be normalized away before replanning (FORMULATION §9).
+- **Chain consistency**: a committed transport leg's source processing is
+  completed, and each leg departs from the spot the previous leg arrived at
+  (`broken_transport_chain` otherwise).
 
 ## 10. Error codes
 
@@ -819,10 +836,8 @@ the instance:
 | --- | --- |
 | `status_missing_now` | a replanning status does not set `now` |
 | `status_node_unknown` | a status `node` matches no processing activity in the workflow |
-| `status_arc_unknown` | a status `arc` matches no Object-bearing arc in the workflow |
-| `status_mode_unknown` | a processing status names a `mode` its capability does not offer |
-| `status_route_unknown` | a transport status names a route (transporter + from/to spot) that is not a viable option for its arc |
-| `status_route_inconsistent` | a fixed transport's route implies an endpoint mode other than the one fixed on that endpoint activity |
+| `status_arc_unknown` | a status transport `arc` matches no Object-bearing arc in the workflow |
+| `status_mode_unknown` | a fixed processing cannot be pinned — its `mode` has no echo and the current env does not offer it |
 | `status_time_inconsistent` | a `completed` activity ends after `now`, or a `running` activity starts after `now` |
-| `status_duplicate` | two status entries fix the same activity (`node`) or arc |
-| `status_unnormalized` | a `running` / `completed` transport feeds directly into a `pending` processing activity |
+| `status_duplicate` | two status entries fix the same processing (`node`) or the same transport leg (`arc` + `seq`) |
+| `broken_transport_chain` | a committed transport leg's source is not completed, or a leg does not continue the previous leg's arrival spot |

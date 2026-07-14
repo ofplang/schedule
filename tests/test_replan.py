@@ -99,11 +99,20 @@ def test_replan_output_round_trips_as_next_status(tmp_path):
     assert second.ok and second.makespan == first.makespan == 6
 
 
-def test_replan_unnormalized_is_reported(tmp_path):
+def test_replan_started_transport_to_pending_inserts_relay(tmp_path):
+    # A started transport feeding a pending processing is no longer rejected: it
+    # is normalized into a relay at the arrival spot plus a re-transport (here a
+    # zero-distance hop, since the target still consumes at the arrival spot).
     status = _status_file(tmp_path, _UNNORMALIZED)
     report = schedule(WORKFLOW, ENV, status_path=status)
-    assert not report.ok
-    assert "status_unnormalized" in [d.code for d in report.diagnostics]
+    assert report.ok and report.outcome == "optimal"
+    relays = [a for a in report.plan["activities"] if a["kind"] == "relay"]
+    assert len(relays) == 1
+    assert relays[0]["spot"] == "station_1.core"
+    # The committed leg keeps its status; the re-transport is a fresh pending leg.
+    legs = [a for a in report.plan["activities"] if a["kind"] == "transport"]
+    assert any(a.get("status") == "running" for a in legs)
+    assert any("status" not in a for a in legs)
 
 
 def test_cli_replan_writes_valid_plan(tmp_path):
@@ -123,10 +132,14 @@ def test_cli_replan_missing_status_file_is_usage_error():
     assert code == cli.EXIT_USAGE
 
 
-def test_cli_replan_unnormalized_is_invalid(tmp_path):
+def test_cli_replan_started_transport_to_pending_is_ok(tmp_path):
+    # The CLI now schedules a started-transport -> pending-successor input (via a
+    # relay) instead of rejecting it.
     status = _status_file(tmp_path, _UNNORMALIZED)
-    code = cli.main(["schedule", str(WORKFLOW), "--env", str(ENV), "--status", str(status)])
-    assert code == cli.EXIT_INVALID
+    out = tmp_path / "plan.yaml"
+    code = cli.main(["schedule", str(WORKFLOW), "--env", str(ENV), "--status", str(status), "-o", str(out)])
+    assert code == cli.EXIT_OK
+    assert validate_document(out).ok
 
 
 # --- committed example (examples/simple.status.yaml) ----------------------

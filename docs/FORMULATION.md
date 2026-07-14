@@ -286,10 +286,19 @@ mode. The same $s_i \ge now$ lower bound applies to a pending **transport**
 activity's start $a_r$, so a transport whose source finished before $now$ is
 still not scheduled in the past.
 
-Replan input is assumed **normalized**: a `running` / `completed` transport
-activity never feeds directly into a `pending` processing activity (such cases
-must be removed before solving; the scheduler rejects them as
-`status_unnormalized`).
+Replan input is **normalized** before solving (SPEC §4.5 / §6.4.1). A `running`
+/ `completed` transport that has committed an Object to a spot while its
+destination processing is still `pending` does not feed that processing directly:
+a **relay** (an instantaneous, device-less activity holding the arrival spot) is
+inserted, and a pending re-transport leg carries the Object from the relay to the
+destination's chosen input spot. The destination's mode is therefore free — a
+zero-distance re-transport if it stays at the arrival spot, a real move if it is
+re-routed. Relays and re-transports are ordinary activities and transports in the
+model above (a relay is a $p_{i,m}=0$ activity occupying one spot and no device),
+so no term here is special-cased; only the model **construction** introduces them.
+Repeated re-routes chain (relay after relay); the fixed part — committed legs and
+completed relays — is pinned exactly as $T^{\mathrm{done}}$ / $T^{\mathrm{run}}$
+above, and only pending legs are optimised.
 
 ## Objective
 

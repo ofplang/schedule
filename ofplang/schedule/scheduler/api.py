@@ -13,12 +13,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ofplang.schedule.core import yamlnode
-from ofplang.schedule.core.diagnostics import ERROR, Diagnostic
+from ofplang.schedule.core.diagnostics import ERROR, Diagnostic, Diagnostics
 from ofplang.schedule.scheduler.cpsat import solve
 from ofplang.schedule.scheduler.envload import load_environment
-from ofplang.schedule.scheduler.instance import build_instance
+from ofplang.schedule.scheduler.instance import build_instance, report_unreachable
+from ofplang.schedule.scheduler.normalize import normalize
 from ofplang.schedule.scheduler.plan import render_plan
-from ofplang.schedule.scheduler.status import build_fixation
 from ofplang.schedule.scheduler.workflow import parse_workflow
 from ofplang.schedule.validation import errors
 from ofplang.schedule.validation import validate_document
@@ -65,24 +65,40 @@ def schedule(
     if workflow is None or _has_error(wf_diags.items):
         return ScheduleReport(None, None, None, diagnostics)
 
-    # 3. Instance + execution-layer checks (§9.3 subset).
-    instance, inst_diags = build_instance(workflow, env)
-    diagnostics += inst_diags.items
-    if instance is None:
-        return ScheduleReport(None, None, None, diagnostics)
+    # 3. Instance + execution-layer checks (§9.3 subset). On an initial plan,
+    # reachability is checked per workflow arc here. On a replan it is deferred:
+    # committed transports may lack a direct current-env route (they re-route
+    # through relays), so reachability is re-checked per pending leg after
+    # normalization.
+    if status_path is None:
+        instance, inst_diags = build_instance(workflow, env)
+        diagnostics += inst_diags.items
+        if instance is None:
+            return ScheduleReport(None, None, None, diagnostics)
+        fixation = None
+    else:
+        base, inst_diags = build_instance(workflow, env, check_reachability=False)
+        diagnostics += inst_diags.items
+        if base is None:
+            return ScheduleReport(None, None, None, diagnostics)
 
-    # 4. Replan status (optional): shape-validate, then match against the
-    # instance to build the fixation. A prior plan can be fed back verbatim —
-    # its `outcome` is ignored and its pending activities are re-optimised.
-    fixation = None
-    if status_path is not None:
+        # 4. Replan status: shape-validate, then normalize into the augmented
+        # instance + fixation. Fixed parts are pinned as historical facts (not
+        # re-validated against the env); a prior plan feeds back verbatim.
         status_result = validate_document(status_path)
         diagnostics += status_result.diagnostics
         if not status_result.ok:
             return ScheduleReport(None, None, None, diagnostics)
-        fixation, fix_diags = build_fixation(yamlnode.load_file(status_path), instance)
-        diagnostics += fix_diags.items
-        if fixation is None:
+        instance, fixation, norm_diags = normalize(base, yamlnode.load_file(status_path), env)
+        diagnostics += norm_diags.items
+        if instance is None or fixation is None:
+            return ScheduleReport(None, None, None, diagnostics)
+
+        # Reachability of the pending legs only (committed legs are facts).
+        reach = Diagnostics()
+        report_unreachable(instance, set(fixation.arcs), reach)
+        diagnostics += reach.items
+        if _has_error(reach.items):
             return ScheduleReport(None, None, None, diagnostics)
 
     # 5. Solve, then 6. render the plan (only when feasible).

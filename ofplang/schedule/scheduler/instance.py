@@ -28,12 +28,29 @@ from ofplang.schedule.validation import errors
 
 
 @dataclass(frozen=True)
+class RelayInfo:
+    """Output provenance of a relay activity (a transport junction, SPEC §6.4.1):
+    the logical arc it belongs to, its chain position `seq`, and the spot it
+    occupies. A relay is not a workflow node, so this — not `node` — is its
+    identity. Present only on relay activities (added by `normalize`)."""
+
+    arc: Arc
+    seq: int
+    spot: str
+
+
+@dataclass(frozen=True)
 class ActivityInstance:
-    """One processing activity and the modes it may run in."""
+    """One processing activity and the modes it may run in. A relay (§6.4.1) is
+    also an ActivityInstance — with a single 0-duration, device-less, single-spot
+    mode and `relay` set — so the solver treats it exactly like any processing
+    activity; only construction (`normalize`) and rendering (`plan`) are aware of
+    it. `node` / `process` are unused on a relay."""
 
     node: NodePath
     process: str
     modes: tuple[Mode, ...]
+    relay: RelayInfo | None = None
 
 
 @dataclass(frozen=True)
@@ -51,10 +68,16 @@ class TransportOption:
 
 @dataclass(frozen=True)
 class ArcInstance:
+    """One transport leg. `arc` is the logical connection served (all legs of a
+    multi-leg move share it); `seq` is the leg's chain position (§6.6), None for a
+    single-leg transport. `src_activity` / `dst_activity` are the physical
+    endpoints (either may be a relay), which can differ from `arc`'s endpoints."""
+
     arc: Arc
     src_activity: int
     dst_activity: int
     options: tuple[TransportOption, ...]
+    seq: int | None = None
 
 
 @dataclass(frozen=True)
@@ -67,7 +90,17 @@ class Instance:
     precedence: tuple[tuple[int, int], ...]
 
 
-def build_instance(workflow: Workflow, env: Environment) -> tuple[Instance | None, Diagnostics]:
+def build_instance(
+    workflow: Workflow, env: Environment, *, check_reachability: bool = True
+) -> tuple[Instance | None, Diagnostics]:
+    """Build the solver instance from the workflow and environment.
+
+    `check_reachability` reports `arc_unreachable` for any workflow arc no
+    transporter can serve — correct for an initial plan, where every arc is a
+    single pending transport. On a **replan** it is passed False: an arc whose
+    transport is already committed may have no *direct* current-env route (the
+    move is completed, and a re-route goes through a relay), so reachability is
+    re-checked per pending leg after normalization (`report_unreachable`)."""
     diags = Diagnostics()
 
     index_by_node = {a.path: i for i, a in enumerate(workflow.activities)}
@@ -93,7 +126,7 @@ def build_instance(workflow: Workflow, env: Environment) -> tuple[Instance | Non
             )
             continue
         options = _transport_options(activities[si], arc.src.port, activities[di], arc.dst.port, env)
-        if not options:
+        if not options and check_reachability:
             diags.error(
                 errors.ARC_UNREACHABLE,
                 f"no transporter can serve the arc {format_endpoint(arc.src.node, arc.src.port)} -> {format_endpoint(arc.dst.node, arc.dst.port)}",
@@ -109,6 +142,22 @@ def build_instance(workflow: Workflow, env: Environment) -> tuple[Instance | Non
     if any(d.severity == "error" for d in diags.items):
         return None, diags
     return Instance(env, env.time_unit, tuple(activities), tuple(arcs), precedence), diags
+
+
+def report_unreachable(instance: "Instance", fixed_arc_indices: set[int], diags: Diagnostics) -> None:
+    """Emit `arc_unreachable` for every **pending** leg (an arc not in
+    `fixed_arc_indices`) that no transporter can serve. Committed (fixed) legs are
+    facts and are not re-checked (SPEC §9.3). Used on the augmented instance after
+    normalization, so a re-routed move is judged per pending leg, not by whether
+    the original arc had a direct route."""
+    for r, arc in enumerate(instance.arcs):
+        if r in fixed_arc_indices or arc.options:
+            continue
+        leg = f" (leg seq {arc.seq})" if arc.seq is not None else ""
+        diags.error(
+            errors.ARC_UNREACHABLE,
+            f"no transporter can serve the arc {format_endpoint(arc.arc.src.node, arc.arc.src.port)} -> {format_endpoint(arc.arc.dst.node, arc.arc.dst.port)}{leg}",
+        )
 
 
 def _check_mode_ports(process: str, workflow: Workflow, modes: tuple[Mode, ...], diags: Diagnostics) -> None:

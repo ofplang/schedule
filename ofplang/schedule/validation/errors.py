@@ -80,22 +80,19 @@ STATUS_MISSING_NOW = "status_missing_now"
 STATUS_NODE_UNKNOWN = "status_node_unknown"
 # A status entry's `arc` does not match any Object-bearing arc in the workflow.
 STATUS_ARC_UNKNOWN = "status_arc_unknown"
-# A processing status names a `mode` its process capability does not offer.
+# A fixed processing activity cannot be pinned: its `mode` has no echo
+# (input/output spots, devices) and the current environment does not offer it.
 STATUS_MODE_UNKNOWN = "status_mode_unknown"
-# A transport status names a route (transporter + from/to spot) that is not a
-# viable transport option for its arc.
-STATUS_ROUTE_UNKNOWN = "status_route_unknown"
-# A fixed transport's route implies an endpoint mode that disagrees with that
-# endpoint activity's own fixed mode.
-STATUS_ROUTE_INCONSISTENT = "status_route_inconsistent"
 # A started activity's reported times contradict `now` (a completed activity
 # ends after `now`, or a running activity starts after `now`).
 STATUS_TIME_INCONSISTENT = "status_time_inconsistent"
-# Two status entries fix the same activity (same node) or the same arc.
+# Two status entries fix the same activity (same node) or the same transport leg
+# (same arc + seq).
 STATUS_DUPLICATE = "status_duplicate"
-# A running / completed transport feeds directly into a pending processing
-# activity; such cases must be normalized away before solving (FORMULATION §9).
-STATUS_UNNORMALIZED = "status_unnormalized"
+# A committed transport chain in a replan input is inconsistent: a started
+# transport leg whose source processing is not completed, a leg whose from_spot
+# does not continue the previous leg's arrival spot, or similar.
+BROKEN_TRANSPORT_CHAIN = "broken_transport_chain"
 
 # The `cross_kind_id_coincidence` code is the only warning; everything else is an
 # error. The runner and CLI use this to check severity.
@@ -150,11 +147,9 @@ ERROR_CODES = frozenset(
         STATUS_NODE_UNKNOWN,
         STATUS_ARC_UNKNOWN,
         STATUS_MODE_UNKNOWN,
-        STATUS_ROUTE_UNKNOWN,
-        STATUS_ROUTE_INCONSISTENT,
         STATUS_TIME_INCONSISTENT,
         STATUS_DUPLICATE,
-        STATUS_UNNORMALIZED,
+        BROKEN_TRANSPORT_CHAIN,
     }
 )
 
