@@ -136,6 +136,20 @@ activities:
     assert target["input_spots"] == {"target_in": "station_3.core"}
 
 
+def test_committed_reroute_example(tmp_path):
+    # Golden anchor for the tracked reroute example (examples/reroute.*).
+    report = schedule(WORKFLOW, EXAMPLES / "reroute.env.yaml", status_path=EXAMPLES / "reroute.status.yaml")
+    assert report.outcome == "optimal" and report.makespan == 11
+    assert [r["spot"] for r in _kinds(report.plan, "relay")] == ["station_1.core"]
+    assert _kinds(report.plan, "processing")[-1]["input_spots"] == {"target_in": "station_2.core"}
+
+
+def test_committed_reroute_output_is_valid_document():
+    path = EXAMPLES / "outputs" / "reroute.replan.yaml"
+    assert path.is_file()
+    assert validate_document(path).ok
+
+
 def test_bounce_revisits_a_spot_distinguished_by_seq(tmp_path):
     # Committed legs bounce station_1 -> station_2 -> station_1; target ends back
     # on station_1. Two relays sit at station_1.core, told apart by seq.

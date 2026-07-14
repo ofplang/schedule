@@ -73,6 +73,26 @@ Its `lane` chart (`outputs/simple.replan.lane.svg`,
 `visualize --view lane`) draws the `now = 3` marker as a dashed line, with the
 fixed `source` to its left and the re-optimised work to its right.
 
+- `reroute.env.yaml` + `reroute.status.yaml` — a **re-routing** replan. Mid-run,
+  `station_1` (where `target` ran) becomes unavailable, so the environment now
+  offers `target` only on `station_2` (the device and its spot are kept, plus a
+  `station_1.core -> station_2.core` route). The status reports the transport as
+  already `completed`, delivering the sample to `station_1.core`.
+
+```sh
+ofp-schedule schedule examples/simple.workflow.yaml --env examples/reroute.env.yaml \
+    --status examples/reroute.status.yaml
+```
+
+Because the sample has already landed on the now-unusable `station_1`, the
+scheduler inserts a **relay** at `station_1.core` and a **re-transport** to
+`station_2.core`, and runs the target there:
+`SampleSource → transport → relay@station_1.core → re-transport → target@station_2.core`
+(makespan 11). Committed history (`completed` transport) is pinned as a fact and
+not re-validated against the changed environment; only the pending future is
+re-optimised. Output `outputs/reroute.replan.yaml` (+ `.lane.svg`). This is the
+smallest end-to-end case of transport-arrival normalization (SPEC §6.4.1).
+
 ## `two_arms` — two jobs on a two-transporter fleet
 
 - `two_arms.workflow.yaml` — the v0 workflow.

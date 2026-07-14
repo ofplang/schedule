@@ -1,0 +1,81 @@
+time:
+  unit: second
+now: 5
+outcome: optimal
+objective:
+  kind: makespan
+  value: 11
+activities:
+- kind: processing
+  status: completed
+  start: 0
+  end: 2
+  process: source
+  mode: '0'
+  node:
+  - SampleSource
+  output_spots:
+    source_out: station_0.core
+- kind: transport
+  status: completed
+  start: 2
+  end: 3
+  from_spot: station_0.core
+  to_spot: station_1.core
+  transporter: transport
+  arc:
+    from:
+      node:
+      - SampleSource
+      port: source_out
+    to:
+      node:
+      - SampleTarget
+      port: target_in
+  seq: 0
+- kind: relay
+  status: completed
+  start: 3
+  end: 3
+  seq: 1
+  spot: station_1.core
+  arc:
+    from:
+      node:
+      - SampleSource
+      port: source_out
+    to:
+      node:
+      - SampleTarget
+      port: target_in
+- kind: transport
+  start: 5
+  end: 9
+  from_spot: station_1.core
+  to_spot: station_2.core
+  transporter: transport
+  arc:
+    from:
+      node:
+      - SampleSource
+      port: source_out
+    to:
+      node:
+      - SampleTarget
+      port: target_in
+  seq: 2
+- kind: processing
+  start: 9
+  end: 11
+  process: target
+  mode: '0'
+  node:
+  - SampleTarget
+  devices:
+  - station_2
+  input_spots:
+    target_in: station_2.core
+meta:
+  workflow: examples/simple.workflow.yaml
+  environment: examples/reroute.env.yaml
+  status: examples/reroute.status.yaml

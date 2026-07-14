@@ -1,0 +1,33 @@
+# A re-routing replanning input (execution status, SPEC §7) for the `simple`
+# workflow, used with reroute.env.yaml.
+#
+# The source has finished and the transport has already delivered the sample to
+# station_1.core (`seq: 0` — the first, so far only, leg of the arc). The target
+# is still pending, but station_1 can no longer run it (see reroute.env.yaml), so
+# the scheduler inserts a relay at station_1.core and a re-transport to
+# station_2.core, and runs the target there:
+#
+#   SampleSource --transport--> relay@station_1.core --re-transport--> target@station_2.core
+time:
+  unit: second
+now: 5
+activities:
+  - kind: processing
+    status: completed
+    start: 0
+    end: 2
+    process: source
+    mode: '0'
+    node: [SampleSource]
+    output_spots: { source_out: station_0.core }
+  - kind: transport
+    status: completed
+    start: 2
+    end: 3
+    seq: 0
+    from_spot: station_0.core
+    to_spot: station_1.core
+    transporter: transport
+    arc:
+      from: { node: [SampleSource], port: source_out }
+      to:   { node: [SampleTarget], port: target_in }
