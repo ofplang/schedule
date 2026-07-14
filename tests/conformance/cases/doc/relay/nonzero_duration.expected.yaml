@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: relay_nonzero_duration}
+notes: 'A relay is instantaneous; end must equal start (§6.4.1).'

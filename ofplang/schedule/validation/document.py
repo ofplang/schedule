@@ -20,7 +20,13 @@ STATUSES = {"pending", "running", "completed"}
 OBJECTIVE_KEYS = {"kind", "value"}
 TIME_KEYS = {"unit"}
 PROCESSING_KEYS = {"kind", "status", "start", "end", "process", "mode", "node", "devices", "input_spots", "output_spots"}
-TRANSPORT_KEYS = {"kind", "status", "start", "end", "from_spot", "to_spot", "transporter", "arc"}
+# A transport carries an optional `seq` (its position in a multi-leg chain that
+# serves one logical arc; absent on a single-leg transport). See §6.6.
+TRANSPORT_KEYS = {"kind", "status", "start", "end", "from_spot", "to_spot", "transporter", "arc", "seq"}
+# A relay (§6) is a transport junction: it belongs to a logical `arc` at a `seq`
+# position, occupies one `spot`, and is instantaneous (end == start).
+RELAY_KEYS = {"kind", "status", "start", "end", "arc", "seq", "spot"}
+ACTIVITY_KINDS = {"processing", "transport", "relay"}
 ARC_ENDPOINT_KEYS = {"node", "port"}
 
 
@@ -130,19 +136,22 @@ def _check_activity(node: YNode, base: str, diags: Diagnostics) -> None:
     if kind_node is None:
         diags.error(errors.MISSING_REQUIRED_FIELD, "kind is required", shape.join(base, "kind"), at=amap)
         return
-    if not (isinstance(kind_node, YScalar) and kind_node.is_str and kind_node.value in ("processing", "transport")):
-        diags.error(errors.UNKNOWN_ACTIVITY_KIND, "kind must be processing or transport", shape.join(base, "kind"), at=kind_node)
+    if not (isinstance(kind_node, YScalar) and kind_node.is_str and kind_node.value in ACTIVITY_KINDS):
+        diags.error(errors.UNKNOWN_ACTIVITY_KIND, "kind must be processing, transport, or relay", shape.join(base, "kind"), at=kind_node)
         return
     kind = kind_node.value
 
-    shape.unknown_keys(amap, PROCESSING_KEYS if kind == "processing" else TRANSPORT_KEYS, base, diags)
+    allowed = {"processing": PROCESSING_KEYS, "transport": TRANSPORT_KEYS, "relay": RELAY_KEYS}[kind]
+    shape.unknown_keys(amap, allowed, base, diags)
     _check_status(amap.get("status"), base, diags)
     _check_interval(amap, base, diags)
 
     if kind == "processing":
         _check_processing(amap, base, diags)
-    else:
+    elif kind == "transport":
         _check_transport(amap, base, diags)
+    else:
+        _check_relay(amap, base, diags)
 
 
 def _check_status(node: YNode | None, base: str, diags: Diagnostics) -> None:
@@ -190,6 +199,27 @@ def _check_transport(amap: YMap, base: str, diags: Diagnostics) -> None:
     arc = shape.require(amap, "arc", base, diags)
     if arc is not None:
         _check_arc(arc, shape.join(base, "arc"), diags)
+    # Optional chain position (§6.6); a single-leg transport omits it.
+    shape.nonneg_int(amap.get("seq"), shape.join(base, "seq"), diags)
+
+
+def _check_relay(amap: YMap, base: str, diags: Diagnostics) -> None:
+    # A relay is a transport junction (§6): it serves a logical `arc` at a `seq`
+    # position and occupies one `spot`. It is instantaneous — `end` must equal
+    # `start` (its interval was already range-checked by `_check_interval`).
+    arc = shape.require(amap, "arc", base, diags)
+    if arc is not None:
+        _check_arc(arc, shape.join(base, "arc"), diags)
+    _check_qualified_spot(shape.require(amap, "spot", base, diags), shape.join(base, "spot"), diags)
+    shape.nonneg_int(shape.require(amap, "seq", base, diags), shape.join(base, "seq"), diags)
+
+    start, end = amap.get("start"), amap.get("end")
+    if (
+        isinstance(start, YScalar) and start.is_int
+        and isinstance(end, YScalar) and end.is_int
+        and end.value != start.value
+    ):
+        diags.error(errors.RELAY_NONZERO_DURATION, "a relay is instantaneous (end must equal start)", shape.join(base, "end"), at=end)
 
 
 def _check_arc(node: YNode, path: str, diags: Diagnostics) -> None:

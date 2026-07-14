@@ -1,0 +1,7 @@
+activities:
+- kind: relay
+  start: 3
+  end: 3
+  arc:
+    from: {node: [S], port: o}
+    to: {node: [T], port: i}

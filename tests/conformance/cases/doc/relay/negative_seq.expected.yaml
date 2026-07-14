@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: negative_value}
+notes: 'seq is a non-negative integer (§9.2).'

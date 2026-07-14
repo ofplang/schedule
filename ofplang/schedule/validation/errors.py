@@ -41,6 +41,9 @@ END_BEFORE_START = "end_before_start"
 EMPTY_NODE_PATH = "empty_node_path"
 MALFORMED_ARC = "malformed_arc"
 MALFORMED_PLACEMENT = "malformed_placement"
+# A `relay` activity (a transport junction, §6) has a non-zero duration; a relay
+# is instantaneous, so its `end` must equal its `start`.
+RELAY_NONZERO_DURATION = "relay_nonzero_duration"
 
 # Execution layer (§9.3) and scheduling. These are produced by the scheduler
 # (not the schema validators) while reading the workflow and building/solving the
@@ -131,6 +134,7 @@ ERROR_CODES = frozenset(
         EMPTY_NODE_PATH,
         MALFORMED_ARC,
         MALFORMED_PLACEMENT,
+        RELAY_NONZERO_DURATION,
         UNSUPPORTED_FEATURE,
         NO_ENTRY_PROCESS,
         PROCESS_NOT_DEFINED,

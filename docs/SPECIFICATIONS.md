@@ -151,6 +151,18 @@ final model; a looser alternative would occupy only the transporter.)
 
 Ordering: `a >= e_i` and `s_j >= b`.
 
+**Relay (transport junction).** A single arc's Object may be moved in more than
+one leg — delivered to an intermediate spot by one transport, then picked up from
+there by the next. A **relay** is the junction between two consecutive transports:
+an instantaneous (zero-duration) point that occupies one spot and marks that the
+Object has arrived there and is available for the next leg. It carries no
+processing; it exists only so that consecutive transports can be described (a
+transport connects a producing point to a consuming point, and a relay is such a
+point that is neither a source nor a final consumer). This is a general feature of
+the model, independent of why a multi-leg move arises; the scheduler introduces
+relays when replanning re-routes an Object whose transport has already committed
+its arrival spot (§9.3 / FORMULATION §9).
+
 ### 4.6 Transporters
 
 A transporter is an **individual** device with its own id, exclusive like any
@@ -358,7 +370,7 @@ environment.
 
 ### 6.2 Activity — common fields
 
-- `kind` (required) — `processing` or `transport`.
+- `kind` (required) — `processing`, `transport`, or `relay` (§6.4.1).
 - `status` (optional) — `pending`, `running`, or `completed`; default `pending`.
   A plan leaves it out (all activities are pending). A status sets `completed` /
   `running` on the activities that have started. Pending activities are normally
@@ -393,10 +405,36 @@ environment.
 - `transporter` (required) — the selected transporter id. The activity also
   occupies the source and destination devices (§4.5); all three are derivable
   (from `transporter`, `from_spot`, `to_spot`), so there is no `devices` field.
-- `arc` (required) — provenance / identity: the Object-bearing arc served, as
-  `from` / `to`, each `{ node: <path>, port: <name> }`.
+- `arc` (required) — provenance: the Object-bearing arc served (the logical
+  connection), as `from` / `to`, each `{ node: <path>, port: <name> }`. When the
+  arc's Object is moved in a single leg, `arc` and the `from_spot` / `to_spot`
+  coincide with that leg. When it is moved in several legs (through relays,
+  §6.4.1), **every** leg carries the same logical `arc`, and each leg's
+  `from_spot` / `to_spot` gives its own physical hop — so `arc` names *which
+  connection* the leg serves, while the spots give the actual move.
+- `seq` (optional) — the leg's position in a multi-leg chain for that arc (§6.6).
+  Omitted for a single-leg transport (equivalent to the first position).
 
 Durations are not stored (`end - start`).
+
+### 6.4.1 Relay activity (transport junction)
+
+A **relay** (§4.5) is the junction between two consecutive transport legs of one
+arc: the point where the Object waits after one leg delivers it and before the
+next picks it up. It is a scheduling artifact, not a workflow step.
+
+- `kind: relay`; plus `status` / `start` / `end` (§6.2), with `end == start` (a
+  relay is instantaneous).
+- `arc` (required) — the logical connection it belongs to, same shape and value as
+  the transport legs of that arc.
+- `seq` (required) — its position in that arc's chain (§6.6).
+- `spot` (required) — the qualified `<device>.<spot>` the Object occupies at the
+  junction.
+
+A relay's in/out ports are implicit (a single Object passes through, elidable) and
+not represented in the document; the consecutive legs connect through the shared
+`spot` (the delivering leg's `to_spot`, the relay's `spot`, and the departing
+leg's `from_spot` are the same).
 
 ### 6.5 Placements
 
@@ -420,11 +458,20 @@ placements:
 ### 6.6 Identity and replanning
 
 A status is matched against the workflow (and any prior plan) by each activity's
-provenance: a processing activity by its `node`, a transport activity by its
-`arc`. On a replan the scheduler fixes `completed` and `running` activities to
-their reported times and assignments, takes material positions from `placements`,
-and re-optimises the rest at or after `now`. The main fields are not identities —
-a process/mode or a spot/transporter combination does not distinguish repeated
+provenance: a processing activity by its `node`; a transport or relay activity by
+its `arc` **and `seq`**. A single-leg transport has one leg per arc, so its `arc`
+alone identifies it (`seq` omitted = position `0`). A multi-leg move (through
+relays, §6.4.1) has several legs and relays on the **same** `arc`, distinguished
+by `seq` — a per-arc chain ordinal. `seq` is a **stable** position: once assigned
+to a chain element it is carried unchanged across replans (a fresh element takes
+the next unused position for that arc), so a status lines up against the prior
+plan even when a spot is revisited (the same `spot` can appear at two positions).
+`seq` is an ordinal, not an encoded value — nothing reads meaning from it.
+
+On a replan the scheduler fixes `completed` and `running` activities to their
+reported times and assignments, takes material positions from `placements`, and
+re-optimises the rest at or after `now`. The main fields are not identities — a
+process/mode or a spot/transporter combination does not distinguish repeated
 occurrences, and the times change from one plan to the next.
 
 ### 6.7 Examples
@@ -617,13 +664,18 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
 - `now` (if present) is a non-negative integer; `outcome` (if present) is one of
   `optimal` / `feasible` / `infeasible` / `unknown`; `objective` (if present) has
   `kind: makespan` and a non-negative integer `value`.
-- Each activity: `kind` is required and is `processing` or `transport`; `status`
-  (if present) is `pending` / `running` / `completed`; `start` and `end` are
-  required non-negative integers with `end >= start`. Unknown keys are errors.
+- Each activity: `kind` is required and is `processing`, `transport`, or `relay`;
+  `status` (if present) is `pending` / `running` / `completed`; `start` and `end`
+  are required non-negative integers with `end >= start`. Unknown keys are errors.
   - processing: `process`, `mode`, and `node` (a non-empty list of identifiers) are
     required; `devices`, `input_spots`, `output_spots` are optional.
   - transport: `from_spot`, `to_spot` (qualified spots), `transporter`, and `arc`
-    (`from` / `to`, each `{ node: <list>, port: <id> }`) are required.
+    (`from` / `to`, each `{ node: <list>, port: <id> }`) are required; `seq` (if
+    present) is a non-negative integer. More than one transport may carry the same
+    `arc` (the legs of a multi-leg move, §6.4.1).
+  - relay: `arc` (as above), `spot` (a qualified spot), and `seq` (a non-negative
+    integer) are required; `end` must equal `start` (`relay_nonzero_duration`
+    otherwise).
 - `placements` (if present): each entry is `{ object, spot }`, where `object` is
   exactly one of `{ input: <name> }` or `{ node: <list>, port: <id> }`, and `spot`
   is a qualified spot.
@@ -727,13 +779,14 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | code | meaning |
 | --- | --- |
 | `missing_activities` | `activities` is absent |
-| `unknown_activity_kind` | `kind` is not `processing` or `transport` |
+| `unknown_activity_kind` | `kind` is not `processing` / `transport` / `relay` |
 | `unknown_status` | `status` is not `pending` / `running` / `completed` |
 | `unknown_outcome` | `outcome` is not one of the defined values |
 | `end_before_start` | `end` is earlier than `start` |
 | `empty_node_path` | `node` is an empty list |
 | `malformed_arc` | an `arc`'s `from` / `to` / `node` / `port` structure is wrong |
 | `malformed_placement` | a `placements` `object` is not exactly one of `input` or `node` + `port` |
+| `relay_nonzero_duration` | a `relay` activity's `end` is not equal to its `start` |
 
 Absent `process` / `mode` / `from_spot` and similar use the shared
 `missing_required_field`; type violations use `wrong_type`. When `time` is

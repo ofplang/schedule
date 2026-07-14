@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: missing_required_field}
+notes: 'A relay requires spot and seq (§6.4.1); codes are compared as a set.'

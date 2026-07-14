@@ -1,0 +1,33 @@
+time: {unit: second}
+now: 5
+activities:
+- kind: transport
+  status: completed
+  start: 2
+  end: 3
+  seq: 0
+  from_spot: station_0.core
+  to_spot: station_1.core
+  transporter: arm
+  arc:
+    from: {node: [S], port: o}
+    to: {node: [T], port: i}
+- kind: relay
+  status: completed
+  start: 3
+  end: 3
+  seq: 1
+  spot: station_1.core
+  arc:
+    from: {node: [S], port: o}
+    to: {node: [T], port: i}
+- kind: transport
+  seq: 2
+  start: 5
+  end: 7
+  from_spot: station_1.core
+  to_spot: station_2.core
+  transporter: arm
+  arc:
+    from: {node: [S], port: o}
+    to: {node: [T], port: i}

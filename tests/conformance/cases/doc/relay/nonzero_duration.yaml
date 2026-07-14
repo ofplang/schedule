@@ -1,0 +1,9 @@
+activities:
+- kind: relay
+  start: 3
+  end: 5
+  seq: 0
+  spot: station_1.core
+  arc:
+    from: {node: [S], port: o}
+    to: {node: [T], port: i}
