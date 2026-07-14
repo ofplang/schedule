@@ -34,7 +34,7 @@ solver used by the scheduler).
 
 ```sh
 ofp-schedule validate <file>...                 # validate an environment or a plan/status
-ofp-schedule schedule <workflow> --env <env> [--status status.yaml] [--running-margin N] [-o plan.yaml] [--format yaml|json]
+ofp-schedule schedule <workflow> --env <env> [--status status.yaml] [--running-margin N] [--seed N] [-o plan.yaml] [--format yaml|json]
 ofp-schedule visualize <plan> [--view device|workflow|lane] [--theme light|dark|auto] [-o out.svg]
 ```
 
@@ -43,7 +43,10 @@ execution document (pass `--kind` to force it); diagnostics are reported as
 `file:line:col: <severity> <code>`. `schedule` produces an execution plan (§6)
 that minimises makespan; with `--status` it replans from an execution status
 (§7), emitting the full timeline (fixed history + re-optimised future) that
-round-trips as the next status input. `visualize` renders a plan as a self-contained Gantt
+round-trips as the next status input. By default the solve is non-deterministic
+(a multi-worker search that may return a different equally-optimal schedule each
+run); `--seed N` makes it reproducible by fixing the CP-SAT seed and using a
+single worker. `visualize` renders a plan as a self-contained Gantt
 chart — SVG by default (fixed colours, transparent background, PowerPoint-safe)
 or HTML. Exit codes: `0` success, `1` validation errors or no feasible schedule,
 `2` usage/input error.

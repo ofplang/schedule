@@ -196,3 +196,31 @@ def test_fixed_transport_route_and_times_are_pinned():
     assert (t.start, t.end, t.status) == (2, 3, "completed")
     assert t.option.transporter == "arm"
     assert sol.makespan == 5                        # everything fixed
+
+
+def _signature(sol):
+    """A fully-ordered fingerprint of a solution: makespan plus every activity's
+    (node, mode, start, end) and every transport's (endpoints, transporter, start,
+    end). Two solves with the same fingerprint returned the identical schedule."""
+    acts = sorted(
+        (p.node, p.mode.id, p.start, p.end) for p in sol.processing
+    )
+    trans = sorted(
+        (
+            (t.arc.src.node, t.arc.src.port, t.arc.dst.node, t.arc.dst.port),
+            t.option.transporter,
+            t.start,
+            t.end,
+        )
+        for t in sol.transport
+    )
+    return (sol.makespan, tuple(acts), tuple(trans))
+
+
+def test_random_seed_makes_the_solve_reproducible():
+    # reformatter has many equally-optimal schedules, so a default (multi-worker,
+    # unseeded) solve returns varying ones; a fixed seed pins a single worker and
+    # must return the identical schedule every time.
+    inst = _instance("reformatter")
+    signatures = {_signature(solve(inst, random_seed=7)) for _ in range(4)}
+    assert len(signatures) == 1, "seeded solves must be identical"

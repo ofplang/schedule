@@ -70,12 +70,23 @@ def solve(
     fixation: Fixation | None = None,
     running_task_margin: int = 0,
     max_time_seconds: float | None = None,
+    random_seed: int | None = None,
 ) -> Solution:
     """Build and solve the model. With a `fixation` (a replan), completed/running
     activities are pinned to their reported times, mode, and route, pending ones
     are held to start at or after `now`, and a running activity's end is clamped
     up to `now + running_task_margin` so an overrunning task is never fixed to a
-    finish in the past (FORMULATION §9)."""
+    finish in the past (FORMULATION §9).
+
+    By default the solve is non-deterministic: CP-SAT runs a multi-worker
+    portfolio that races on wall-clock time, so a fresh run may return a different
+    optimal schedule (the makespan is unique, but which of the equally-optimal
+    schedules comes back is not). Passing `random_seed` makes the solve
+    reproducible — it fixes the seed *and* pins the search to a single worker,
+    since a fixed seed alone does not defeat the inter-worker race. This is meant
+    for tests that assert on a specific plan; it forgoes parallelism, and note
+    that reproducibility only holds when the solve runs to completion (a solve
+    truncated by `max_time_seconds` still depends on wall-clock timing)."""
     model = cp_model.CpModel()
     now = fixation.now if fixation is not None else 0
     horizon = _horizon(instance, fixation, running_task_margin)
@@ -197,6 +208,12 @@ def solve(
     solver = cp_model.CpSolver()
     if max_time_seconds is not None:
         solver.parameters.max_time_in_seconds = max_time_seconds
+    if random_seed is not None:
+        # Reproducible mode: a fixed seed only determines a single worker's search,
+        # so also pin to one worker — otherwise the portfolio's inter-worker race
+        # still varies which optimal schedule is returned.
+        solver.parameters.random_seed = random_seed
+        solver.parameters.num_search_workers = 1
     status = solver.Solve(model)
     outcome = _STATUS.get(status, "unknown")
 

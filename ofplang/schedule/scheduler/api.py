@@ -50,6 +50,7 @@ def schedule(
     status_path=None,
     running_task_margin: int = 0,
     max_time_seconds: float | None = None,
+    random_seed: int | None = None,
 ) -> ScheduleReport:
     diagnostics: list[Diagnostic] = []
 
@@ -107,6 +108,7 @@ def schedule(
         fixation=fixation,
         running_task_margin=running_task_margin,
         max_time_seconds=max_time_seconds,
+        random_seed=random_seed,
     )
     if solution.outcome not in ("optimal", "feasible"):
         diagnostics.append(Diagnostic(errors.INFEASIBLE, "no feasible schedule found"))

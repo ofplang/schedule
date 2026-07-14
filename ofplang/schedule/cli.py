@@ -75,6 +75,14 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="safety margin: a running activity's fixed end is clamped up to now + N (default: 0)",
     )
+    s.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        metavar="N",
+        help="reproducible solve: fix the CP-SAT seed to N and use a single worker "
+        "(default: non-deterministic multi-worker search)",
+    )
     s.add_argument("-o", "--out", metavar="FILE", help="write the plan here (default: stdout)")
     s.add_argument("--format", choices=["yaml", "json"], default="yaml", help="plan output format")
 
@@ -217,6 +225,7 @@ def _cmd_schedule(args) -> int:
         args.env,
         status_path=args.status,
         running_task_margin=args.running_margin,
+        random_seed=args.seed,
     )
     if not report.ok:
         # Surface every error diagnostic (missing location falls back to a path).
