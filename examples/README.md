@@ -93,6 +93,27 @@ not re-validated against the changed environment; only the pending future is
 re-optimised. Output `outputs/reroute.replan.yaml` (+ `.lane.svg`). This is the
 smallest end-to-end case of transport-arrival normalization (SPEC §6.4.1).
 
+- `reroute_stay.env.yaml` + `reroute_stay.status.yaml` — a **stay-put** replan,
+  the folding counterpart to the reroute above. The transport has delivered the
+  sample to `station_1.core` and `target` *still* runs there. Normalization still
+  derives a relay at the arrival spot and a re-transport to the target's input
+  spot, but that spot is the same `station_1.core`, so the re-transport is a
+  **zero-distance no-op**: it and its relay are **folded out** of the output
+  (SPEC §6.4.1). The committed leg then delivers straight to the target
+  (`SampleSource → transport → target@station_1.core`, makespan 5). Output
+  `outputs/reroute_stay.replan.yaml` (+ `.lane.svg`) has no relay and no
+  zero-distance transport.
+
+- `reroute_chain.env.yaml` + `reroute_chain.status.yaml` — a **chained** reroute.
+  Two committed real legs have carried the sample `station_0 → station_1 →
+  station_2`; `target` now runs only on `station_3`, reached by a third, real
+  leg. Each arrival becomes a relay, so the relays chain, and because **every leg
+  is a real move** (no no-op), all of them are **kept**:
+  `source → leg → relay@station_1 → leg → relay@station_2 → leg → target@station_3`
+  (makespan 14). Output `outputs/reroute_chain.replan.yaml` (+ `.lane.svg`).
+  Together with `reroute_stay`, this shows the fold rule both ways: a stay-put
+  relay is folded, a relay between real moves is not.
+
 ## `two_arms` — two jobs on a two-transporter fleet
 
 - `two_arms.workflow.yaml` — the v0 workflow.

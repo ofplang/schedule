@@ -1,0 +1,31 @@
+# A "stay-put" replanning input (execution status, SPEC §7) for the `simple`
+# workflow, used with reroute_stay.env.yaml.
+#
+# The source has finished and the transport has already delivered the sample to
+# station_1.core (`seq: 0`). The target is still pending and consumes right there,
+# so the re-transport normalization inserts is a zero-distance no-op: it and its
+# relay are folded from the output (SPEC §6.4.1). The committed leg then delivers
+# straight to target@station_1.core.
+time:
+  unit: second
+now: 3
+activities:
+  - kind: processing
+    status: completed
+    start: 0
+    end: 2
+    process: source
+    mode: '0'
+    node: [SampleSource]
+    output_spots: { source_out: station_0.core }
+  - kind: transport
+    status: completed
+    start: 2
+    end: 3
+    seq: 0
+    from_spot: station_0.core
+    to_spot: station_1.core
+    transporter: transport
+    arc:
+      from: { node: [SampleSource], port: source_out }
+      to:   { node: [SampleTarget], port: target_in }

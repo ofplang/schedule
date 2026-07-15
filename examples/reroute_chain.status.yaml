@@ -1,0 +1,45 @@
+# A chained re-routing replanning input (execution status, SPEC §7) for the
+# `simple` workflow, used with reroute_chain.env.yaml.
+#
+# Two committed legs have carried the sample station_0 -> station_1 -> station_2
+# (`seq: 0`, then `seq: 2` — the odd positions in between are the relays that
+# normalization derives). The target is still pending and now runs only on
+# station_3, so a third, pending leg moves the sample station_2 -> station_3. The
+# arrivals at station_1 and station_2 become relays, kept because every leg is a
+# real move:
+#
+#   source --leg0--> relay@station_1 --leg2--> relay@station_2 --leg4--> target@station_3
+time:
+  unit: second
+now: 10
+activities:
+  - kind: processing
+    status: completed
+    start: 0
+    end: 2
+    process: source
+    mode: '0'
+    node: [SampleSource]
+    output_spots: { source_out: station_0.core }
+  - kind: transport
+    status: completed
+    start: 2
+    end: 3
+    seq: 0
+    from_spot: station_0.core
+    to_spot: station_1.core
+    transporter: transport
+    arc:
+      from: { node: [SampleSource], port: source_out }
+      to:   { node: [SampleTarget], port: target_in }
+  - kind: transport
+    status: completed
+    start: 5
+    end: 9
+    seq: 2
+    from_spot: station_1.core
+    to_spot: station_2.core
+    transporter: transport
+    arc:
+      from: { node: [SampleSource], port: source_out }
+      to:   { node: [SampleTarget], port: target_in }

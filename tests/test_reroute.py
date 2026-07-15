@@ -150,6 +150,31 @@ def test_committed_reroute_output_is_valid_document():
     assert validate_document(path).ok
 
 
+def test_committed_reroute_stay_example():
+    # examples/reroute_stay.*: the target still consumes where the sample landed,
+    # so the re-transport is a zero-distance no-op — it and its relay are folded
+    # (§6.4.1), leaving the committed leg to deliver straight to the target.
+    report = schedule(WORKFLOW, EXAMPLES / "reroute_stay.env.yaml", status_path=EXAMPLES / "reroute_stay.status.yaml")
+    assert report.outcome == "optimal" and report.makespan == 5
+    assert not _kinds(report.plan, "relay")  # folded away
+    legs = _kinds(report.plan, "transport")
+    assert len(legs) == 1 and not any(t["from_spot"] == t["to_spot"] for t in legs)
+    path = EXAMPLES / "outputs" / "reroute_stay.replan.yaml"
+    assert path.is_file() and validate_document(path).ok
+
+
+def test_committed_reroute_chain_example():
+    # examples/reroute_chain.*: two committed real legs carry the sample to
+    # station_2, then a third real leg re-routes it to station_3. Both arrival
+    # relays chain and are kept (every leg is a real move, so nothing is folded).
+    report = schedule(WORKFLOW, EXAMPLES / "reroute_chain.env.yaml", status_path=EXAMPLES / "reroute_chain.status.yaml")
+    assert report.outcome == "optimal" and report.makespan == 14
+    assert {r["spot"] for r in _kinds(report.plan, "relay")} == {"station_1.core", "station_2.core"}
+    assert _kinds(report.plan, "processing")[-1]["input_spots"] == {"target_in": "station_3.core"}
+    path = EXAMPLES / "outputs" / "reroute_chain.replan.yaml"
+    assert path.is_file() and validate_document(path).ok
+
+
 def test_bounce_revisits_a_spot_distinguished_by_seq(tmp_path):
     # Committed legs bounce station_1 -> station_2 -> station_1; the target is on
     # station_3, so a final real leg leaves station_1 again. Both station_1 relays
