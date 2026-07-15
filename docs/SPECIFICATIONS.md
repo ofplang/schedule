@@ -402,9 +402,12 @@ environment.
 - `kind: transport`; plus `status` / `start` / `end` (§6.2).
 - `from_spot` (required) — the qualified source spot `<device>.<spot>`.
 - `to_spot` (required) — the qualified destination spot.
-- `transporter` (required) — the selected transporter id. The activity also
-  occupies the source and destination devices (§4.5); all three are derivable
-  (from `transporter`, `from_spot`, `to_spot`), so there is no `devices` field.
+- `transporter` (required, except for a same-spot move) — the selected
+  transporter id. The activity also occupies the source and destination devices
+  (§4.5); all three are derivable (from `transporter`, `from_spot`, `to_spot`), so
+  there is no `devices` field. A **same-spot move** (`from_spot == to_spot`, always
+  duration 0 per §5.4) is a physical no-op that no transporter performs, so
+  `transporter` is **omitted** for it; the devices still derive from the spots.
 - `arc` (required) — provenance: the Object-bearing arc served (the logical
   connection), as `from` / `to`, each `{ node: <path>, port: <name> }`. When the
   arc's Object is moved in a single leg, `arc` and the `from_spot` / `to_spot`
@@ -435,6 +438,18 @@ A relay's in/out ports are implicit (a single Object passes through, elidable) a
 not represented in the document; the consecutive legs connect through the shared
 `spot` (the delivering leg's `to_spot`, the relay's `spot`, and the departing
 leg's `from_spot` are the same).
+
+**Folding of stay-put relays (standard).** A relay is kept only when it joins two
+real moves. When the departing leg is a zero-distance no-op — the Object stays at
+the spot the previous, real leg delivered it to, because the destination consumes
+there — that relay and its no-op leg carry no information and are **folded out of
+the output** (the real leg already delivers where the destination reads). This is
+standard, not optional. It leaves the plan valid with the same makespan, and it
+round-trips: on a replan the relay and re-transport are regenerated from the
+surviving committed leg (§7), so eliding them changes nothing that is read back. A
+single-leg same-spot transport that has no preceding relay (a direct
+producer-to-consumer hop within one spot) is **not** folded — there is no committed
+leg to reconstruct it from — but it carries no `transporter` (above).
 
 ### 6.5 Placements
 
@@ -585,7 +600,10 @@ unavailable — the scheduler inserts a relay (§6.4.1) at the arrival spot and 
 pending re-transport leg to the destination, whose mode is then free to be
 re-chosen. The re-transport is a zero-distance hop if the destination stays put,
 or a real move to the re-routed spot. Repeated re-routes chain (relay after
-relay); a spot may be revisited (distinguished by `seq`).
+relay); a spot may be revisited (distinguished by `seq`). When the re-transport is
+a zero-distance hop (the destination stays put), it and its relay are folded out
+of the rendered output as a no-op (§6.4.1); the committed leg then delivers
+straight to the destination.
 
 ## 8. Identifiers
 
@@ -682,10 +700,11 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
   are required non-negative integers with `end >= start`. Unknown keys are errors.
   - processing: `process`, `mode`, and `node` (a non-empty list of identifiers) are
     required; `devices`, `input_spots`, `output_spots` are optional.
-  - transport: `from_spot`, `to_spot` (qualified spots), `transporter`, and `arc`
-    (`from` / `to`, each `{ node: <list>, port: <id> }`) are required; `seq` (if
-    present) is a non-negative integer. More than one transport may carry the same
-    `arc` (the legs of a multi-leg move, §6.4.1).
+  - transport: `from_spot`, `to_spot` (qualified spots) and `arc` (`from` / `to`,
+    each `{ node: <list>, port: <id> }`) are required; `transporter` is required
+    unless the move is same-spot (`from_spot == to_spot`), where it may be omitted
+    (§6.4); `seq` (if present) is a non-negative integer. More than one transport
+    may carry the same `arc` (the legs of a multi-leg move, §6.4.1).
   - relay: `arc` (as above), `spot` (a qualified spot), and `seq` (a non-negative
     integer) are required; `end` must equal `start` (`relay_nonzero_duration`
     otherwise).

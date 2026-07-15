@@ -193,9 +193,18 @@ def _check_node_path(node: YNode | None, path: str, diags: Diagnostics) -> None:
 
 
 def _check_transport(amap: YMap, base: str, diags: Diagnostics) -> None:
-    _check_qualified_spot(shape.require(amap, "from_spot", base, diags), shape.join(base, "from_spot"), diags)
-    _check_qualified_spot(shape.require(amap, "to_spot", base, diags), shape.join(base, "to_spot"), diags)
-    _require_str(amap, "transporter", base, diags)
+    from_spot = shape.require(amap, "from_spot", base, diags)
+    to_spot = shape.require(amap, "to_spot", base, diags)
+    _check_qualified_spot(from_spot, shape.join(base, "from_spot"), diags)
+    _check_qualified_spot(to_spot, shape.join(base, "to_spot"), diags)
+    # `transporter` is required for a real move, but a same-spot move (§5.4) is a
+    # physical no-op that no transporter carries, so it may be omitted (§6.4). When
+    # present it must still be a string.
+    if _same_spot(from_spot, to_spot):
+        if "transporter" in amap:
+            _require_str(amap, "transporter", base, diags)
+    else:
+        _require_str(amap, "transporter", base, diags)
     arc = shape.require(amap, "arc", base, diags)
     if arc is not None:
         _check_arc(arc, shape.join(base, "arc"), diags)
@@ -254,6 +263,15 @@ def _check_qualified_spot(node: YNode | None, path: str, diags: Diagnostics) -> 
         return
     if parse_qualified_spot(node.value) is None:
         diags.error(errors.MALFORMED_QUALIFIED_SPOT, f"malformed spot {node.value!r}", path, at=node)
+
+
+def _same_spot(from_spot: YNode | None, to_spot: YNode | None) -> bool:
+    """Whether both spots are the same well-formed qualified spot string."""
+    return (
+        isinstance(from_spot, YScalar) and from_spot.is_str
+        and isinstance(to_spot, YScalar) and to_spot.is_str
+        and from_spot.value == to_spot.value
+    )
 
 
 def _require_str(amap: YMap, key: str, base: str, diags: Diagnostics) -> None:

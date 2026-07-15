@@ -130,7 +130,9 @@ atomic plate operations fan out from a `Preparation` step across
 reformatter / motoman / biomek devices and merge back into a final
 `Reformatter3`. Twelve Object-bearing arcs connect them; ten cross-device arcs
 become transports, and two intra-reformatter handoffs pass through the shared
-`rf_link` spot at zero transport time.
+`rf_link` spot at zero transport time. Those two are same-spot no-ops
+(`from_spot == to_spot`), so they carry no `transporter` (SPEC §6.4); being
+single-leg (no relay), they are kept in the plan rather than folded (§6.4.1).
 
 ### Translation choices (ofp-scheduler → v0 + environment)
 

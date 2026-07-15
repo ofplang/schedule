@@ -124,7 +124,6 @@ activities:
   end: 22
   from_spot: reformatter.rf_link
   to_spot: reformatter.rf_link
-  transporter: transport
   arc:
     from:
       node:
@@ -214,7 +213,6 @@ activities:
   end: 56
   from_spot: reformatter.rf_link
   to_spot: reformatter.rf_link
-  transporter: transport
   arc:
     from:
       node:

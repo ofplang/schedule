@@ -298,7 +298,10 @@ model above (a relay is a $p_{i,m}=0$ activity occupying one spot and no device)
 so no term here is special-cased; only the model **construction** introduces them.
 Repeated re-routes chain (relay after relay); the fixed part — committed legs and
 completed relays — is pinned exactly as $T^{\mathrm{done}}$ / $T^{\mathrm{run}}$
-above, and only pending legs are optimised.
+above, and only pending legs are optimised. The model keeps every relay and leg;
+rendering the plan is where a stay-put relay together with its zero-distance
+re-transport is folded away as a no-op (SPEC §6.4.1), since the committed leg
+already delivers where the destination reads.
 
 ## Objective
 

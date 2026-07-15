@@ -99,20 +99,26 @@ def test_replan_output_round_trips_as_next_status(tmp_path):
     assert second.ok and second.makespan == first.makespan == 6
 
 
-def test_replan_started_transport_to_pending_inserts_relay(tmp_path):
-    # A started transport feeding a pending processing is no longer rejected: it
-    # is normalized into a relay at the arrival spot plus a re-transport (here a
-    # zero-distance hop, since the target still consumes at the arrival spot).
+def test_replan_started_transport_to_pending_folds_stay_put_relay(tmp_path):
+    # A started transport feeding a pending processing is normalized into a relay
+    # at the arrival spot plus a re-transport. Here the target still consumes at
+    # that arrival spot, so the re-transport is a zero-distance no-op: it and its
+    # relay are folded out of the output (§6.4.1), leaving only the committed leg
+    # to deliver straight to the target.
     status = _status_file(tmp_path, _UNNORMALIZED)
     report = schedule(WORKFLOW, ENV, status_path=status)
     assert report.ok and report.outcome == "optimal"
-    relays = [a for a in report.plan["activities"] if a["kind"] == "relay"]
-    assert len(relays) == 1
-    assert relays[0]["spot"] == "station_1.core"
-    # The committed leg keeps its status; the re-transport is a fresh pending leg.
+    assert not [a for a in report.plan["activities"] if a["kind"] == "relay"]
     legs = [a for a in report.plan["activities"] if a["kind"] == "transport"]
-    assert any(a.get("status") == "running" for a in legs)
-    assert any("status" not in a for a in legs)
+    # Only the committed (running) real leg survives; the folded no-op is gone.
+    assert len(legs) == 1 and legs[0].get("status") == "running"
+    assert not any(a["from_spot"] == a["to_spot"] for a in legs)
+    # The folded output still round-trips to the same optimum.
+    fed = tmp_path / "fed.yaml"
+    fed.write_text(to_yaml(report.plan), encoding="utf-8")
+    assert validate_document(fed).ok
+    second = schedule(WORKFLOW, ENV, status_path=fed)
+    assert second.ok and second.makespan == report.makespan
 
 
 def test_cli_replan_writes_valid_plan(tmp_path):

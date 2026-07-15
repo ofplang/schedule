@@ -151,16 +151,20 @@ def test_committed_reroute_output_is_valid_document():
 
 
 def test_bounce_revisits_a_spot_distinguished_by_seq(tmp_path):
-    # Committed legs bounce station_1 -> station_2 -> station_1; target ends back
-    # on station_1. Two relays sit at station_1.core, told apart by seq.
+    # Committed legs bounce station_1 -> station_2 -> station_1; the target is on
+    # station_3, so a final real leg leaves station_1 again. Both station_1 relays
+    # sit between real moves (they are not stay-put no-ops), so folding keeps them:
+    # two relays at station_1.core, told apart by seq. (A relay whose departing leg
+    # is a zero-distance no-op would instead be folded; see the stay-put tests.)
     env = _write(tmp_path, "env.yaml", _env(
-        [("station_0", "core"), ("station_1", "core"), ("station_2", "core")],
+        [("station_0", "core"), ("station_1", "core"), ("station_2", "core"), ("station_3", "core")],
         [
             ("station_0.core", "station_1.core", 1),
             ("station_1.core", "station_2.core", 4),
             ("station_2.core", "station_1.core", 4),
+            ("station_1.core", "station_3.core", 2),
         ],
-        "station_1", "station_1.core",
+        "station_3", "station_3.core",
     ))
     status = """
 time: {unit: second}

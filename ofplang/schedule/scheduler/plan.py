@@ -67,16 +67,16 @@ def render_plan(
         entry = {"kind": "transport"}
         if t.status is not None:
             entry["status"] = t.status
-        entry.update(
-            {
-                "start": t.start,
-                "end": t.end,
-                "from_spot": t.option.from_spot,
-                "to_spot": t.option.to_spot,
-                "transporter": t.option.transporter,
-                "arc": _arc(t.arc),
-            }
-        )
+        entry["start"] = t.start
+        entry["end"] = t.end
+        entry["from_spot"] = t.option.from_spot
+        entry["to_spot"] = t.option.to_spot
+        # A same-spot move (§5.4) is a physical no-op: no transporter carries it,
+        # so the field is omitted (§6.4). The occupied devices still derive from
+        # the spots, and the route (from == to) is unambiguous without it.
+        if t.option.from_spot != t.option.to_spot:
+            entry["transporter"] = t.option.transporter
+        entry["arc"] = _arc(t.arc)
         # Chain position on a multi-leg move (§6.6); omit for a single-leg transport.
         if t.seq is not None:
             entry["seq"] = t.seq
@@ -84,6 +84,8 @@ def render_plan(
 
     # A stable, readable order: by time, then processing before transport.
     activities.sort(key=lambda a: (a["start"], a["end"], a["kind"]))
+    # Standard output normalization: elide relay + zero-distance re-transport pairs.
+    activities = _fold_relayed_zero_distance(activities)
 
     doc: dict = {"time": {"unit": instance.time_unit}}
     if now is not None:
@@ -111,6 +113,46 @@ def _arc(arc) -> dict:
         "from": {"node": list(arc.src.node), "port": arc.src.port},
         "to": {"node": list(arc.dst.node), "port": arc.dst.port},
     }
+
+
+def _arc_key(arc: dict) -> tuple:
+    """The identity of a rendered `{from, to}` arc, for pairing legs and relays."""
+    f, t = arc["from"], arc["to"]
+    return (tuple(f["node"]), f["port"], tuple(t["node"]), t["port"])
+
+
+def _fold_relayed_zero_distance(activities: list[dict]) -> list[dict]:
+    """Drop each relay together with the zero-distance transport leg it feeds.
+
+    When a real leg delivers an Object to a spot and the destination then consumes
+    at that *same* spot, the departing leg is a physical no-op (`from_spot ==
+    to_spot`, `start == end`) sitting behind a relay (§4.5): the Object never
+    moves. The relay + no-op leg carry no information — the real leg already
+    delivers where the destination reads — so both are elided (SPEC §6.4.1 / §7).
+    The plan stays valid with the same makespan, and it round-trips: a replan
+    regenerates the relay and re-transport from the surviving committed leg.
+
+    A single-leg same-spot transport (no preceding relay, so `seq` is absent) is
+    kept: there is no committed leg to reconstruct it from on a replan, so eliding
+    it would not round-trip. It carries no `transporter` (rendered above), which is
+    what marks it as a no-op in the output.
+    """
+    relay_at: dict[tuple, int] = {}
+    for i, a in enumerate(activities):
+        if a["kind"] == "relay":
+            relay_at[(_arc_key(a["arc"]), a["seq"])] = i
+    drop: set[int] = set()
+    for i, a in enumerate(activities):
+        if a["kind"] != "transport" or a["from_spot"] != a["to_spot"] or a["start"] != a["end"]:
+            continue
+        seq = a.get("seq")
+        if seq is None:
+            continue  # standalone same-spot hop: no relay to pair with, so kept
+        j = relay_at.get((_arc_key(a["arc"]), seq - 1))
+        if j is not None:
+            drop.add(i)
+            drop.add(j)
+    return [a for i, a in enumerate(activities) if i not in drop]
 
 
 def to_yaml(doc: dict) -> str:

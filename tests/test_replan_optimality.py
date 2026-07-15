@@ -174,11 +174,15 @@ activities:
 - { kind: transport, status: completed, start: 10, end: 14, seq: 4, from_spot: station_2.core, to_spot: station_1.core, transporter: transport, arc: { from: { node: [SampleSource], port: source_out }, to: { node: [SampleTarget], port: target_in } } }
 """
     report = schedule(SIMPLE_WF, env, status_path=write(tmp_path, "s.yaml", status))
-    assert report.makespan == 22  # 0-dist re-transport at 20, target 20->22
+    assert report.makespan == 22  # target back on station_1; folding leaves the solved makespan unchanged
+    # The terminal stay-put relay + its zero-distance re-transport are folded out;
+    # the mid-bounce relay at station_1 (between two real legs) survives.
     at1 = [r for r in kinds(report.plan, "relay") if r["spot"] == "station_1.core"]
-    assert len(at1) == 2 and len({r["seq"] for r in at1}) == 2  # revisit distinguished by seq
+    assert len(at1) == 1
+    assert not any(t["from_spot"] == t["to_spot"] for t in kinds(report.plan, "transport"))
     fed = write(tmp_path, "fed.yaml", to_yaml(report.plan))
     assert validate_document(fed).ok
+    assert schedule(SIMPLE_WF, env, status_path=fed).makespan == 22  # round-trips
 
 
 # --- C: multi-input --------------------------------------------------------
@@ -216,9 +220,15 @@ def test_multi_input_both_arrived_optimal(tmp_path):
     env = write(tmp_path, "env.yaml", _MULTI_ENV)
     report = schedule(wf, env, status_path=write(tmp_path, "s.yaml", _MULTI_STATUS))
     assert report.ok, [d.code for d in report.diagnostics]
-    # Both inputs stay at their arrival spots (0-distance); merge runs 5->7.
+    # Both inputs stay at their arrival spots (0-distance): each relay + stay-put
+    # re-transport is folded, so no relays remain and merge reads straight from the
+    # committed legs. Folding leaves the optimum unchanged; merge runs 5->7.
     assert report.makespan == 7
-    assert {r["spot"] for r in kinds(report.plan, "relay")} == {"dt.a", "dt.b"}
+    assert not kinds(report.plan, "relay")
+    assert not any(t["from_spot"] == t["to_spot"] for t in kinds(report.plan, "transport"))
+    fed = write(tmp_path, "fed.yaml", to_yaml(report.plan))
+    assert validate_document(fed).ok
+    assert schedule(wf, env, status_path=fed).makespan == 7  # round-trips
 
 
 def test_multi_input_infeasible_when_no_reachable_mode(tmp_path):
