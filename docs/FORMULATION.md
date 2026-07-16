@@ -27,16 +27,29 @@ are scheduled together:
 
 - **Processing activity** — one per atomic process invocation.
 - **Transport activity** — one per Object-bearing arc; moves an Object from a
-  source spot to a destination spot. An endpoint is normally an activity port
-  (its spot chosen by that activity's mode), but one endpoint may instead be a
-  **fixed spot** — the position of the workflow's boundary material declared by
-  the `interface` input (SPEC §3, §6): a boundary-input transport has a fixed
-  *source* spot (where an entry-input Object sits at the start), a boundary-output
-  transport a fixed *destination* spot (where a final-output Object is delivered).
-  This is the only generalization interface needs; there is no separate "boundary"
-  construct in the model. (Likewise a **relay** — the junction of a multi-leg move
-  on replan — is not a model primitive: it is an ordinary spot-occupancy between
-  two transports, introduced only by replan construction; see §9.)
+  source spot to a destination spot.
+
+**Boundary nodes.** The workflow's boundary Object-bearing material (entry inputs,
+final outputs) is handled by two synthetic **boundary nodes**, added when the
+`interface` constraint (SPEC §3, §6.8) is present:
+
+- the **input node** — a single processing activity whose mode's `output_spots`
+  place every Object-bearing entry-input port at its declared interface spot; it
+  occupies **no device**, has duration 0, and is pinned to start and end at time 0
+  (the initial material is a given, present from the start of the run);
+- the **output node** — a single processing activity whose mode's `input_spots`
+  are every Object-bearing final-output port at its declared interface spot; it
+  occupies **no device**, its start follows its incoming transport(s) like any
+  activity, and its end is pinned to the **makespan** (the delivered result holds
+  its spot until the schedule ends).
+
+A boundary connection is then an **ordinary arc**: `input node → consumer` for an
+entry input, `producer → output node` for a final output. No special arc form,
+transport variable, or occupancy rule is needed — the boundary node is just an
+activity with a single spot-fixing mode, and the arc is scheduled by the ordinary
+rules below. (Likewise a **relay** — the junction of a multi-leg move on replan —
+is not a model primitive: it is an ordinary spot-occupancy between two transports,
+introduced only by replan construction; see §9.)
 
 Every activity has, at minimum:
 
@@ -50,22 +63,16 @@ exclusive (mutual-exclusion applies to each; SPEC §4.4).
 
 ## Sets and indices
 
-- $T$: the workflow's processing-activity set.
+- $T$: the processing-activity set. It includes the two **boundary nodes** (the
+  input node and the output node, above) when `interface` is present; they are
+  ordinary members of $T$ with a single mode, distinguished only by their pinned
+  times (§3-bis) and empty device set.
 - $A \subseteq T \times T$: dependency (precedence) relation; $(i,j) \in A$ means
   "$j$ may start after $i$ completes".
 - $R$: Object-bearing arc set (Object-bearing connections, each realised as a
   transport). Pure Data arcs contribute a dependency to $A$ only and are not in
-  $R$ (SPEC §4.3, §4.5). $R$ partitions by endpoint kind:
-  - $R^{\mathrm{int}}$: **interior** arcs — output-port → input-port between two
-    activities (the classic case);
-  - $R^{\mathrm{in}}$: **boundary-input** arcs — a fixed source spot → an input
-    port (the entry-input Object at its declared position feeds a consumer);
-  - $R^{\mathrm{out}}$: **boundary-output** arcs — an output port → a fixed
-    destination spot (a producer's Object is delivered to a declared position).
-
-  A boundary arc is a normal transport with one endpoint pinned to a fixed spot;
-  everything below treats it uniformly with the fixed side simply offering a
-  single spot instead of a mode-indexed one.
+  $R$ (SPEC §4.3, §4.5). A **boundary arc** (one endpoint is a boundary node) is
+  an ordinary member of $R$; nothing below special-cases it.
 - $L$: device set. A device is an exclusive resource that owns spots and carries
   out work (SPEC §4.4).
 - $L^{\mathrm{tr}} \subseteq L$: transporters — individual devices used for moves
@@ -80,13 +87,11 @@ exclusive (mutual-exclusion applies to each; SPEC §4.4).
 - $I_i$, $O_i$: Object-bearing input-port and output-port sets of processing
   activity $i$. (Pure Data ports occupy no spot and are not listed.)
 
-An interior arc $r = (i,j) \in R^{\mathrm{int}}$ corresponds to a dependency pair
-in $A$, so the relation induced by $R^{\mathrm{int}}$ is a subset of $A$. A
-boundary arc has only one activity endpoint (the other is a fixed spot), so it
-induces a one-sided ordering (a consumer after a boundary-input move; a
-boundary-output move after its producer) rather than an $A$-pair. Every arc
-denotes a transport. Where a constraint below is written for $r=(i,j)$ it applies
-to whichever of $i$, $j$ is an activity endpoint.
+Every arc $r = (i,j) \in R$ corresponds to a dependency pair in $A$, so the
+relation induced by $R$ is a subset of $A$. An arc always denotes a transport. A
+boundary arc has a boundary node as one of $i$, $j$ (the input node as the source,
+or the output node as the destination), so it is an ordinary $(i,j)$ pair like any
+other.
 
 ## Parameters
 
@@ -115,20 +120,12 @@ Processing and transport:
   destination device, and the transporter $t$ (so typically $|L_{r,m,n,t}| = 3$;
   SPEC §4.5).
 - $k_r^{\mathrm{out}}$, $k_r^{\mathrm{in}}$: the source output port and
-  destination input port of arc $r$ (each defined only on the side that is an
-  activity port).
+  destination input port of arc $r$.
 
-Interface (boundary spots, SPEC §3, §6):
-
-- $\beta_r \in P$: the fixed spot of the boundary endpoint of arc
-  $r \in R^{\mathrm{in}} \cup R^{\mathrm{out}}$ — the source spot for
-  $r \in R^{\mathrm{in}}$, the destination spot for $r \in R^{\mathrm{out}}$.
-  Supplied by the `interface` input; one spot per Object-bearing boundary port.
-- $\rho_r \in \mathbb{Z}_{\ge 0}$: availability time of a boundary-**input** arc's
-  source Object — $0$ on an initial plan, $now$ on a replan (the Object has been
-  sitting at $\beta_r$ and is available from then). Plays the role $e_i$ plays for
-  an interior source (the time from which the source spot is occupied and the move
-  may start).
+The boundary nodes need no special parameters: each has a single mode whose
+$\sigma^{\mathrm{out}}$ (input node) or $\sigma^{\mathrm{in}}$ (output node) are the
+interface spots (SPEC §6.8), and whose device set is empty. Their spots enter the
+model as ordinary $\sigma$ values.
 
 Replanning:
 
@@ -158,14 +155,10 @@ Transport activities:
   L^{\mathrm{tr}}$. A variable exists only for a **feasible** combination — one
   whose duration $d_{t,\sigma^{\mathrm{out}}_{i,m,k_r^{\mathrm{out}}},\,
   \sigma^{\mathrm{in}}_{j,n,k_r^{\mathrm{in}}}}$ is defined; infeasible
-  combinations are omitted, which is how reachability enters the model.
-  For a **boundary** arc the fixed side offers a single spot $\beta_r$ and has no
-  mode index: a boundary-input arc uses $q_{r,n,t}$ (source spot $\beta_r$, dest
-  mode $n$, transporter $t$; duration $d_{t,\beta_r,\sigma^{\mathrm{in}}_{j,n,
-  k_r^{\mathrm{in}}}}$), a boundary-output arc uses $q_{r,m,t}$ (source mode $m$,
-  dest spot $\beta_r$; duration $d_{t,\sigma^{\mathrm{out}}_{i,m,k_r^{\mathrm{out}}},
-  \beta_r}$). Reachability enters identically (a boundary arc with no feasible
-  $(\cdot,t)$ has no route — the instance is infeasible).
+  combinations are omitted, which is how reachability enters the model. A boundary
+  arc is no different: one endpoint is a boundary node, whose single mode fixes its
+  spot, so its $q_{r,m,n,t}$ ranges over that node's one mode, the other endpoint's
+  modes, and the transporters.
 - $z_{r,t} = \sum_{m \in M_i}\sum_{n \in M_j} q_{r,m,n,t} \in \{0,1\}$: whether
   arc $r$'s transport uses transporter $t$ (derived; the per-transporter resource
   in §7).
@@ -217,27 +210,33 @@ $$
 s_j \ge e_i, \quad \forall (i,j) \in A
 $$
 
-For each arc $r = (i,j) \in R$, its transport starts after its source is ready
-and finishes before its destination is needed. On an **interior** arc both
-endpoints are activities:
+For each arc $r = (i,j) \in R$, its transport starts after the source activity
+ends and finishes before the destination activity starts:
 
 $$
-a_r \ge e_i, \qquad s_j \ge b_r, \quad \forall r=(i,j) \in R^{\mathrm{int}}
+a_r \ge e_i, \qquad s_j \ge b_r, \quad \forall r=(i,j) \in R
 $$
 
-On a **boundary-input** arc there is no source activity; the source Object is
-ready at $\rho_r$:
+This applies to boundary arcs unchanged: for `input node → consumer` the source
+is the input node (with $e = 0$, §3-bis), for `producer → output node` the
+destination is the output node.
+
+### 3-bis. Boundary node timing
+
+The two boundary nodes (§Activities) are pinned:
 
 $$
-a_r \ge \rho_r, \qquad s_j \ge b_r, \quad \forall r \in R^{\mathrm{in}}
+s_{\mathrm{in}} = e_{\mathrm{in}} = 0, \qquad e_{\mathrm{out}} = C_{\max}
 $$
 
-On a **boundary-output** arc there is no destination activity; only the source
-bound applies (the delivery time enters the makespan, §8):
-
-$$
-a_r \ge e_i, \quad \forall r \in R^{\mathrm{out}}
-$$
+The input node sits at time 0 (its output-spot occupancy over $[0, b_r]$ via the
+outgoing arc reserves each entry spot until the Object is picked up). The output
+node's end is the makespan, so a delivered Object holds its spot from arrival
+until the schedule ends (its input-spot occupancy over $[s_{\mathrm{out}},
+C_{\max}]$ joins the incoming arc's $[a_r, s_{\mathrm{out}}]$ into $[a_r,
+C_{\max}]$). On a replan the input node stays pinned at 0 (a given origin, exempt
+from the $s \ge now$ rule of §9); the output node's end tracks the current
+$C_{\max}$.
 
 ### 4. Transport route selection
 
@@ -246,72 +245,57 @@ per arc, and it must agree with the endpoint activities' mode selection:
 
 $$
 \sum_{n \in M_j}\sum_{t \in L^{\mathrm{tr}}} q_{r,m,n,t} = x_{i,m},
-\quad \forall r=(i,j)\in R^{\mathrm{int}},\ \forall m \in M_i
+\quad \forall r=(i,j)\in R,\ \forall m \in M_i
 $$
 $$
 \sum_{m \in M_i}\sum_{t \in L^{\mathrm{tr}}} q_{r,m,n,t} = x_{j,n},
-\quad \forall r=(i,j)\in R^{\mathrm{int}},\ \forall n \in M_j
+\quad \forall r=(i,j)\in R,\ \forall n \in M_j
 $$
 
 Summed over all $m,n,t$, these force exactly one $q_{r,m,n,t} = 1$ per arc, so
 each transport selects one transporter. An arc with no feasible combination has
 no route to select and the instance is infeasible (SPEC §9.3 `arc_unreachable`).
-
-On a **boundary** arc the mode-coupling applies only to the endpoint that is an
-activity port; the fixed side has no mode variable. A boundary-input arc couples
-its destination only,
-$\sum_{t} q_{r,n,t} = x_{j,n}\ (\forall n \in M_j)$; a boundary-output arc couples
-its source only, $\sum_{t} q_{r,m,t} = x_{i,m}\ (\forall m \in M_i)$. Either way
-exactly one route is chosen per arc.
+A boundary arc is included: its boundary node has a single mode $M = \{0\}$, so
+the coupling on that side degenerates to $x_{\cdot,0} = 1$ and the sum ranges over
+the other endpoint's modes and the transporters.
 
 ### 5. Transport duration
 
 $$
 b_r = a_r + \sum_{m \in M_i}\sum_{n \in M_j}\sum_{t \in L^{\mathrm{tr}}}
 d_{t,\sigma^{\mathrm{out}}_{i,m,k_r^{\mathrm{out}}},\ \sigma^{\mathrm{in}}_{j,n,k_r^{\mathrm{in}}}}\,
-q_{r,m,n,t}, \quad \forall r=(i,j) \in R^{\mathrm{int}}
+q_{r,m,n,t}, \quad \forall r=(i,j) \in R
 $$
 
-A boundary arc uses the same relation with its single-sided route variable and
-its fixed spot in place of one $\sigma$: a boundary-input arc sums
-$d_{t,\beta_r,\sigma^{\mathrm{in}}_{j,n,k_r^{\mathrm{in}}}}\,q_{r,n,t}$ over
-$(n,t)$; a boundary-output arc sums
-$d_{t,\sigma^{\mathrm{out}}_{i,m,k_r^{\mathrm{out}}},\beta_r}\,q_{r,m,t}$ over
-$(m,t)$.
-
-The duration depends on the chosen transporter as well as the spot pair. For a
-zero-distance transport ($d_{t,p,p}=0$) one may fix $a_r = b_r$ to the source
-readiness ($e_i$ for a port source, $\rho_r$ for a boundary-input source) by
-convention to avoid time indeterminacy.
+This covers boundary arcs unchanged (the boundary node's single mode supplies its
+$\sigma$ — the interface spot). The duration depends on the chosen transporter as
+well as the spot pair. For a zero-distance transport ($d_{t,p,p}=0$) one may fix
+$a_r = b_r = e_i$ by convention to avoid time indeterminacy (for a boundary-input
+arc $e_i = 0$, the input node's end).
 
 ### 6. Spot resource constraint
 
 A processing activity occupies each spot of its selected mode over $[s_i, e_i]$.
 A transport activity occupies its **source** and **destination** spots over
-*different* intervals. For arc $r=(i,j)$ the source/destination spot and the
-occupancy interval each depend on whether that endpoint is an activity port or a
-fixed boundary spot:
+*different* intervals. For arc $r=(i,j)$ under mode pair $(m,n)$, let
+$p_r^{\mathrm{src}}(m,n) = \sigma^{\mathrm{out}}_{i,m,k_r^{\mathrm{out}}}$ and
+$p_r^{\mathrm{dst}}(m,n) = \sigma^{\mathrm{in}}_{j,n,k_r^{\mathrm{in}}}$. Then
 
-- **source spot** $p_r^{\mathrm{src}} = \sigma^{\mathrm{out}}_{i,m,k_r^{\mathrm{out}}}$
-  (port; interior / boundary-output) or $\beta_r$ (fixed; boundary-input), held
-  over $I_r^{\mathrm{src}} = [\rho_r^{\mathrm{src}},\ b_r]$ where
-  $\rho_r^{\mathrm{src}} = e_i$ (port) or $\rho_r$ (fixed source);
-- **destination spot** $p_r^{\mathrm{dst}} = \sigma^{\mathrm{in}}_{j,n,k_r^{\mathrm{in}}}$
-  (port; interior / boundary-input) or $\beta_r$ (fixed; boundary-output), held
-  over $I_r^{\mathrm{dst}} = [a_r,\ \rho_r^{\mathrm{dst}}]$ where
-  $\rho_r^{\mathrm{dst}} = s_j$ (port) or $C_{\max}$ (fixed destination).
-
-The two fixed-endpoint rules are exactly the boundary occupancy: a boundary-input
-Object holds $\beta_r$ from its availability $\rho_r$ (0 / $now$) until it is
-picked up ($b_r$); a boundary-output Object holds $\beta_r$ from delivery ($a_r$)
-until the end of the schedule ($C_{\max}$), since nothing consumes it.
+- the source spot is held over $I_r^{\mathrm{src}} = [e_i,\ b_r]$, and
+- the destination spot is held over $I_r^{\mathrm{dst}} = [a_r,\ s_j]$.
 
 For each spot $p \in P$, the following intervals must be mutually
 non-overlapping:
 
 - $[s_i, e_i]$ for each processing activity that occupies $p$;
-- $I_r^{\mathrm{src}}$ for each transport with $p = p_r^{\mathrm{src}}$;
-- $I_r^{\mathrm{dst}}$ for each transport with $p = p_r^{\mathrm{dst}}$.
+- $I_r^{\mathrm{src}}$ for each transport with $p = p_r^{\mathrm{src}}(m,n)$;
+- $I_r^{\mathrm{dst}}$ for each transport with $p = p_r^{\mathrm{dst}}(m,n)$.
+
+The boundary nodes are ordinary occupiers here, and their pinned times (§3-bis)
+produce exactly the intended boundary reservations: the input node's outgoing arc
+holds each entry spot over $[e_{\mathrm{in}}{=}0,\ b_r]$; the output node holds each
+delivery spot over $[s_{\mathrm{out}},\ e_{\mathrm{out}}{=}C_{\max}]$, which with
+the incoming arc's $[a_r,\ s_{\mathrm{out}}]$ covers $[a_r,\ C_{\max}]$.
 
 Input ports never share a spot with each other, and output ports never share a
 spot with each other; an input port and an output port may share a spot.
@@ -322,10 +306,11 @@ For each device $\ell \in L$, the activities occupying it are mutually
 non-overlapping. A processing activity occupies its mode's devices $L_{i,m}$ over
 $[s_i,e_i]$; a transport activity occupies $L_{r,m,n,t}$ over its transport
 interval $[a_r,b_r]$ (the conservative formulation: source device, destination
-device, and the chosen transporter are all held during transport). For a boundary
-endpoint the corresponding device is the one that owns the fixed spot $\beta_r$
-(spots are qualified `device.spot`, SPEC §8.2), so a boundary transport still
-holds a source device, a destination device, and its transporter.
+device, and the chosen transporter are all held during transport). A boundary node
+has an **empty device set**, so it holds no device — only its spot(s) (§6). The
+boundary *transport* still holds a source device, a destination device (the ones
+owning the interface spot and the endpoint spot), and its transporter during
+$[a_r,b_r]$, exactly like any transport.
 
 $$
 (end_\alpha \le start_\beta) \lor (end_\beta \le start_\alpha),
@@ -343,16 +328,18 @@ $$
 C_{\max} \ge e_i, \quad \forall i \in T
 $$
 
-A **boundary-output** transport has no successor activity, so its delivery must
-be counted explicitly (an interior or boundary-input transport is already bounded
-by the activity that follows it):
+Each boundary-output delivery is also counted: the `producer → output node`
+transport ends at $b_r$, and the output node's end is pinned to $C_{\max}$
+(§3-bis), so
 
 $$
-C_{\max} \ge b_r, \quad \forall r \in R^{\mathrm{out}}
+C_{\max} \ge b_r, \quad \forall \text{boundary-output arc } r
 $$
 
-This also closes the boundary-output occupancy $[a_r, C_{\max}]$ of §6: the
-delivered Object holds $\beta_r$ to the end of the schedule.
+follows from $e_{\mathrm{out}} = C_{\max} \ge s_{\mathrm{out}} \ge b_r$. This is
+what holds a delivered Object's spot to the end of the schedule (§6). ($C_{\max}$
+is the max over real processing ends and boundary deliveries; the output node's own
+end equals it and is not itself a driver.)
 
 ### 9. Replanning fixation
 
@@ -403,15 +390,15 @@ rendering the plan is where a stay-put relay together with its zero-distance
 re-transport is folded away as a no-op (SPEC §6.4.1), since the committed leg
 already delivers where the destination reads.
 
-**Boundary arcs replan uniformly.** A boundary transport is an ordinary transport,
-so it is fixed / re-optimised and re-routed by the same rules: a boundary-input
-arc whose move has started is pinned like any committed leg, and a still-pending
-boundary-input arc takes $\rho_r = now$ (the entry-input Object has been waiting
-at $\beta_r$). A committed boundary-input leg that delivered while its destination
-is still pending re-routes through a relay just like an interior arc; a
-boundary-output arc likewise re-routes to its fixed $\beta_r$. No boundary case is
-special-cased here — only the model **construction** (reading `interface` into the
-fixed endpoints) differs.
+**Boundary nodes replan uniformly.** The boundary nodes and their arcs are
+re-created every solve from the workflow and `interface` (they never appear in the
+status input, so they are not read back — like relays). The input node stays pinned
+at $s = e = 0$ and the output node at $e = C_{\max}$; a committed boundary leg is
+matched by its logical arc (the empty-path endpoint, SPEC §6.4/§6.8) and pinned
+like any committed leg, and a still-pending boundary leg is re-optimised (and
+re-routes through relays if its committed arrival can no longer feed the
+destination). No boundary case is special-cased in the constraints — only the model
+**construction** (reading `interface` into the boundary nodes) differs.
 
 ## Objective
 
@@ -437,17 +424,21 @@ structure more directly with optional intervals.
   feasible $(m,n,t)$ combinations; the presence literal of each is $q_{r,m,n,t}$,
   and `AddExactlyOne` over them realises the §4 route selection.
 - Spot non-overlap: feed each processing interval and each transport's
-  source-spot interval $[\rho_r^{\mathrm{src}},b_r]$ and destination-spot interval
-  $[a_r,\rho_r^{\mathrm{dst}}]$ into the spot's `NoOverlap`. (Spot assignment
-  depends on the mode pair, not on $t$.) A boundary endpoint contributes the same
-  intervals with its fixed spot $\beta_r$ and the substitutions
-  $\rho_r^{\mathrm{src}}=\rho_r$ / $\rho_r^{\mathrm{dst}}=C_{\max}$ — so the
-  waiting entry-input and the resting final-output are just ordinary interval
-  members of their spot's `NoOverlap`, needing no boundary-specific machinery.
+  source-spot interval $[e_i,b_r]$ and destination-spot interval $[a_r,s_j]$ into
+  the spot's `NoOverlap`. (Spot assignment depends on the mode pair, not on $t$.)
+  The boundary nodes are ordinary occupiers: the input node's interval $[0,0]$ and
+  the output node's interval $[s_{\mathrm{out}},C_{\max}]$ carry their spots into
+  the same `NoOverlap`, so the waiting entry-input and the resting final-output
+  need no boundary-specific machinery.
 - Device non-overlap: feed processing intervals and the transport body interval
   $[a_r,b_r]$ into each device's `NoOverlap`. The transporter is a device like any
   other: route each transport option's body interval into its chosen transporter's
   `NoOverlap` (present iff $q_{r,m,n,t}$), so each transporter serialises only its
-  own moves while different transporters run in parallel.
-- Makespan: bind $C_{\max}$ as the max over all $e_i$ and every boundary-output
-  delivery $b_r$ ($r \in R^{\mathrm{out}}$) (e.g. `AddMaxEquality`).
+  own moves while different transporters run in parallel. (Boundary nodes have no
+  device, so they add nothing here.)
+- Boundary nodes: create $C_{\max}$ before the activity intervals so the output
+  node's interval can end at it; pin the input node to $[0,0]$ (exempt from the
+  replan $s\ge now$ lower bound) and the output node's end to $C_{\max}$.
+- Makespan: bind $C_{\max}$ as the max over all real processing ends $e_i$ and
+  every boundary-output delivery $b_r$ (e.g. `AddMaxEquality`); the output node's
+  own end is then set equal to $C_{\max}$.

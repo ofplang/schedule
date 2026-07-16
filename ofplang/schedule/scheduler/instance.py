@@ -16,9 +16,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ofplang.schedule.core.diagnostics import Diagnostics
-from ofplang.schedule.core.identifiers import format_endpoint
+from ofplang.schedule.core.identifiers import format_endpoint, parse_qualified_spot
 from ofplang.schedule.scheduler.model import (
     Arc,
+    Endpoint,
     Environment,
     Mode,
     NodePath,
@@ -40,17 +41,31 @@ class RelayInfo:
 
 
 @dataclass(frozen=True)
+class BoundaryInfo:
+    """Marks a synthetic **boundary node** (SPEC §6.8, FORMULATION §Activities):
+    the `input` node (produces every Object-bearing entry input at its interface
+    spot, pinned to time 0) or the `output` node (consumes every Object-bearing
+    final output at its interface spot, its end pinned to the makespan). Like a
+    relay it is an ordinary ActivityInstance with a single spot-fixing, device-less
+    mode; `kind` drives the solver's time pinning and rendering skips it."""
+
+    kind: str  # "input" | "output"
+
+
+@dataclass(frozen=True)
 class ActivityInstance:
     """One processing activity and the modes it may run in. A relay (§6.4.1) is
     also an ActivityInstance — with a single 0-duration, device-less, single-spot
     mode and `relay` set — so the solver treats it exactly like any processing
     activity; only construction (`normalize`) and rendering (`plan`) are aware of
-    it. `node` / `process` are unused on a relay."""
+    it. A boundary node (§6.8) is likewise an ActivityInstance with `boundary` set.
+    `node` / `process` are unused on a relay or boundary node."""
 
     node: NodePath
     process: str
     modes: tuple[Mode, ...]
     relay: RelayInfo | None = None
+    boundary: BoundaryInfo | None = None
 
 
 @dataclass(frozen=True)
@@ -91,9 +106,15 @@ class Instance:
 
 
 def build_instance(
-    workflow: Workflow, env: Environment, *, check_reachability: bool = True
+    workflow: Workflow, env: Environment, *, interface: dict | None = None, check_reachability: bool = True
 ) -> tuple[Instance | None, Diagnostics]:
     """Build the solver instance from the workflow and environment.
+
+    `interface` (SPEC §6.8), when given, pins the workflow's Object-bearing boundary
+    material to spots. Each binding adds a synthetic boundary node and an ordinary
+    arc (`input node → consumer` for an entry input), so the rest of the model is
+    unchanged. It is optional in the current phase: an unbound entry input leaves
+    its consumer's mode unconstrained (the pre-`interface` behaviour).
 
     `check_reachability` reports `arc_unreachable` for any workflow arc no
     transporter can serve — correct for an initial plan, where every arc is a
@@ -133,6 +154,10 @@ def build_instance(
             )
         arcs.append(ArcInstance(arc, si, di, tuple(options)))
 
+    # Boundary connections (SPEC §6.8): synthesize the input node and its arcs.
+    if interface:
+        _add_boundary_inputs(workflow, env, interface, activities, arcs, index_by_node, check_reachability, diags)
+
     precedence = tuple(
         (index_by_node[s], index_by_node[d])
         for s, d in workflow.precedence
@@ -158,6 +183,87 @@ def report_unreachable(instance: "Instance", fixed_arc_indices: set[int], diags:
             errors.ARC_UNREACHABLE,
             f"no transporter can serve the arc {format_endpoint(arc.arc.src.node, arc.arc.src.port)} -> {format_endpoint(arc.arc.dst.node, arc.arc.dst.port)}{leg}",
         )
+
+
+def _add_boundary_inputs(
+    workflow: Workflow,
+    env: Environment,
+    interface: dict,
+    activities: list[ActivityInstance],
+    arcs: list[ArcInstance],
+    index_by_node: dict[NodePath, int],
+    check_reachability: bool,
+    diags: Diagnostics,
+) -> None:
+    """Append the input boundary node and one boundary arc per bound entry input.
+
+    Each valid binding contributes an output port on the single input node (its
+    mode places that port at the interface spot) and an arc from the input node to
+    the consuming activity. Invalid bindings are diagnosed and skipped (SPEC §9.3):
+    an unknown / wrong-side / pass-through port, a Pure Data port, a duplicate spot,
+    or a spot the environment does not define.
+    """
+    inputs = interface.get("inputs") or {}
+    valid: list[tuple[str, str, Endpoint]] = []  # (port name, spot, consumer endpoint)
+    spot_owner: dict[str, str] = {}
+    for name, spot in inputs.items():
+        if not _spot_exists(spot, env, name, diags):
+            continue
+        if spot in spot_owner:
+            diags.error(errors.INTERFACE_DUPLICATE_SPOT, f"interface inputs {name!r} and {spot_owner[spot]!r} both bind spot {spot!r}")
+            continue
+        consumer = workflow.entry_inputs.get(name)
+        if consumer is None:
+            object_bearing = workflow.entry_input_ports.get(name)
+            if object_bearing is None:
+                diags.error(errors.INTERFACE_UNKNOWN_PORT, f"interface input {name!r} is not an entry input of the workflow")
+            elif not object_bearing:
+                diags.error(errors.INTERFACE_PURE_DATA_PORT, f"interface input {name!r} is a Pure Data port and occupies no spot")
+            else:
+                diags.error(errors.INTERFACE_UNKNOWN_PORT, f"interface input {name!r} is a pass-through entry input with no consuming activity (out of scope)")
+            continue
+        spot_owner[spot] = name
+        valid.append((name, spot, consumer))
+
+    if not valid:
+        return
+
+    # A single input node: one mode placing every bound entry input at its spot,
+    # no device (it holds spots only), zero duration (pinned to time 0 by cpsat).
+    mode = Mode(id="interface_in", devices=(), duration=0, input_spots={}, output_spots={n: s for n, s, _ in valid})
+    node_index = len(activities)
+    activities.append(ActivityInstance((), "", (mode,), boundary=BoundaryInfo("input")))
+
+    for name, _spot, consumer in valid:
+        di = index_by_node.get(consumer.node)
+        if di is None:
+            continue  # a consumer that is not a scheduled activity; cannot happen for a valid workflow
+        options = _transport_options(activities[node_index], name, activities[di], consumer.port, env)
+        if not options and check_reachability:
+            diags.error(
+                errors.ARC_UNREACHABLE,
+                f"no transporter can serve the boundary input {name!r} -> {format_endpoint(consumer.node, consumer.port)}",
+            )
+        arc = Arc(Endpoint((), name), Endpoint(consumer.node, consumer.port))
+        arcs.append(ArcInstance(arc, node_index, di, tuple(options)))
+
+
+def _spot_exists(spot: str, env: Environment, name: str, diags: Diagnostics) -> bool:
+    """True iff `spot` is a `<device>.<spot>` naming a device/spot defined in the
+    environment; diagnose `unknown_device` / `unknown_spot` otherwise (SPEC §9.3)."""
+    parsed = parse_qualified_spot(spot)
+    if parsed is None:
+        diags.error(errors.MALFORMED_QUALIFIED_SPOT, f"interface spot {spot!r} for {name!r} is not a qualified spot")
+        return False
+    device, spot_name = parsed
+    dev = env.devices.get(device)
+    if dev is None:
+        diags.error(errors.UNKNOWN_DEVICE, f"interface spot {spot!r} names an unknown device {device!r}")
+        return False
+    if spot_name not in dev.spots:
+        diags.error(errors.UNKNOWN_SPOT, f"interface spot {spot!r} names an unknown spot on device {device!r}")
+        return False
+    return True
 
 
 def _check_mode_ports(process: str, workflow: Workflow, modes: tuple[Mode, ...], diags: Diagnostics) -> None:

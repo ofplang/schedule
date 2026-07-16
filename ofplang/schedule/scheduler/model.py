@@ -14,7 +14,7 @@ own modules (`instance`, `plan`); this module holds only the parsed inputs.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # A node path (SPECIFICATIONS.md §6.3): node ids from the entry composite's body
 # down to the atomic invocation. Single-level workflows yield a one-tuple. It is
@@ -130,9 +130,24 @@ class Arc:
 class Workflow:
     """The expanded, schedulable graph: atomic activities, Object-bearing arcs,
     precedence edges (a superset of arcs, covering Pure Data dependencies too),
-    and the atomic process signatures referenced by the activities."""
+    and the atomic process signatures referenced by the activities.
+
+    `entry_inputs` / `exit_outputs` are the workflow's Object-bearing boundary
+    connections (SPEC §6.8): each maps a main (entry composite) port name to the
+    atomic endpoint that consumes that entry input, or produces that final output.
+    These have no in-body producer/consumer, so they carry no arc here; the
+    scheduler attaches them to synthetic boundary nodes when an `interface`
+    constraint pins their spots (see `instance`)."""
 
     activities: tuple[NodeInvocation, ...]
     arcs: tuple[Arc, ...]
     precedence: tuple[tuple[NodePath, NodePath], ...]
     processes: dict[str, AtomicProcess]
+    # main input port name -> the atomic input Endpoint that consumes it.
+    entry_inputs: dict[str, Endpoint] = field(default_factory=dict)
+    # main output port name -> the atomic output Endpoint that produces it.
+    exit_outputs: dict[str, Endpoint] = field(default_factory=dict)
+    # every main input / output port name -> whether it is Object-bearing (used to
+    # classify an `interface` binding: unknown port vs Pure Data vs pass-through).
+    entry_input_ports: dict[str, bool] = field(default_factory=dict)
+    exit_output_ports: dict[str, bool] = field(default_factory=dict)

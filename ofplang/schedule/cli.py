@@ -64,9 +64,15 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("workflow", metavar="WORKFLOW", help="ofplang v0 workflow YAML")
     s.add_argument("--env", required=True, metavar="ENV", help="execution environment definition YAML")
     s.add_argument(
+        "--document",
+        metavar="DOC",
+        help="execution document (§6): carries the interface boundary constraint (§6.8), and — "
+        "when it sets `now` — the prior status to replan from (fix completed/running, re-optimise the rest)",
+    )
+    s.add_argument(
         "--status",
         metavar="STATUS",
-        help="replan from this execution status (§7): fix completed/running, re-optimise the rest at/after now",
+        help="deprecated alias for --document (to be removed)",
     )
     s.add_argument(
         "--running-margin",
@@ -214,7 +220,8 @@ def _cmd_validate(args) -> int:
 
 
 def _cmd_schedule(args) -> int:
-    inputs = [args.workflow, args.env] + ([args.status] if args.status else [])
+    doc = args.document if args.document is not None else args.status
+    inputs = [args.workflow, args.env] + ([doc] if doc else [])
     for p in inputs:
         if not Path(p).is_file():
             print(f"ofp-schedule: cannot open {p!r}: no such file", file=sys.stderr)
@@ -223,7 +230,7 @@ def _cmd_schedule(args) -> int:
     report = run_schedule(
         args.workflow,
         args.env,
-        status_path=args.status,
+        document_path=doc,
         running_task_margin=args.running_margin,
         random_seed=args.seed,
     )

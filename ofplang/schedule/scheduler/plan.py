@@ -26,11 +26,17 @@ def render_plan(
     status: str | None = None,
     now: int | None = None,
     placements: list | None = None,
+    interface: dict | None = None,
 ) -> dict:
     """Build the execution-document dict for `solution`."""
     activities: list[dict] = []
 
     for p in solution.processing:
+        if p.boundary is not None:
+            # A synthetic boundary node (§6.8) is not a workflow activity; it is
+            # never rendered. Its boundary arc (carrying an empty-path endpoint) is
+            # emitted as an ordinary transport below.
+            continue
         if p.relay is not None:
             # A relay junction (§6.4.1): identity is its arc + seq + spot, not a
             # workflow node.
@@ -90,6 +96,10 @@ def render_plan(
     doc: dict = {"time": {"unit": instance.time_unit}}
     if now is not None:
         doc["now"] = now
+    # The interface boundary constraint (§6.8) round-trips: echo it verbatim so the
+    # plan can be fed back as the next document.
+    if interface:
+        doc["interface"] = interface
     doc["outcome"] = solution.outcome
     doc["objective"] = {"kind": "makespan", "value": solution.makespan}
     doc["activities"] = activities

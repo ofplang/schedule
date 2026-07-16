@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from ortools.sat.python import cp_model
 
 from ofplang.schedule.core.identifiers import parse_qualified_spot
-from ofplang.schedule.scheduler.instance import ArcInstance, Instance, RelayInfo, TransportOption
+from ofplang.schedule.scheduler.instance import ArcInstance, BoundaryInfo, Instance, RelayInfo, TransportOption
 from ofplang.schedule.scheduler.model import Arc, Mode, NodePath
 from ofplang.schedule.scheduler.status import Fixation
 
@@ -36,6 +36,8 @@ class ProcessingResult:
     # Set (opaquely, by the solver) when this activity is a relay junction; drives
     # rendering (`kind: relay`). None for a normal processing activity.
     relay: RelayInfo | None = None
+    # Set when this activity is a synthetic boundary node (§6.8); rendering skips it.
+    boundary: BoundaryInfo | None = None
 
 
 @dataclass(frozen=True)
@@ -100,28 +102,48 @@ def solve(
     def add(mapping: dict[str, list], key: str, interval) -> None:
         mapping.setdefault(key, []).append(interval)
 
-    # --- processing activities ---
+    # Makespan variable, created up front so the output boundary node's interval
+    # can end exactly at it (§8 / FORMULATION §3-bis).
+    c_max = model.NewIntVar(0, horizon, "c_max")
+
+    # --- processing activities (including the synthetic boundary nodes) ---
     starts, ends, mode_lits = [], [], []
+    make_ends: list = []  # ends that define the makespan (the output node's own end IS c_max, so it is excluded)
     for i, act in enumerate(instance.activities):
         s = model.NewIntVar(0, horizon, f"s{i}")
         e = model.NewIntVar(0, horizon, f"e{i}")
         fx = fixation.activities.get(i) if fixation is not None else None
+        boundary = act.boundary
         lits = []
         for m, mode in enumerate(act.modes):
             present = model.NewBoolVar(f"x{i}_{m}")
             lits.append(present)
-            # For a pending activity the optional interval ties e = s + duration
-            # when this mode is chosen. For a fixed activity the times are pinned
-            # below, so the size is free — an overrunning running activity must be
-            # allowed to hold its resources past its nominal duration.
-            size = mode.duration if fx is None else model.NewIntVar(0, horizon, f"psz{i}_{m}")
+            # The output boundary node holds its spots until the makespan, so its
+            # size is free (end pinned to c_max below). For a pending activity the
+            # optional interval ties e = s + duration when this mode is chosen; for
+            # a fixed activity the size is free (times pinned below) so an
+            # overrunning running activity can hold its resources past its nominal
+            # duration.
+            if boundary is not None and boundary.kind == "output":
+                size = model.NewIntVar(0, horizon, f"bsz{i}_{m}")
+            else:
+                size = mode.duration if fx is None else model.NewIntVar(0, horizon, f"psz{i}_{m}")
             iv = model.NewOptionalIntervalVar(s, size, e, present, f"pi{i}_{m}")
             for spot in set(mode.input_spots.values()) | set(mode.output_spots.values()):
                 add(spot_iv, spot, iv)
             for device in mode.devices:
                 add(device_iv, device, iv)
         model.AddExactlyOne(lits)
-        if fx is not None:
+        if boundary is not None:
+            # Boundary nodes are re-created every solve and are not fixation-managed
+            # (§9): the input node sits at time 0 (a given origin, exempt from the
+            # pending s >= now rule), the output node's end is the makespan.
+            if boundary.kind == "input":
+                model.Add(s == 0)
+                model.Add(e == 0)
+            else:
+                model.Add(e == c_max)
+        elif fx is not None:
             # Completed/running: pin mode and times (running end clamped up to
             # now + margin). The pinned mode's interval then occupies its spots
             # and devices over the actual [start, end].
@@ -133,6 +155,10 @@ def solve(
             model.Add(s >= now)
         starts.append(s)
         ends.append(e)
+        # The input node (end 0) is harmless in the makespan max; the output node's
+        # end equals c_max, so feeding it back would be circular — exclude it.
+        if boundary is None or boundary.kind != "output":
+            make_ends.append(e)
         mode_lits.append(lits)
 
     # --- transport activities (one per arc) ---
@@ -181,6 +207,12 @@ def solve(
         # Ordering (§3): transport after source ends, before destination starts.
         model.Add(a >= e_src)
         model.Add(s_dst >= b)
+        # A boundary-output delivery has its successor (the output node) pinned to
+        # the makespan, so the delivery must be counted in it (§8); otherwise a
+        # delivery later than every real end could not fit before c_max.
+        dst_boundary = instance.activities[arc.dst_activity].boundary
+        if dst_boundary is not None and dst_boundary.kind == "output":
+            make_ends.append(b)
         arc_starts.append(a)
         arc_ends.append(b)
         arc_opt_lits.append(lits)
@@ -198,9 +230,10 @@ def solve(
         model.AddNoOverlap(intervals)
 
     # --- objective: minimise makespan ---
-    c_max = model.NewIntVar(0, horizon, "c_max")
-    if ends:
-        model.AddMaxEquality(c_max, ends)
+    # c_max is the max over real activity ends and boundary-output deliveries
+    # (make_ends); the output node's own end equals c_max and is not fed back.
+    if make_ends:
+        model.AddMaxEquality(c_max, make_ends)
     else:
         model.Add(c_max == 0)
     model.Minimize(c_max)
@@ -232,6 +265,7 @@ def solve(
             end=solver.Value(ends[i]),
             status=act_fix[i].status if i in act_fix else None,
             relay=act.relay,
+            boundary=act.boundary,
         )
         for i, act in enumerate(instance.activities)
     )

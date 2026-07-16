@@ -11,6 +11,9 @@ the fixed history plus `now` and `placements` are carried into the output.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
+
+import yaml
 
 from ofplang.schedule.core import yamlnode
 from ofplang.schedule.core.diagnostics import ERROR, Diagnostic, Diagnostics
@@ -47,6 +50,7 @@ def schedule(
     workflow_path,
     environment_path,
     *,
+    document_path=None,
     status_path=None,
     running_task_margin: int = 0,
     max_time_seconds: float | None = None,
@@ -66,31 +70,44 @@ def schedule(
     if workflow is None or _has_error(wf_diags.items):
         return ScheduleReport(None, None, None, diagnostics)
 
+    # Unified execution-document input (SPEC §6.1). `document_path` is primary;
+    # `status_path` is a deprecated alias (removed in a later phase). A document
+    # that sets `now` is a replan input; without `now` it is an initial-plan input
+    # (which may carry `interface`). Shape-validate it once, then read `interface`
+    # (the boundary constraint, §6.8) and detect the replan discriminator.
+    doc_path = document_path if document_path is not None else status_path
+    interface = None
+    is_replan = False
+    if doc_path is not None:
+        doc_result = validate_document(doc_path)
+        diagnostics += doc_result.diagnostics
+        if not doc_result.ok:
+            return ScheduleReport(None, None, None, diagnostics)
+        raw = yaml.safe_load(Path(doc_path).read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            interface = raw.get("interface")
+            is_replan = "now" in raw
+
     # 3. Instance + execution-layer checks (§9.3 subset). On an initial plan,
     # reachability is checked per workflow arc here. On a replan it is deferred:
     # committed transports may lack a direct current-env route (they re-route
     # through relays), so reachability is re-checked per pending leg after
     # normalization.
-    if status_path is None:
-        instance, inst_diags = build_instance(workflow, env)
+    if not is_replan:
+        instance, inst_diags = build_instance(workflow, env, interface=interface)
         diagnostics += inst_diags.items
         if instance is None:
             return ScheduleReport(None, None, None, diagnostics)
         fixation = None
     else:
+        # 4. Replan: normalize the status into the augmented instance + fixation.
+        # (Boundary-node handling on replan is a later phase; interface is not yet
+        # threaded here.) Fixed parts are pinned as historical facts.
         base, inst_diags = build_instance(workflow, env, check_reachability=False)
         diagnostics += inst_diags.items
         if base is None:
             return ScheduleReport(None, None, None, diagnostics)
-
-        # 4. Replan status: shape-validate, then normalize into the augmented
-        # instance + fixation. Fixed parts are pinned as historical facts (not
-        # re-validated against the env); a prior plan feeds back verbatim.
-        status_result = validate_document(status_path)
-        diagnostics += status_result.diagnostics
-        if not status_result.ok:
-            return ScheduleReport(None, None, None, diagnostics)
-        instance, fixation, norm_diags = normalize(base, yamlnode.load_file(status_path), env)
+        instance, fixation, norm_diags = normalize(base, yamlnode.load_file(doc_path), env)
         diagnostics += norm_diags.items
         if instance is None or fixation is None:
             return ScheduleReport(None, None, None, diagnostics)
@@ -119,8 +136,9 @@ def schedule(
         solution,
         workflow=str(workflow_path),
         environment=str(environment_path),
-        status=str(status_path) if status_path is not None else None,
+        status=str(doc_path) if is_replan else None,
         now=fixation.now if fixation is not None else None,
         placements=fixation.placements if fixation is not None else None,
+        interface=interface,
     )
     return ScheduleReport(solution.outcome, solution.makespan, plan, diagnostics)

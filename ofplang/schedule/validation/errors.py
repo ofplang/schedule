@@ -69,6 +69,20 @@ MODE_PORTS_INCOMPLETE = "mode_ports_incomplete"
 ARC_UNREACHABLE = "arc_unreachable"
 INFEASIBLE = "infeasible"
 
+# Interface / boundary conditions (§6.8, §9.3). An `interface` binding pins a
+# workflow boundary port (entry input / final output) to a spot.
+# The bound name is not an Object-bearing boundary port on that side — not a main
+# port at all, on the wrong side, or an Object-bearing entry input with no consumer
+# (a pass-through, out of scope).
+INTERFACE_UNKNOWN_PORT = "interface_unknown_port"
+# The bound name is a Pure Data boundary port (occupies no spot).
+INTERFACE_PURE_DATA_PORT = "interface_pure_data_port"
+# Two `interface.inputs` bind the same spot (an entry spot holds one Object).
+INTERFACE_DUPLICATE_SPOT = "interface_duplicate_spot"
+# An Object-bearing entry input has no `interface` binding (only where interface is
+# required; optional in the current phase).
+INTERFACE_INPUT_MISSING = "interface_input_missing"
+
 # Replanning (§9.3): produced while matching an execution status against the
 # workflow/instance and building the fixation for the solver. A status names a
 # processing activity by its `node` path and a transport by its `arc`, sets a
@@ -143,6 +157,10 @@ ERROR_CODES = frozenset(
         MODE_PORTS_INCOMPLETE,
         ARC_UNREACHABLE,
         INFEASIBLE,
+        INTERFACE_UNKNOWN_PORT,
+        INTERFACE_PURE_DATA_PORT,
+        INTERFACE_DUPLICATE_SPOT,
+        INTERFACE_INPUT_MISSING,
         STATUS_MISSING_NOW,
         STATUS_NODE_UNKNOWN,
         STATUS_ARC_UNKNOWN,

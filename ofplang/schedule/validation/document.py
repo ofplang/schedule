@@ -14,7 +14,7 @@ from ofplang.schedule.core.yamlnode import YMap, YScalar, YSeq, YNode
 from ofplang.schedule.validation import _shape as shape
 from ofplang.schedule.validation import errors
 
-DOC_TOP = {"time", "now", "outcome", "objective", "activities", "placements", "meta"}
+DOC_TOP = {"time", "now", "outcome", "objective", "interface", "activities", "placements", "meta"}
 OUTCOMES = {"optimal", "feasible", "infeasible", "unknown"}
 STATUSES = {"pending", "running", "completed"}
 OBJECTIVE_KEYS = {"kind", "value"}
@@ -52,6 +52,7 @@ def _check(root: YNode | None, diags: Diagnostics) -> None:
     shape.nonneg_int(root.get("now"), "now", diags)
     _check_outcome(root.get("outcome"), diags)
     _check_objective(root.get("objective"), diags)
+    _check_interface(root.get("interface"), diags)
     _check_placements(root.get("placements"), diags)
 
     if "activities" not in root:
@@ -97,6 +98,25 @@ def _check_objective(node: YNode | None, diags: Diagnostics) -> None:
     elif not (isinstance(kind, YScalar) and kind.is_str and kind.value == "makespan"):
         diags.error(errors.UNKNOWN_OBJECTIVE_KIND, "objective.kind must be makespan", "objective.kind", at=kind)
     shape.nonneg_int(omap.get("value"), "objective.value", diags)
+
+
+def _check_interface(node: YNode | None, diags: Diagnostics) -> None:
+    # Shape only (§6.8): `interface` is `{inputs?, outputs?}`, each a map of a port
+    # identifier to a qualified spot. That a port is an Object-bearing boundary port
+    # (and completeness / spot existence) is the execution layer's job (§9.3).
+    imap = shape.as_map(node, "interface", diags)
+    if imap is None:
+        return
+    shape.unknown_keys(imap, {"inputs", "outputs"}, "interface", diags)
+    for side in ("inputs", "outputs"):
+        smap = shape.as_map(imap.get(side), f"interface.{side}", diags)
+        if smap is None:
+            continue
+        for entry in smap.entries:
+            path = f"interface.{side}.{entry.key}"
+            if not is_identifier(entry.key):
+                diags.error(errors.INVALID_IDENTIFIER, f"invalid port name {entry.key!r}", path, at=entry.value or smap)
+            _check_qualified_spot(entry.value, path, diags)
 
 
 def _check_placements(node: YNode | None, diags: Diagnostics) -> None:
@@ -246,7 +266,9 @@ def _endpoint_ok(node: YNode | None) -> bool:
         return False
     path_node = node.get("node")
     port = node.get("port")
-    if not isinstance(path_node, YSeq) or not path_node.items:
+    # An empty node path denotes the workflow interface (a boundary arc endpoint,
+    # §6.4/§6.8); a non-empty path names an atomic node. Both are well-formed here.
+    if not isinstance(path_node, YSeq):
         return False
     if not all(isinstance(x, YScalar) and is_identifier(x.value) for x in path_node.items):
         return False
