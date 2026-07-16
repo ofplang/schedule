@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: malformed_qualified_spot}
+notes: 'interface input spot is not <device>.<spot>; spec §6.8, §9.2.'

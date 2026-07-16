@@ -1,0 +1,45 @@
+# Interface boundary example — a workflow with an Object-bearing *entry input*.
+#
+# Unlike the other examples (which create their material internally), `main` takes
+# an entry input `sample` and returns a final output `result`. Those are boundary
+# ports: where the sample starts and where the result must be delivered are given
+# by the `interface` section of an execution document (SPEC §6.8), not by the
+# workflow. See interface_load.document.yaml.
+#
+#   ofp-schedule schedule interface_load.workflow.yaml --env interface_load.env.yaml \
+#       --document interface_load.document.yaml
+spec_version: "0.0"
+
+types:
+  Plate:
+    domain: object
+
+processes:
+
+  heat:                                         # transforms the plate in place
+    kind: atomic
+    inputs:
+      plate: { type: Plate, phase: data }
+    outputs:
+      out: { type: Plate, phase: data }
+    objects:
+      transform: [inputs.plate, outputs.out]
+
+  main:
+    kind: composite
+    inputs:
+      sample: { type: Plate, phase: data }      # entry input (boundary)
+    outputs:
+      result: { type: Plate, phase: data }      # final output (boundary)
+    body:
+      nodes:
+        - id: Heat
+          process: heat
+          state:
+            plate:
+              from: inputs.sample
+      returns:
+        result:
+          from: Heat.out
+
+entry: main

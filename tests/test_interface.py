@@ -13,8 +13,11 @@ from pathlib import Path
 
 import yaml
 
-from ofplang.schedule import schedule
+from ofplang.schedule import schedule, validate_document
+from ofplang.schedule.scheduler.plan import to_yaml
 from ofplang.schedule.scheduler.workflow import parse_workflow
+
+EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
 # A workflow: entry input `sample` -> heat.plate; heat.out -> output `result`.
 WORKFLOW = """
@@ -494,3 +497,31 @@ def test_replan_with_interface_output(tmp_path):
     (make,) = [a for a in replan.plan["activities"] if a["kind"] == "processing"]
     assert make["mode"] == "at_a" and make["status"] == "completed"
     assert replan.plan["interface"] == {"outputs": {"result": "rack.slot_a"}}
+
+
+# --- committed example ----------------------------------------------------------
+
+def test_interface_load_example_end_to_end(tmp_path):
+    # The committed interface example: sample loaded on loader, heated, result
+    # delivered to output. Boundary transports move it in and out.
+    report = schedule(
+        EXAMPLES / "interface_load.workflow.yaml",
+        EXAMPLES / "interface_load.env.yaml",
+        document_path=EXAMPLES / "interface_load.document.yaml",
+    )
+    assert report.ok and report.outcome == "optimal"
+    assert report.makespan == 14  # load(2) + heat(10) + deliver(2)
+
+    transports = [a for a in report.plan["activities"] if a["kind"] == "transport"]
+    endpoints = [(t["arc"]["from"], t["arc"]["to"]) for t in transports]
+    assert ({"node": [], "port": "sample"}, {"node": ["Heat"], "port": "plate"}) in endpoints
+    assert ({"node": ["Heat"], "port": "out"}, {"node": [], "port": "result"}) in endpoints
+    assert report.plan["interface"] == {
+        "inputs": {"sample": "loader.stage"},
+        "outputs": {"result": "output.slot"},
+    }
+
+    # The rendered plan is itself a valid execution document (round-trips).
+    out = tmp_path / "plan.yaml"
+    out.write_text(to_yaml(report.plan), encoding="utf-8")
+    assert validate_document(out).ok, [(d.code, d.path) for d in validate_document(out).errors]

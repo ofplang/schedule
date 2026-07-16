@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: invalid_identifier}
+notes: 'interface port name is not a valid identifier; spec §8.1, §9.2.'

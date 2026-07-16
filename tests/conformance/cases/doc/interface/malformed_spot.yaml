@@ -1,0 +1,3 @@
+interface:
+  inputs: {sample: not_a_spot}
+activities: []

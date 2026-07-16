@@ -42,6 +42,29 @@ python -m ofplang.schedule schedule /tmp/bw/plate_batch.workflow.yaml \
     --env /tmp/bw/plate_batch.env.yaml
 ```
 
+## `interface_load` — a workflow with boundary (entry/exit) material
+
+- `interface_load.workflow.yaml` — a v0 workflow whose `main` takes an
+  Object-bearing **entry input** `sample` and returns a final **output** `result`.
+- `interface_load.env.yaml` — the sample is loaded on `loader`, heated on
+  `heater`, and the result delivered to `output`.
+- `interface_load.document.yaml` — the **interface** (SPEC §6.8): where the sample
+  starts (`loader.stage`) and where the result is delivered (`output.slot`).
+
+Unlike the other examples (which create their material internally), this one has
+boundary ports. The `interface` constraint pins them, and the plan gains a
+**boundary transport** at each end (empty-path arc endpoint = the workflow
+interface): `loader.stage → heater.stage` for the entry input and
+`heater.stage → output.slot` for the final output. Run it with
+
+```sh
+ofp-schedule schedule interface_load.workflow.yaml --env interface_load.env.yaml \
+    --document interface_load.document.yaml
+```
+
+An Object-bearing entry input with no `interface` binding is an error
+(`interface_input_missing`), so `--document` is required here.
+
 ## `simple` — minimal source → target
 
 - `simple.workflow.yaml` — the v0 workflow.

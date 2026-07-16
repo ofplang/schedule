@@ -1,0 +1,4 @@
+interface:
+  inputs: {sample: incubator_0.slot_0}
+  outputs: {result: reader_0.stage}
+activities: []
