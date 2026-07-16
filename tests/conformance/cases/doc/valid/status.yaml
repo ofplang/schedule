@@ -22,6 +22,3 @@ activities:
       node: [assay]
       port: plate
   status: running
-placements:
-- object: {input: sample}
-  spot: incubator_0.slot_0

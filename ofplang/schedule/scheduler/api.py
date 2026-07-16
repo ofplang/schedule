@@ -5,7 +5,7 @@ instance -> solve -> render plan) and collects diagnostics from every stage into
 one report. Given a `status_path`, the same pipeline replans: the execution
 status is shape-validated, matched against the instance to build the fixation
 (completed/running activities pinned, pending re-optimised at/after `now`), and
-the fixed history plus `now` and `placements` are carried into the output.
+the fixed history plus `now` and the `interface` constraint are carried into the output.
 """
 
 from __future__ import annotations
@@ -128,7 +128,6 @@ def schedule(
         environment=str(environment_path),
         status=str(doc_path) if root is not None else None,
         now=fixation.now if had_now else None,
-        placements=fixation.placements,
         interface=interface,
     )
     return ScheduleReport(solution.outcome, solution.makespan, plan, diagnostics)

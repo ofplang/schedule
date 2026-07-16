@@ -344,7 +344,8 @@ status are the same shape filled differently:
 - a **plan** carries a solved schedule (every activity `pending`, with its planned
   times and assignments);
 - a **status** carries what has happened so far (some activities `completed` or
-  `running`, with actual times) plus the current material placement.
+  `running`, with actual times) and the `now` reference time; boundary material
+  positions come from `interface` (§6.8), everything else from the activities.
 
 Fields that appear in only one use are optional. Times are non-negative integers
 in `time.unit`.
@@ -362,15 +363,18 @@ environment.
 - `time` (optional) — echoed from the environment. When present it carries a
   `unit`, required and validated exactly as in the environment (§5.1: a non-empty
   string); a document may omit `time` entirely.
-- `now` (optional) — the reference time, and the **replan discriminator**: a
-  document that sets `now` is a replanning input (the remaining work is scheduled
-  at or after it); a document without `now` is an initial-plan input. A plan output
-  usually omits it. A document that carries started (`completed` / `running`)
-  activities must set `now` (§9.3, `status_missing_now`).
-- `interface` (optional in the current phase; §6.8) — the boundary spots for the
-  workflow's Object-bearing entry inputs and final outputs (a planning constraint,
-  §3). Supplied for the initial plan and carried through replans; echoed in the
-  plan output.
+- `now` (optional) — the reference time: the remaining work is scheduled at or
+  after it. It is an ordinary parameter, not an initial-vs-replan flag — an initial
+  plan is just the degenerate case of `now = 0` with no started activities, so the
+  same machinery handles both. `now` may be set with no started activities
+  (re-optimise the future before anything starts); a plan output omits it unless it
+  was a replan. A document that carries started (`completed` / `running`)
+  activities **must** set `now` (§9.3, `status_missing_now`) — history cannot be
+  pinned against an absent reference time.
+- `interface` (§6.8) — the boundary spots for the workflow's Object-bearing entry
+  inputs and final outputs (a planning constraint, §3). **Required** for every
+  Object-bearing entry input; optional per output. Supplied for the initial plan
+  and carried through replans; echoed in the plan output.
 - `outcome` (optional) — the solver result: `optimal`, `feasible`, `infeasible`,
   or `unknown` (`unknown` = feasible but optimality unproven, e.g. on timeout).
   Present on a plan; absent on a status input.
@@ -379,10 +383,6 @@ environment.
   a document may give `kind` alone (e.g. to name the objective whose value is to
   be computed), and there is no value to report when a solve is infeasible.
 - `activities` (required).
-- `placements` (optional, **deprecated**) — accepted but ignored; superseded by
-  `interface` (§6.8) for boundary material and otherwise redundant (produced-Object
-  positions follow from the activities). Retained transitionally and scheduled for
-  removal (§6.5).
 - `meta` (optional) — provenance, e.g. `workflow` and `environment` source
   references.
 
@@ -478,18 +478,12 @@ single-leg same-spot transport that has no preceding relay (a direct
 producer-to-consumer hop within one spot) is **not** folded — there is no committed
 leg to reconstruct it from — but it carries no `transporter` (above).
 
-### 6.5 Placements (deprecated)
+### 6.5 Placements (removed)
 
-`placements` is **deprecated**: it is accepted for shape but **ignored** by the
-scheduler, and will be removed. Boundary material (entry inputs, final outputs) is
-now given by `interface` (§6.8), which — unlike `placements` — actually constrains
-the plan; other Object positions are implied by the activities. Do not add
-`placements` to new documents.
-
-Historically each entry was `{ object, spot }`, where `object` was
-`{ input: <name> }` or `{ node: <path>, port: <name> }` and `spot` a qualified
-spot. The shape is still validated (§9.2) during the transition; a document that
-omits `placements` entirely is preferred.
+`placements` has been **removed**. Boundary material (entry inputs, final outputs)
+is given by `interface` (§6.8), which — unlike the old pass-through `placements` —
+actually constrains the plan; every other Object position is implied by the
+activities. A `placements` key is now an unknown key (`unknown_key`, §9.2).
 
 ### 6.6 Identity and replanning
 
@@ -652,11 +646,11 @@ does not move on its own). It constrains only **pending** boundary activities; o
 a boundary transport or its consuming/producing activity has started, that part is
 a fixed historical fact and is not re-checked against `interface` (§7).
 
-**Transition (current phase).** `interface` is **optional** in the current phase:
-when a workflow's Object-bearing entry input has no binding, the upstream mode is
-left unconstrained (the pre-`interface` behavior). A later phase makes a binding
-**required** for every Object-bearing entry input (`interface_input_missing`,
-§10.4) and removes the deprecated `placements` (§6.5).
+**Required.** A binding is **required** for every Object-bearing entry input — an
+unbound one leaves its consumer's mode unconstrained, which is exactly the error
+this section prevents (`interface_input_missing`, §10.4). Output bindings are
+optional (an unbound output stays where its producer leaves it). The removed
+`placements` (§6.5) is superseded by this section.
 
 ```yaml
 interface:
@@ -780,7 +774,7 @@ or a status. Cross-document checks (that a `node` / `arc` / `process` exists in 
 workflow, or that a spot exists in the environment) are execution-layer (§9.3).
 
 - Top level: `activities` is required; `time` / `now` / `outcome` / `objective` /
-  `interface` / `placements` / `meta` are optional. Unknown or extra keys are errors.
+  `interface` / `meta` are optional. Unknown or extra keys are errors.
 - `now` (if present) is a non-negative integer; `outcome` (if present) is one of
   `optimal` / `feasible` / `infeasible` / `unknown`; `objective` (if present) has
   `kind: makespan` and a non-negative integer `value`.
@@ -805,9 +799,6 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
   - relay: `arc` (as above), `spot` (a qualified spot), and `seq` (a non-negative
     integer) are required; `end` must equal `start` (`relay_nonzero_duration`
     otherwise).
-- `placements` (if present): each entry is `{ object, spot }`, where `object` is
-  exactly one of `{ input: <name> }` or `{ node: <list>, port: <id> }`, and `spot`
-  is a qualified spot.
 - Form rules: identifiers match `[A-Za-z_][A-Za-z0-9_]*`; a qualified spot has
   exactly one `.` with identifier parts; a node path is a non-empty list of
   identifiers.
@@ -847,21 +838,21 @@ environment for processes the workflow never invokes are not checked.
   the wrong side; `interface_pure_data_port` if the port is Pure Data). Its spot
   exists in the environment (`unknown_device` / `unknown_spot`, reused from §9.1).
   No two bindings on the same side (two `inputs`, or two `outputs`) bind the same
-  spot (`interface_duplicate_spot`). In the phase
-  where `interface` is required, every Object-bearing entry input is bound
-  (`interface_input_missing` otherwise); while `interface` is optional an unbound
-  input is left unconstrained.
+  spot (`interface_duplicate_spot`). Every Object-bearing entry input must be bound
+  (`interface_input_missing` otherwise); outputs are optional.
 
-When the execution document sets `now` (the replan discriminator, §6.1), it is
-**normalized** against the instance (building the augmented instance the solver
-runs) after these checks, emitting the codes in §10.4. Reachability
-(`arc_unreachable`) is not checked per workflow arc for a replan; it is re-checked
-per **pending** leg of the normalized instance, so a committed transport with no
-direct current-env route (it re-routes through a relay) is not falsely rejected.
-Boundary arcs normalize uniformly (a committed boundary leg is pinned like any
-committed leg; a pending one is re-derived).
+The execution document is always **normalized** against the instance (building the
+augmented instance the solver runs) after these checks, emitting the codes in
+§10.4 — an initial plan is the degenerate case with empty history and `now = 0`, so
+there is no separate path (§6.1). Reachability (`arc_unreachable`) is checked per
+**pending** leg of the normalized instance (so on an initial plan, per arc): a
+committed transport with no direct current-env route (it re-routes through a relay)
+is not falsely rejected. Boundary arcs normalize uniformly (a committed boundary
+leg is pinned like any committed leg; a pending one is re-derived).
 
-- **Reference time**: the status sets `now` (`status_missing_now` otherwise).
+- **Reference time**: a document with started (`completed` / `running`) activities
+  must set `now` (`status_missing_now` otherwise); with no started activities `now`
+  defaults to 0.
 - **Provenance resolves**: each started (`completed` / `running`) processing's
   `node` matches a workflow activity (`status_node_unknown` otherwise) and each
   transport leg's `arc` matches a workflow arc (`status_arc_unknown` otherwise);
@@ -932,7 +923,6 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `end_before_start` | `end` is earlier than `start` |
 | `empty_node_path` | a processing `node` is an empty list (an `arc` boundary endpoint may be empty, §6.4) |
 | `malformed_arc` | an `arc`'s `from` / `to` / `node` / `port` structure is wrong |
-| `malformed_placement` | a `placements` `object` is not exactly one of `input` or `node` + `port` (deprecated, §6.5) |
 | `relay_nonzero_duration` | a `relay` activity's `end` is not equal to its `start` |
 
 Absent `process` / `mode` / `from_spot` and similar use the shared
@@ -960,7 +950,7 @@ building the solver instance. All are error severity.
 | `interface_unknown_port` | an `interface` binding names a port that is not an Object-bearing boundary port on that side (§6.8) |
 | `interface_pure_data_port` | an `interface` binding names a Pure Data port (occupies no spot) |
 | `interface_duplicate_spot` | two bindings on one side (two inputs, or two outputs) bind the same spot |
-| `interface_input_missing` | an Object-bearing entry input has no `interface` binding (only in the phase where `interface` is required, §6.8) |
+| `interface_input_missing` | an Object-bearing entry input has no `interface` binding (§6.8) |
 | `infeasible` | the solver proved the instance has no feasible schedule |
 
 Replanning (a document that sets `now`, §6.1), emitted while matching an execution

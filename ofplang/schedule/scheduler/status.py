@@ -4,7 +4,7 @@ The fixation is what the solver consumes to pin the executed part of a schedule:
 per activity / arc index (into the augmented instance) whether it is `completed`
 or `running` and at what times. `normalize` builds it from the status document;
 `cpsat` reads it. This module also holds the small position-tracking readers
-shared by `normalize` (node paths, arc keys, times, placements).
+shared by `normalize` (node paths, arc keys, times).
 """
 
 from __future__ import annotations
@@ -49,8 +49,6 @@ class Fixation:
     now: int
     activities: dict[int, ActivityFixation]
     arcs: dict[int, ArcFixation]
-    # Carried through to the output verbatim; not consumed as a constraint here.
-    placements: list
 
 
 # --------------------------------------------------------------------------
@@ -88,12 +86,6 @@ def _arc_key(node: YNode | None) -> _ArcKey | None:
     if not isinstance(frm, YMap) or not isinstance(to, YMap):
         return None
     return (_node_path(frm.get("node")), _text(frm.get("port")), _node_path(to.get("node")), _text(to.get("port")))
-
-
-def _placements(root: YMap) -> list:
-    """Carry `placements` through to the output as plain Python, verbatim."""
-    plain = _to_plain(root.get("placements"))
-    return plain if isinstance(plain, list) else []
 
 
 def _to_plain(node: YNode | None):

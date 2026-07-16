@@ -2,11 +2,11 @@
 
 A plan is action-first: each activity's main fields say what is actually done,
 with the workflow provenance (`node` / `arc`) carried alongside. On an initial
-plan every activity is pending, so `status`, `now`, and `placements` are omitted.
-On a replan the same document carries the full timeline: completed/running
-activities keep a `status` (§6.2), `now` is echoed, and `placements` are carried
-through verbatim, so the output re-optimises the future while showing the fixed
-history — and round-trips as the next replan input.
+plan every activity is pending, so `status` and `now` are omitted. On a replan the
+same document carries the full timeline: completed/running activities keep a
+`status` (§6.2) and `now` is echoed, so the output re-optimises the future while
+showing the fixed history — and round-trips as the next replan input. The
+`interface` boundary constraint (§6.8) is echoed in both cases.
 """
 
 from __future__ import annotations
@@ -25,7 +25,6 @@ def render_plan(
     environment: str | None = None,
     status: str | None = None,
     now: int | None = None,
-    placements: list | None = None,
     interface: dict | None = None,
 ) -> dict:
     """Build the execution-document dict for `solution`."""
@@ -103,8 +102,6 @@ def render_plan(
     doc["outcome"] = solution.outcome
     doc["objective"] = {"kind": "makespan", "value": solution.makespan}
     doc["activities"] = activities
-    if placements:
-        doc["placements"] = placements
     meta = {}
     if workflow is not None:
         meta["workflow"] = workflow

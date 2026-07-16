@@ -14,7 +14,7 @@ from ofplang.schedule.core.yamlnode import YMap, YScalar, YSeq, YNode
 from ofplang.schedule.validation import _shape as shape
 from ofplang.schedule.validation import errors
 
-DOC_TOP = {"time", "now", "outcome", "objective", "interface", "activities", "placements", "meta"}
+DOC_TOP = {"time", "now", "outcome", "objective", "interface", "activities", "meta"}
 OUTCOMES = {"optimal", "feasible", "infeasible", "unknown"}
 STATUSES = {"pending", "running", "completed"}
 OBJECTIVE_KEYS = {"kind", "value"}
@@ -53,7 +53,6 @@ def _check(root: YNode | None, diags: Diagnostics) -> None:
     _check_outcome(root.get("outcome"), diags)
     _check_objective(root.get("objective"), diags)
     _check_interface(root.get("interface"), diags)
-    _check_placements(root.get("placements"), diags)
 
     if "activities" not in root:
         diags.error(errors.MISSING_ACTIVITIES, "activities is required", "activities", at=root)
@@ -117,32 +116,6 @@ def _check_interface(node: YNode | None, diags: Diagnostics) -> None:
             if not is_identifier(entry.key):
                 diags.error(errors.INVALID_IDENTIFIER, f"invalid port name {entry.key!r}", path, at=entry.value or smap)
             _check_qualified_spot(entry.value, path, diags)
-
-
-def _check_placements(node: YNode | None, diags: Diagnostics) -> None:
-    seq = shape.as_seq(node, "placements", diags)
-    if seq is None:
-        return
-    for i, item in enumerate(seq.items):
-        base = f"placements[{i}]"
-        pmap = shape.as_map(item, base, diags)
-        if pmap is None:
-            continue
-        shape.unknown_keys(pmap, {"object", "spot"}, base, diags)
-        _check_placement_object(pmap.get("object"), shape.join(base, "object"), diags)
-        spot = shape.require(pmap, "spot", base, diags)
-        _check_qualified_spot(spot, shape.join(base, "spot"), diags)
-
-
-def _check_placement_object(node: YNode | None, path: str, diags: Diagnostics) -> None:
-    # The object must be exactly `{input}` (an entry input) or exactly
-    # `{node, port}` (a produced Object); anything else is malformed.
-    if not isinstance(node, YMap):
-        diags.error(errors.MALFORMED_PLACEMENT, "placement object must be a mapping", path, at=node)
-        return
-    keys = set(node.keys())
-    if keys not in ({"input"}, {"node", "port"}):
-        diags.error(errors.MALFORMED_PLACEMENT, "object must be exactly input or node+port", path, at=node)
 
 
 def _check_activity(node: YNode, base: str, diags: Diagnostics) -> None:

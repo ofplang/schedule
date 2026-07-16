@@ -1,5 +1,0 @@
-outcome: invalid
-match: exact
-errors:
-- {code: malformed_qualified_spot}
-notes: Placement `spot` lacks the `.`; spec §8.2, §9.2.

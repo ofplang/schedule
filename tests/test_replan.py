@@ -70,16 +70,6 @@ def test_replan_full_timeline(tmp_path):
     assert "status" not in transport and transport["start"] >= 3
 
 
-def test_replan_carries_placements_through(tmp_path):
-    status = _status_file(
-        tmp_path,
-        _SOURCE_DONE + "placements:\n  - object: { input: sample }\n    spot: station_0.core\n",
-    )
-    report = schedule(WORKFLOW, ENV, document_path=status)
-    assert report.ok
-    assert report.plan["placements"] == [{"object": {"input": "sample"}, "spot": "station_0.core"}]
-
-
 def test_replan_output_is_a_valid_document(tmp_path):
     status = _status_file(tmp_path, _SOURCE_DONE)
     report = schedule(WORKFLOW, ENV, document_path=status)

@@ -143,7 +143,7 @@ def _chain_instance() -> Instance:
 def test_pending_is_pushed_to_now_and_completed_is_pinned():
     # Source completed at [0, 2]; replanning at now=5 leaves the transport and
     # target pending -> both start at or after now.
-    fix = Fixation(now=5, activities={0: ActivityFixation("completed", 0, 2, 0)}, arcs={}, placements=[])
+    fix = Fixation(now=5, activities={0: ActivityFixation("completed", 0, 2, 0)}, arcs={})
     sol = solve(_chain_instance(), fixation=fix)
     assert sol.outcome == "optimal"
     src = next(p for p in sol.processing if p.node == ("S",))
@@ -166,7 +166,6 @@ def test_running_end_clamped_up_to_now_plus_margin():
                 1: ActivityFixation("running", 3, 4, 0),
             },
             arcs={0: ArcFixation("completed", 2, 3, 0)},
-            placements=[],
         )
         return solve(_chain_instance(), fixation=fix, running_task_margin=margin)
 
@@ -188,7 +187,6 @@ def test_fixed_transport_route_and_times_are_pinned():
             1: ActivityFixation("completed", 3, 5, 0),
         },
         arcs={0: ArcFixation("completed", 2, 3, 0)},
-        placements=[],
     )
     sol = solve(_chain_instance(), fixation=fix)
     assert sol.outcome == "optimal"

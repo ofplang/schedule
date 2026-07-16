@@ -57,7 +57,6 @@ from ofplang.schedule.scheduler.status import (
     Fixation,
     _arc_key,
     _node_path,
-    _placements,
     _status_of,
     _text,
     _times,
@@ -143,8 +142,7 @@ def normalize(base: Instance, root: YNode | None, env) -> tuple[Instance | None,
         return None, None, diags
 
     instance = Instance(env, base.time_unit, tuple(activities), tuple(arcs), base.precedence)
-    placements = _placements(root) if isinstance(root, YMap) else []
-    fixation = Fixation(now, act_fix, arc_fix, placements)
+    fixation = Fixation(now, act_fix, arc_fix)
     return instance, fixation, diags
 
 
