@@ -140,7 +140,7 @@ def test_same_spot_replan_keeps_hop_without_transporter_and_round_trips(tmp_path
     status = tmp_path / "s.yaml"
     status.write_text(_SAME_SPOT_STATUS, encoding="utf-8")
 
-    report = schedule(EXAMPLES / "simple.workflow.yaml", env, status_path=status)
+    report = schedule(EXAMPLES / "simple.workflow.yaml", env, document_path=status)
     assert report.ok
     legs = [a for a in report.plan["activities"] if a["kind"] == "transport"]
     assert len(legs) == 1  # the stay-put relay + any extra leg are folded
@@ -150,5 +150,5 @@ def test_same_spot_replan_keeps_hop_without_transporter_and_round_trips(tmp_path
     fed = tmp_path / "fed.yaml"
     fed.write_text(to_yaml(report.plan), encoding="utf-8")
     assert validate_document(fed).ok  # the transporter-less hop validates on read-back
-    second = schedule(EXAMPLES / "simple.workflow.yaml", env, status_path=fed)
+    second = schedule(EXAMPLES / "simple.workflow.yaml", env, document_path=fed)
     assert second.ok and second.makespan == report.makespan

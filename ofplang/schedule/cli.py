@@ -3,14 +3,14 @@
 Thin presentation layer over the library. Subcommands:
 
     ofp-schedule validate [--kind ...] [--format ...] <file>...
-    ofp-schedule schedule <workflow> --env <env> [--status <status>] [-o <file>] [--format yaml|json]
+    ofp-schedule schedule <workflow> --env <env> [--document <doc>] [-o <file>] [--format yaml|json]
     ofp-schedule visualize <plan> [--view station|workflow] [-o <file>]
 
 `validate` runs the schema validators (SPECIFICATIONS.md §9); `schedule` produces
 an execution plan (§6) from a v0 workflow and an execution environment, and with
-`--status` replans from an execution status (§7); `visualize` renders a plan as a
-self-contained HTML/SVG Gantt chart. All logic lives in the library so the CLI
-cannot drift from it.
+`--document` (an execution document that sets `now`) replans from a prior status
+(§7); `visualize` renders a plan as a self-contained HTML/SVG Gantt chart. All
+logic lives in the library so the CLI cannot drift from it.
 
 Exit codes:
     0  success (valid, or a plan was produced)
@@ -68,11 +68,6 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="DOC",
         help="execution document (§6): carries the interface boundary constraint (§6.8), and — "
         "when it sets `now` — the prior status to replan from (fix completed/running, re-optimise the rest)",
-    )
-    s.add_argument(
-        "--status",
-        metavar="STATUS",
-        help="deprecated alias for --document (to be removed)",
     )
     s.add_argument(
         "--running-margin",
@@ -220,7 +215,7 @@ def _cmd_validate(args) -> int:
 
 
 def _cmd_schedule(args) -> int:
-    doc = args.document if args.document is not None else args.status
+    doc = args.document
     inputs = [args.workflow, args.env] + ([doc] if doc else [])
     for p in inputs:
         if not Path(p).is_file():

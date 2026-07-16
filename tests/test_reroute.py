@@ -71,7 +71,7 @@ def test_reroute_via_relay_and_retransport(tmp_path):
         "station_2", "station_2.core",
     ))
     status = _write(tmp_path, "status.yaml", _COMMITTED)
-    report = schedule(WORKFLOW, env, status_path=status)
+    report = schedule(WORKFLOW, env, document_path=status)
     assert report.ok and report.outcome == "optimal", [d.code for d in report.diagnostics]
 
     relays = _kinds(report.plan, "relay")
@@ -89,10 +89,10 @@ def test_reroute_round_trips(tmp_path):
         [("station_0.core", "station_1.core", 1), ("station_1.core", "station_2.core", 4)],
         "station_2", "station_2.core",
     ))
-    first = schedule(WORKFLOW, env, status_path=_write(tmp_path, "s.yaml", _COMMITTED))
+    first = schedule(WORKFLOW, env, document_path=_write(tmp_path, "s.yaml", _COMMITTED))
     fed = _write(tmp_path, "fed.yaml", to_yaml(first.plan))
     assert validate_document(fed).ok
-    second = schedule(WORKFLOW, env, status_path=fed)
+    second = schedule(WORKFLOW, env, document_path=fed)
     assert second.ok and second.makespan == first.makespan
 
 
@@ -103,7 +103,7 @@ def test_reroute_infeasible_when_destination_unreachable(tmp_path):
         [("station_0.core", "station_1.core", 1)],  # no station_1 -> station_2 route
         "station_2", "station_2.core",
     ))
-    report = schedule(WORKFLOW, env, status_path=_write(tmp_path, "s.yaml", _COMMITTED))
+    report = schedule(WORKFLOW, env, document_path=_write(tmp_path, "s.yaml", _COMMITTED))
     assert not report.ok
     assert "arc_unreachable" in [d.code for d in report.diagnostics]
 
@@ -128,7 +128,7 @@ activities:
 - { kind: transport, status: completed, start: 2, end: 3, seq: 0, from_spot: station_0.core, to_spot: station_1.core, transporter: transport, arc: { from: { node: [SampleSource], port: source_out }, to: { node: [SampleTarget], port: target_in } } }
 - { kind: transport, status: completed, start: 5, end: 9, seq: 2, from_spot: station_1.core, to_spot: station_2.core, transporter: transport, arc: { from: { node: [SampleSource], port: source_out }, to: { node: [SampleTarget], port: target_in } } }
 """
-    report = schedule(WORKFLOW, env, status_path=_write(tmp_path, "s.yaml", status))
+    report = schedule(WORKFLOW, env, document_path=_write(tmp_path, "s.yaml", status))
     assert report.ok, [d.code for d in report.diagnostics]
     relays = _kinds(report.plan, "relay")
     assert {r["spot"] for r in relays} == {"station_1.core", "station_2.core"}
@@ -138,7 +138,7 @@ activities:
 
 def test_committed_reroute_example(tmp_path):
     # Golden anchor for the tracked reroute example (examples/reroute.*).
-    report = schedule(WORKFLOW, EXAMPLES / "reroute.env.yaml", status_path=EXAMPLES / "reroute.status.yaml")
+    report = schedule(WORKFLOW, EXAMPLES / "reroute.env.yaml", document_path=EXAMPLES / "reroute.status.yaml")
     assert report.outcome == "optimal" and report.makespan == 11
     assert [r["spot"] for r in _kinds(report.plan, "relay")] == ["station_1.core"]
     assert _kinds(report.plan, "processing")[-1]["input_spots"] == {"target_in": "station_2.core"}
@@ -154,7 +154,7 @@ def test_committed_reroute_stay_example():
     # examples/reroute_stay.*: the target still consumes where the sample landed,
     # so the re-transport is a zero-distance no-op — it and its relay are folded
     # (§6.4.1), leaving the committed leg to deliver straight to the target.
-    report = schedule(WORKFLOW, EXAMPLES / "reroute_stay.env.yaml", status_path=EXAMPLES / "reroute_stay.status.yaml")
+    report = schedule(WORKFLOW, EXAMPLES / "reroute_stay.env.yaml", document_path=EXAMPLES / "reroute_stay.status.yaml")
     assert report.outcome == "optimal" and report.makespan == 5
     assert not _kinds(report.plan, "relay")  # folded away
     legs = _kinds(report.plan, "transport")
@@ -167,7 +167,7 @@ def test_committed_reroute_chain_example():
     # examples/reroute_chain.*: two committed real legs carry the sample to
     # station_2, then a third real leg re-routes it to station_3. Both arrival
     # relays chain and are kept (every leg is a real move, so nothing is folded).
-    report = schedule(WORKFLOW, EXAMPLES / "reroute_chain.env.yaml", status_path=EXAMPLES / "reroute_chain.status.yaml")
+    report = schedule(WORKFLOW, EXAMPLES / "reroute_chain.env.yaml", document_path=EXAMPLES / "reroute_chain.status.yaml")
     assert report.outcome == "optimal" and report.makespan == 14
     assert {r["spot"] for r in _kinds(report.plan, "relay")} == {"station_1.core", "station_2.core"}
     assert _kinds(report.plan, "processing")[-1]["input_spots"] == {"target_in": "station_3.core"}
@@ -200,7 +200,7 @@ activities:
 - { kind: transport, status: completed, start: 5, end: 9, seq: 2, from_spot: station_1.core, to_spot: station_2.core, transporter: transport, arc: { from: { node: [SampleSource], port: source_out }, to: { node: [SampleTarget], port: target_in } } }
 - { kind: transport, status: completed, start: 10, end: 14, seq: 4, from_spot: station_2.core, to_spot: station_1.core, transporter: transport, arc: { from: { node: [SampleSource], port: source_out }, to: { node: [SampleTarget], port: target_in } } }
 """
-    report = schedule(WORKFLOW, env, status_path=_write(tmp_path, "s.yaml", status))
+    report = schedule(WORKFLOW, env, document_path=_write(tmp_path, "s.yaml", status))
     assert report.ok, [d.code for d in report.diagnostics]
     relays = _kinds(report.plan, "relay")
     at_station_1 = [r for r in relays if r["spot"] == "station_1.core"]

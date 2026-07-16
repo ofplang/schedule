@@ -51,7 +51,6 @@ def schedule(
     environment_path,
     *,
     document_path=None,
-    status_path=None,
     running_task_margin: int = 0,
     max_time_seconds: float | None = None,
     random_seed: int | None = None,
@@ -70,13 +69,12 @@ def schedule(
     if workflow is None or _has_error(wf_diags.items):
         return ScheduleReport(None, None, None, diagnostics)
 
-    # Unified execution-document input (SPEC §6.1). `document_path` is primary;
-    # `status_path` is a deprecated alias (removed in a later phase). Shape-validate
-    # it once, then read `interface` (the boundary constraint, §6.8). There is no
-    # separate initial-vs-replan path: an initial plan is a replan with empty
-    # history and now = 0, so the same normalize + solve handles both. `had_now`
-    # only drives whether the output echoes `now`.
-    doc_path = document_path if document_path is not None else status_path
+    # Unified execution-document input (SPEC §6.1). Shape-validate it once, then read
+    # `interface` (the boundary constraint, §6.8). There is no separate
+    # initial-vs-replan path: an initial plan is a replan with empty history and
+    # now = 0, so the same normalize + solve handles both. `had_now` only drives
+    # whether the output echoes `now`.
+    doc_path = document_path
     interface = None
     had_now = False
     root = None
