@@ -154,9 +154,10 @@ def build_instance(
             )
         arcs.append(ArcInstance(arc, si, di, tuple(options)))
 
-    # Boundary connections (SPEC §6.8): synthesize the input node and its arcs.
+    # Boundary connections (SPEC §6.8): synthesize the input / output nodes and arcs.
     if interface:
         _add_boundary_inputs(workflow, env, interface, activities, arcs, index_by_node, check_reachability, diags)
+        _add_boundary_outputs(workflow, env, interface, activities, arcs, index_by_node, check_reachability, diags)
 
     precedence = tuple(
         (index_by_node[s], index_by_node[d])
@@ -246,6 +247,68 @@ def _add_boundary_inputs(
             )
         arc = Arc(Endpoint((), name), Endpoint(consumer.node, consumer.port))
         arcs.append(ArcInstance(arc, node_index, di, tuple(options)))
+
+
+def _add_boundary_outputs(
+    workflow: Workflow,
+    env: Environment,
+    interface: dict,
+    activities: list[ActivityInstance],
+    arcs: list[ArcInstance],
+    index_by_node: dict[NodePath, int],
+    check_reachability: bool,
+    diags: Diagnostics,
+) -> None:
+    """Append the output boundary node and one boundary arc per bound final output
+    (the mirror of `_add_boundary_inputs`). The output node consumes every bound
+    output at its interface spot; its end is pinned to the makespan by the solver
+    so a delivered Object holds its spot to the end (SPEC §6.8). Invalid bindings
+    are diagnosed and skipped: an unknown / Pure Data / pass-through port, a
+    duplicate spot (within outputs), or a spot the environment does not define.
+    """
+    outputs = interface.get("outputs") or {}
+    valid: list[tuple[str, str, Endpoint]] = []  # (port name, spot, producer endpoint)
+    spot_owner: dict[str, str] = {}
+    for name, spot in outputs.items():
+        if not _spot_exists(spot, env, name, diags):
+            continue
+        if spot in spot_owner:
+            diags.error(errors.INTERFACE_DUPLICATE_SPOT, f"interface outputs {name!r} and {spot_owner[spot]!r} both bind spot {spot!r}")
+            continue
+        producer = workflow.exit_outputs.get(name)
+        if producer is None:
+            object_bearing = workflow.exit_output_ports.get(name)
+            if object_bearing is None:
+                diags.error(errors.INTERFACE_UNKNOWN_PORT, f"interface output {name!r} is not a final output of the workflow")
+            elif not object_bearing:
+                diags.error(errors.INTERFACE_PURE_DATA_PORT, f"interface output {name!r} is a Pure Data port and occupies no spot")
+            else:
+                diags.error(errors.INTERFACE_UNKNOWN_PORT, f"interface output {name!r} is a pass-through entry input returned directly (out of scope)")
+            continue
+        spot_owner[spot] = name
+        valid.append((name, spot, producer))
+
+    if not valid:
+        return
+
+    # A single output node: one mode placing every bound final output at its spot,
+    # no device, its end pinned to the makespan by cpsat (holds the spots to the end).
+    mode = Mode(id="interface_out", devices=(), duration=0, input_spots={n: s for n, s, _ in valid}, output_spots={})
+    node_index = len(activities)
+    activities.append(ActivityInstance((), "", (mode,), boundary=BoundaryInfo("output")))
+
+    for name, _spot, producer in valid:
+        si = index_by_node.get(producer.node)
+        if si is None:
+            continue  # a producer that is not a scheduled activity; cannot happen for a valid workflow
+        options = _transport_options(activities[si], producer.port, activities[node_index], name, env)
+        if not options and check_reachability:
+            diags.error(
+                errors.ARC_UNREACHABLE,
+                f"no transporter can serve the boundary output {format_endpoint(producer.node, producer.port)} -> {name!r}",
+            )
+        arc = Arc(Endpoint(producer.node, producer.port), Endpoint((), name))
+        arcs.append(ArcInstance(arc, si, node_index, tuple(options)))
 
 
 def _spot_exists(spot: str, env: Environment, name: str, diags: Diagnostics) -> bool:

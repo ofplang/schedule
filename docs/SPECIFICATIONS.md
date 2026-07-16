@@ -628,7 +628,10 @@ port have no such arc, so `interface` supplies the equivalent constraint.
   port → the qualified spot its Object must be delivered to.
 
 Only Object-bearing boundary ports appear (Pure Data ports occupy no spot). Each
-port maps to exactly one spot; two inputs may not share a spot.
+port maps to exactly one spot; two bindings on the same side (two `inputs`, or two
+`outputs`) may not share a spot — two entry Objects cannot start at one spot, and
+two delivered Objects cannot rest at one. An input and an output may share a spot
+(they occupy it at different times).
 
 **Meaning (induces boundary transports).** Each binding adds a boundary transport
 (§6.4): a boundary-**input** transport moves the Object from the fixed spot to
@@ -843,7 +846,8 @@ environment for processes the workflow never invokes are not checked.
   under `outputs` (`interface_unknown_port` if it is not that port, or is mapped on
   the wrong side; `interface_pure_data_port` if the port is Pure Data). Its spot
   exists in the environment (`unknown_device` / `unknown_spot`, reused from §9.1).
-  No two `inputs` bind the same spot (`interface_duplicate_spot`). In the phase
+  No two bindings on the same side (two `inputs`, or two `outputs`) bind the same
+  spot (`interface_duplicate_spot`). In the phase
   where `interface` is required, every Object-bearing entry input is bound
   (`interface_input_missing` otherwise); while `interface` is optional an unbound
   input is left unconstrained.
@@ -955,7 +959,7 @@ building the solver instance. All are error severity.
 | `arc_unreachable` | no endpoint-mode pair and transporter can serve an Object-bearing arc (interior or boundary, §6.8) |
 | `interface_unknown_port` | an `interface` binding names a port that is not an Object-bearing boundary port on that side (§6.8) |
 | `interface_pure_data_port` | an `interface` binding names a Pure Data port (occupies no spot) |
-| `interface_duplicate_spot` | two `interface.inputs` bind the same spot |
+| `interface_duplicate_spot` | two bindings on one side (two inputs, or two outputs) bind the same spot |
 | `interface_input_missing` | an Object-bearing entry input has no `interface` binding (only in the phase where `interface` is required, §6.8) |
 | `infeasible` | the solver proved the instance has no feasible schedule |
 
