@@ -94,15 +94,13 @@ def test_workflow_captures_boundary_bindings(tmp_path):
     assert workflow.exit_outputs["result"].node == ("Heat",)
 
 
-def test_no_interface_leaves_mode_unconstrained(tmp_path):
-    # Without interface the plan is feasible and carries no boundary transport
-    # (the pre-interface behaviour): heat picks some mode freely.
+def test_interface_input_required(tmp_path):
+    # An Object-bearing entry input with no interface binding is an error: its
+    # consumer's mode would otherwise be unconstrained (SPEC §6.8).
     wf, ev, _ = _write(tmp_path)
     report = schedule(wf, ev)
-    assert report.ok and report.outcome == "optimal"
-    assert report.makespan == 10
-    assert [a for a in report.plan["activities"] if a["kind"] == "transport"] == []
-    assert "interface" not in report.plan
+    assert not report.ok
+    assert "interface_input_missing" in {d.code for d in report.diagnostics}
 
 
 def test_interface_constrains_mode_to_slot_a(tmp_path):
@@ -186,8 +184,10 @@ entry: main
 
 def test_interface_pure_data_port(tmp_path):
     # `knob` is a Pure Data entry input; it occupies no spot, so binding it errors.
-    wf, ev, doc = _write(tmp_path, workflow=WORKFLOW_PURE_DATA, document=_iface("rack.slot_a", port="knob"))
-    report = schedule(wf, ev, document_path=doc)
+    # (sample, the Object entry input, is bound so only the Pure Data error fires.)
+    doc = "interface:\n  inputs: { sample: rack.slot_a, knob: rack.slot_b }\nactivities: []\n"
+    wf, ev, docp = _write(tmp_path, workflow=WORKFLOW_PURE_DATA, document=doc)
+    report = schedule(wf, ev, document_path=docp)
     assert not report.ok
     assert "interface_pure_data_port" in {d.code for d in report.diagnostics}
 
@@ -247,55 +247,101 @@ def test_interface_duplicate_spot(tmp_path):
 
 # --- output boundary (phase 1b) -------------------------------------------------
 
+# A create-based workflow (no entry input, so no input binding is required): `make`
+# creates the final output `result`, which its two modes place at slot_a / slot_b.
+WORKFLOW_OUT = """
+spec_version: "0.0"
+types:
+  Sample: { domain: object }
+processes:
+  make:
+    kind: atomic
+    outputs: { out: { type: Sample, phase: data } }
+    objects: { create: [outputs.out] }
+  main:
+    kind: composite
+    inputs: {}
+    outputs: { result: { type: Sample, phase: data } }
+    body:
+      nodes:
+        - id: Make
+          process: make
+      returns: { result: { from: Make.out } }
+entry: main
+"""
+
+ENV_OUT = """
+time: { unit: second }
+devices:
+  - id: rack
+    spots: [slot_a, slot_b, slot_c]
+transporters:
+  - id: arm
+transports: []
+processes:
+  make:
+    modes:
+      - { id: at_a, devices: [rack], duration: 10, output_spots: { out: rack.slot_a } }
+      - { id: at_b, devices: [rack], duration: 10, output_spots: { out: rack.slot_b } }
+objective: { kind: makespan }
+"""
+
+
 def _oface(spot, port="result"):
     return f"interface:\n  outputs: {{ {port}: {spot} }}\nactivities: []\n"
 
 
+def _write_out(tmp_path, document):
+    return _write(tmp_path, workflow=WORKFLOW_OUT, env=ENV_OUT, document=document)
+
+
 def test_interface_output_constrains_mode_and_emits_boundary_transport(tmp_path):
     # Delivering `result` to slot_a is only reachable from mode at_a (out at slot_a);
-    # no transporter can move slot_b -> slot_a, so heat must run at_a.
-    wf, ev, doc = _write(tmp_path, document=_oface("rack.slot_a"))
+    # no transporter can move slot_b -> slot_a, so make must run at_a.
+    wf, ev, doc = _write_out(tmp_path, _oface("rack.slot_a"))
     report = schedule(wf, ev, document_path=doc)
     assert report.ok and report.outcome == "optimal"
-    (heat,) = [a for a in report.plan["activities"] if a["kind"] == "processing"]
-    assert heat["mode"] == "at_a"
+    (make,) = [a for a in report.plan["activities"] if a["kind"] == "processing"]
+    assert make["mode"] == "at_a"
 
     (t,) = [a for a in report.plan["activities"] if a["kind"] == "transport"]
     assert t["from_spot"] == "rack.slot_a" and t["to_spot"] == "rack.slot_a"
-    assert t["arc"]["from"] == {"node": ["Heat"], "port": "out"}
+    assert t["arc"]["from"] == {"node": ["Make"], "port": "out"}
     assert t["arc"]["to"] == {"node": [], "port": "result"}  # empty-path = the workflow interface
     assert report.plan["interface"] == {"outputs": {"result": "rack.slot_a"}}
 
 
 def test_interface_output_slot_b(tmp_path):
-    wf, ev, doc = _write(tmp_path, document=_oface("rack.slot_b"))
+    wf, ev, doc = _write_out(tmp_path, _oface("rack.slot_b"))
     report = schedule(wf, ev, document_path=doc)
     assert report.ok
-    (heat,) = [a for a in report.plan["activities"] if a["kind"] == "processing"]
-    assert heat["mode"] == "at_b"
+    (make,) = [a for a in report.plan["activities"] if a["kind"] == "processing"]
+    assert make["mode"] == "at_b"
 
 
 def test_interface_input_and_output_combined(tmp_path):
+    # WORKFLOW's heat runs in-place at a single spot, so binding both sample and
+    # result to slot_a is consistent (heat = at_a): an input and an output boundary
+    # transport, both 0-distance.
     doc = "interface:\n  inputs: { sample: rack.slot_a }\n  outputs: { result: rack.slot_a }\nactivities: []\n"
     wf, ev, docp = _write(tmp_path, document=doc)
     report = schedule(wf, ev, document_path=docp)
     assert report.ok
     (heat,) = [a for a in report.plan["activities"] if a["kind"] == "processing"]
     assert heat["mode"] == "at_a"
-    # An input boundary transport and an output boundary transport, both 0-distance.
     transports = [a for a in report.plan["activities"] if a["kind"] == "transport"]
     assert len(transports) == 2
 
 
 def test_interface_output_unknown_port(tmp_path):
-    wf, ev, doc = _write(tmp_path, document=_oface("rack.slot_a", port="nope"))
+    wf, ev, doc = _write_out(tmp_path, _oface("rack.slot_a", port="nope"))
     report = schedule(wf, ev, document_path=doc)
     assert not report.ok
     assert "interface_unknown_port" in {d.code for d in report.diagnostics}
 
 
 def test_interface_output_unreachable(tmp_path):
-    wf, ev, doc = _write(tmp_path, document=_oface("rack.slot_c"))
+    wf, ev, doc = _write_out(tmp_path, _oface("rack.slot_c"))
     report = schedule(wf, ev, document_path=doc)
     assert not report.ok
     assert "arc_unreachable" in {d.code for d in report.diagnostics}
@@ -431,9 +477,9 @@ def test_replan_with_interface_input_pending(tmp_path):
 
 
 def test_replan_with_interface_output(tmp_path):
-    # Output boundary: after heat and its delivery complete, a replan keeps the
+    # Output boundary: after make and its delivery complete, a replan keeps the
     # boundary intact (output node re-created, committed leg preserved).
-    wf, ev, doc = _write(tmp_path, document=_oface("rack.slot_a"))
+    wf, ev, doc = _write_out(tmp_path, _oface("rack.slot_a"))
     initial = schedule(wf, ev, document_path=doc)
     assert initial.ok
     status = dict(initial.plan)
@@ -445,6 +491,6 @@ def test_replan_with_interface_output(tmp_path):
 
     replan = schedule(wf, ev, document_path=sp)
     assert replan.ok, [d.code for d in replan.diagnostics]
-    (heat,) = [a for a in replan.plan["activities"] if a["kind"] == "processing"]
-    assert heat["mode"] == "at_a" and heat["status"] == "completed"
+    (make,) = [a for a in replan.plan["activities"] if a["kind"] == "processing"]
+    assert make["mode"] == "at_a" and make["status"] == "completed"
     assert replan.plan["interface"] == {"outputs": {"result": "rack.slot_a"}}

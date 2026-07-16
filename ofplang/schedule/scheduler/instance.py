@@ -154,6 +154,15 @@ def build_instance(
             )
         arcs.append(ArcInstance(arc, si, di, tuple(options)))
 
+    # Interface is required (SPEC §6.8): every Object-bearing entry input must be
+    # bound, otherwise the upstream activity's mode would be unconstrained. (Outputs
+    # are optional.) Runs even without an interface, so a workflow with entry inputs
+    # and no interface is rejected rather than silently unconstrained.
+    bound_inputs = set((interface or {}).get("inputs") or {})
+    for name in workflow.entry_inputs:
+        if name not in bound_inputs:
+            diags.error(errors.INTERFACE_INPUT_MISSING, f"entry input {name!r} is Object-bearing and must be bound in interface.inputs")
+
     # Boundary connections (SPEC §6.8): synthesize the input / output nodes and arcs.
     if interface:
         _add_boundary_inputs(workflow, env, interface, activities, arcs, index_by_node, check_reachability, diags)
