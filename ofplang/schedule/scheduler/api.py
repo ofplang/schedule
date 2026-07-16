@@ -71,13 +71,15 @@ def schedule(
         return ScheduleReport(None, None, None, diagnostics)
 
     # Unified execution-document input (SPEC §6.1). `document_path` is primary;
-    # `status_path` is a deprecated alias (removed in a later phase). A document
-    # that sets `now` is a replan input; without `now` it is an initial-plan input
-    # (which may carry `interface`). Shape-validate it once, then read `interface`
-    # (the boundary constraint, §6.8) and detect the replan discriminator.
+    # `status_path` is a deprecated alias (removed in a later phase). Shape-validate
+    # it once, then read `interface` (the boundary constraint, §6.8). There is no
+    # separate initial-vs-replan path: an initial plan is a replan with empty
+    # history and now = 0, so the same normalize + solve handles both. `had_now`
+    # only drives whether the output echoes `now`.
     doc_path = document_path if document_path is not None else status_path
     interface = None
-    is_replan = False
+    had_now = False
+    root = None
     if doc_path is not None:
         doc_result = validate_document(doc_path)
         diagnostics += doc_result.diagnostics
@@ -86,42 +88,30 @@ def schedule(
         raw = yaml.safe_load(Path(doc_path).read_text(encoding="utf-8"))
         if isinstance(raw, dict):
             interface = raw.get("interface")
-            is_replan = "now" in raw
+            had_now = "now" in raw
+        root = yamlnode.load_file(doc_path)
 
-    # 3. Instance + execution-layer checks (§9.3 subset). On an initial plan,
-    # reachability is checked per workflow arc here. On a replan it is deferred:
-    # committed transports may lack a direct current-env route (they re-route
-    # through relays), so reachability is re-checked per pending leg after
-    # normalization.
-    if not is_replan:
-        instance, inst_diags = build_instance(workflow, env, interface=interface)
-        diagnostics += inst_diags.items
-        if instance is None:
-            return ScheduleReport(None, None, None, diagnostics)
-        fixation = None
-    else:
-        # 4. Replan: normalize the status into the augmented instance + fixation.
-        # The interface boundary nodes/arcs are re-created here too (they never
-        # appear in the status, so they are rebuilt from workflow + interface, like
-        # relays); committed boundary legs match by their empty-path arc. Fixed parts
-        # are pinned as historical facts.
-        base, inst_diags = build_instance(workflow, env, interface=interface, check_reachability=False)
-        diagnostics += inst_diags.items
-        if base is None:
-            return ScheduleReport(None, None, None, diagnostics)
-        instance, fixation, norm_diags = normalize(base, yamlnode.load_file(doc_path), env)
-        diagnostics += norm_diags.items
-        if instance is None or fixation is None:
-            return ScheduleReport(None, None, None, diagnostics)
+    # 3. Build the instance (boundary nodes/arcs from interface always re-created,
+    # like relays) and normalize the document into the augmented instance +
+    # fixation (empty history when there is no document). Reachability is checked
+    # per pending leg after normalization (committed legs are facts).
+    base, inst_diags = build_instance(workflow, env, interface=interface, check_reachability=False)
+    diagnostics += inst_diags.items
+    if base is None:
+        return ScheduleReport(None, None, None, diagnostics)
 
-        # Reachability of the pending legs only (committed legs are facts).
-        reach = Diagnostics()
-        report_unreachable(instance, set(fixation.arcs), reach)
-        diagnostics += reach.items
-        if _has_error(reach.items):
-            return ScheduleReport(None, None, None, diagnostics)
+    instance, fixation, norm_diags = normalize(base, root, env)
+    diagnostics += norm_diags.items
+    if instance is None or fixation is None:
+        return ScheduleReport(None, None, None, diagnostics)
 
-    # 5. Solve, then 6. render the plan (only when feasible).
+    reach = Diagnostics()
+    report_unreachable(instance, set(fixation.arcs), reach)
+    diagnostics += reach.items
+    if _has_error(reach.items):
+        return ScheduleReport(None, None, None, diagnostics)
+
+    # 4. Solve, then 5. render the plan (only when feasible).
     solution = solve(
         instance,
         fixation=fixation,
@@ -138,9 +128,9 @@ def schedule(
         solution,
         workflow=str(workflow_path),
         environment=str(environment_path),
-        status=str(doc_path) if is_replan else None,
-        now=fixation.now if fixation is not None else None,
-        placements=fixation.placements if fixation is not None else None,
+        status=str(doc_path) if root is not None else None,
+        now=fixation.now if had_now else None,
+        placements=fixation.placements,
         interface=interface,
     )
     return ScheduleReport(solution.outcome, solution.makespan, plan, diagnostics)

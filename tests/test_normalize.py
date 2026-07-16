@@ -41,9 +41,21 @@ def _codes(diags):
 
 
 def test_missing_now():
-    inst, fix, diags = _run("activities: []")
+    # A document with started activities but no `now` is an error: history cannot be
+    # pinned against an absent reference time (SPEC §6.1 / §9.3).
+    inst, fix, diags = _run(
+        "activities:\n- { kind: processing, status: completed, start: 0, end: 2, process: source, mode: '0', node: [SampleSource] }\n"
+    )
     assert _codes(diags) == ["status_missing_now"]
     assert inst is None
+
+
+def test_no_now_no_history_is_initial():
+    # No `now` and no started activities: the degenerate initial plan (now = 0), not
+    # an error — an initial plan is a replan with empty history.
+    inst, fix, diags = _run("activities: []")
+    assert _codes(diags) == []
+    assert inst is not None and fix is not None and fix.now == 0
 
 
 def test_node_unknown():

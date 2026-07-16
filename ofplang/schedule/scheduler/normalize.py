@@ -85,19 +85,30 @@ def normalize(base: Instance, root: YNode | None, env) -> tuple[Instance | None,
     """Build the augmented instance and fixation from `base` (the workflow
     instance, built with `check_reachability=False`) and the status `root`."""
     diags = Diagnostics()
-    if not isinstance(root, YMap):
-        diags.error(errors.WRONG_TYPE, "status document must be a mapping", "")
+    # `root` is the execution document, or None for an initial plan (no document).
+    # An initial plan is the degenerate case of a replan with empty history and
+    # now = 0 (SPEC §6.1), so the same machinery handles both. `now` is an ordinary
+    # parameter ("schedule the remaining work at or after now"), independent of
+    # history: it may be set with no started activities (re-optimise the future),
+    # but started activities without a `now` are an error (they cannot be pinned
+    # relative to an absent reference time).
+    if root is not None and not isinstance(root, YMap):
+        diags.error(errors.WRONG_TYPE, "execution document must be a mapping", "")
         return None, None, diags
 
-    now_node = root.get("now")
-    if not (isinstance(now_node, YScalar) and now_node.is_int):
-        diags.error(errors.STATUS_MISSING_NOW, "a replanning status must set now", "now", at=root)
+    now_node = root.get("now") if isinstance(root, YMap) else None
+    has_now = isinstance(now_node, YScalar) and now_node.is_int
+    if not has_now and isinstance(root, YMap) and _has_started_activities(root):
+        diags.error(errors.STATUS_MISSING_NOW, "a document with started activities must set now", "now", at=root)
         return None, None, diags
-    now = now_node.value
+    now = now_node.value if has_now else 0
 
     node_index = {act.node: i for i, act in enumerate(base.activities)}
     arc_keys = {_arc_key_of(a.arc) for a in base.arcs}
-    fixed_proc, legs_by_arc = _read_status(root, node_index, arc_keys, now, diags)
+    if isinstance(root, YMap):
+        fixed_proc, legs_by_arc = _read_status(root, node_index, arc_keys, now, diags)
+    else:
+        fixed_proc, legs_by_arc = {}, {}
     if _has_error(diags):
         return None, None, diags
 
@@ -132,8 +143,18 @@ def normalize(base: Instance, root: YNode | None, env) -> tuple[Instance | None,
         return None, None, diags
 
     instance = Instance(env, base.time_unit, tuple(activities), tuple(arcs), base.precedence)
-    fixation = Fixation(now, act_fix, arc_fix, _placements(root))
+    placements = _placements(root) if isinstance(root, YMap) else []
+    fixation = Fixation(now, act_fix, arc_fix, placements)
     return instance, fixation, diags
+
+
+def _has_started_activities(root: YMap) -> bool:
+    """Whether the document carries any `completed` / `running` activity — the
+    history that requires a `now` to pin it against."""
+    activities = root.get("activities")
+    if not isinstance(activities, YSeq):
+        return False
+    return any(isinstance(item, YMap) and _status_of(item) in _STARTED for item in activities.items)
 
 
 # --------------------------------------------------------------------------
