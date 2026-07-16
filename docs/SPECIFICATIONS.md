@@ -57,11 +57,20 @@ In scope:
 | --- | --- | --- |
 | ofplang workflow YAML | The logical DAG (what to do; data / Object flow) | Logical, invariant |
 | Execution environment YAML (§5) | Where / how long (capabilities, durations, transport) | Physical, static, reusable |
-| Execution status YAML (§6, §7) | What has happened (actuals, fixed state); replanning only | Dynamic |
-| **Execution plan YAML (§6)** | Output: what runs where and when | Result |
+| Execution document YAML (§6) | Input carrying the `interface` boundary constraint and, on a replan, the prior status; also the output plan | Planning constraint / dynamic / result |
 
-The initial state at the start of a run — where Object-bearing material sits —
-belongs to the execution status input, not the environment definition.
+An execution document (§6) is the shared shape used for both the scheduler's
+**input** (the `interface` boundary spots, plus the prior status on a replan) and
+its **output** (the plan). A document with `now` is a replanning input; without
+`now` it is an initial-plan input (typically carrying only `interface`).
+
+Where the workflow's boundary Object-bearing material sits — the entry inputs'
+start positions and the final outputs' delivery positions — is a **planning
+constraint**, not run state: it is the boundary analog of an interior arc (an
+interior Object-bearing port is constrained by its arc's transport; a boundary
+port has no such arc, so `interface` supplies the equivalent). It is given in the
+`interface` section of the execution document (§6.8), supplied for the initial
+plan and carried through replans, not in the environment definition.
 
 ## 4. Scheduling model
 
@@ -353,9 +362,15 @@ environment.
 - `time` (optional) — echoed from the environment. When present it carries a
   `unit`, required and validated exactly as in the environment (§5.1: a non-empty
   string); a document may omit `time` entirely.
-- `now` (optional) — the reference time. A plan usually omits it; a replanning
-  status sets it, and the remaining work is scheduled at or after it. A status
-  supplied to replanning must set it (§9.3, `status_missing_now`).
+- `now` (optional) — the reference time, and the **replan discriminator**: a
+  document that sets `now` is a replanning input (the remaining work is scheduled
+  at or after it); a document without `now` is an initial-plan input. A plan output
+  usually omits it. A document that carries started (`completed` / `running`)
+  activities must set `now` (§9.3, `status_missing_now`).
+- `interface` (optional in the current phase; §6.8) — the boundary spots for the
+  workflow's Object-bearing entry inputs and final outputs (a planning constraint,
+  §3). Supplied for the initial plan and carried through replans; echoed in the
+  plan output.
 - `outcome` (optional) — the solver result: `optimal`, `feasible`, `infeasible`,
   or `unknown` (`unknown` = feasible but optimality unproven, e.g. on timeout).
   Present on a plan; absent on a status input.
@@ -364,7 +379,10 @@ environment.
   a document may give `kind` alone (e.g. to name the objective whose value is to
   be computed), and there is no value to report when a solve is infeasible.
 - `activities` (required).
-- `placements` (optional) — where Object-bearing material sits at `now` (§6.5).
+- `placements` (optional, **deprecated**) — accepted but ignored; superseded by
+  `interface` (§6.8) for boundary material and otherwise redundant (produced-Object
+  positions follow from the activities). Retained transitionally and scheduled for
+  removal (§6.5).
 - `meta` (optional) — provenance, e.g. `workflow` and `environment` source
   references.
 
@@ -415,6 +433,15 @@ environment.
   §6.4.1), **every** leg carries the same logical `arc`, and each leg's
   `from_spot` / `to_spot` gives its own physical hop — so `arc` names *which
   connection* the leg serves, while the spots give the actual move.
+  - A **boundary** transport (§6.8) serves a connection to/from the workflow
+    interface rather than between two nodes. Its boundary endpoint uses an **empty
+    node path** `{ node: [], port: <name> }`, denoting the entry composite itself
+    (node paths run from the entry composite's body down, so `[]` is the workflow
+    interface and cannot collide with any atomic node, which always has a non-empty
+    path). The empty path on the `from` side names an **entry input** port, on the
+    `to` side a **final output** port. A boundary transport has a fixed spot on its
+    interface side (`from_spot` for a boundary input, `to_spot` for a boundary
+    output); the other side is the consuming / producing activity's spot.
 - `seq` (optional) — the leg's position in a multi-leg chain for that arc (§6.6).
   Omitted for a single-leg transport (equivalent to the first position).
 
@@ -451,24 +478,18 @@ single-leg same-spot transport that has no preceding relay (a direct
 producer-to-consumer hop within one spot) is **not** folded — there is no committed
 leg to reconstruct it from — but it carries no `transporter` (above).
 
-### 6.5 Placements
+### 6.5 Placements (deprecated)
 
-`placements` records where Object-bearing material sits at `now` when that is not
-already implied by the activities — chiefly the workflow's entry inputs at the
-start of a run. Each entry is:
+`placements` is **deprecated**: it is accepted for shape but **ignored** by the
+scheduler, and will be removed. Boundary material (entry inputs, final outputs) is
+now given by `interface` (§6.8), which — unlike `placements` — actually constrains
+the plan; other Object positions are implied by the activities. Do not add
+`placements` to new documents.
 
-- `object` — the material: `{ input: <name> }` for an entry input of the workflow,
-  or `{ node: <path>, port: <name> }` for the output of a produced Object.
-- `spot` — the qualified spot `<device>.<spot>` it occupies.
-
-For example, at the start of a run the entry input sits where the first step
-expects it:
-
-```yaml
-placements:
-  - object: { input: sample }
-    spot: incubator_0.slot_0
-```
+Historically each entry was `{ object, spot }`, where `object` was
+`{ input: <name> }` or `{ node: <path>, port: <name> }` and `spot` a qualified
+spot. The shape is still validated (§9.2) during the transition; a document that
+omits `placements` entirely is preferred.
 
 ### 6.6 Identity and replanning
 
@@ -477,17 +498,20 @@ provenance: a processing activity by its `node`; a transport or relay activity b
 its `arc` **and `seq`**. A single-leg transport has one leg per arc, so its `arc`
 alone identifies it (`seq` omitted = position `0`). A multi-leg move (through
 relays, §6.4.1) has several legs and relays on the **same** `arc`, distinguished
-by `seq` — a per-arc chain ordinal. `seq` is a **stable** position: once assigned
+by `seq` — a per-arc chain ordinal. A **boundary** transport is matched the same
+way; its `arc` simply carries an empty-path endpoint (§6.4, §6.8), so a boundary
+arc keys distinctly from any interior arc. `seq` is a **stable** position: once assigned
 to a chain element it is carried unchanged across replans (a fresh element takes
 the next unused position for that arc), so a status lines up against the prior
 plan even when a spot is revisited (the same `spot` can appear at two positions).
 `seq` is an ordinal, not an encoded value — nothing reads meaning from it.
 
 On a replan the scheduler fixes `completed` and `running` activities to their
-reported times and assignments, takes material positions from `placements`, and
-re-optimises the rest at or after `now`. The main fields are not identities — a
-process/mode or a spot/transporter combination does not distinguish repeated
-occurrences, and the times change from one plan to the next.
+reported times and assignments, takes boundary positions from `interface` (§6.8)
+and every other Object position from the committed activities, and re-optimises the
+rest at or after `now`. The main fields are not identities — a process/mode or a
+spot/transporter combination does not distinguish repeated occurrences, and the
+times change from one plan to the next.
 
 ### 6.7 Examples
 
@@ -503,7 +527,21 @@ objective:
 time:
   unit: second
 
+interface:                                     # boundary constraint (§6.8)
+  inputs:  { sample: incubator_0.slot_0 }       # the entry input is loaded here
+  # outputs: {}                                 # no Object-bearing final output here
+
 activities:
+  - kind: transport                            # boundary input: interface -> heat
+    start: 0
+    end: 0                                     # same spot as heat's input: 0-distance
+    from_spot: incubator_0.slot_0
+    to_spot:   incubator_0.slot_0
+    arc:                                       # empty-path `from` = entry input `sample`
+      from: { node: [],     port: sample }
+      to:   { node: [heat], port: plate }
+    # transporter omitted (same-spot no-op, §6.4)
+
   - kind: processing
     start: 0
     end: 60
@@ -570,19 +608,67 @@ activities:
       from: { node: [heat],  port: plate }
       to:   { node: [assay], port: plate }
 
-# No `placements` here: the plate is handled by the running transport, and the
-# entry input was already consumed by `heat`. `placements` lists only material not
-# implied by the activities (see §6.5).
+interface:                                   # carried through unchanged (§6.8)
+  inputs: { sample: incubator_0.slot_0 }
+# The plate is handled by the running transport, and the entry input was already
+# consumed by `heat`; positions of everything else follow from the activities.
+```
+
+### 6.8 Interface (boundary spots)
+
+`interface` pins the workflow's boundary Object-bearing material to spots. It is a
+**planning constraint** (§3), the boundary analog of an interior arc: an interior
+Object-bearing port is constrained by its arc's transport (source output spot →
+destination input spot), whereas a most-upstream input port and a final output
+port have no such arc, so `interface` supplies the equivalent constraint.
+
+- `inputs` (map) — each Object-bearing **entry input** port of the workflow → the
+  qualified spot `<device>.<spot>` where its Object sits at the start.
+- `outputs` (map, optional per port) — each bound Object-bearing **final output**
+  port → the qualified spot its Object must be delivered to.
+
+Only Object-bearing boundary ports appear (Pure Data ports occupy no spot). Each
+port maps to exactly one spot; two inputs may not share a spot.
+
+**Meaning (induces boundary transports).** Each binding adds a boundary transport
+(§6.4): a boundary-**input** transport moves the Object from the fixed spot to
+whatever input spot the consuming activity's chosen mode needs (a real move, or a
+same-spot no-op when they coincide); a boundary-**output** transport moves the
+produced Object to the fixed spot. These are ordinary transports whose `arc` has an
+empty-path endpoint (§6.4). The fixed spot is occupied from the start of the run
+until the input is picked up, and from delivery until the end of the schedule for
+an output; a boundary-output delivery is counted in the makespan. The
+consuming/producing activity's mode is otherwise free — nothing is pruned; the
+transport bridges the fixed spot to the chosen mode's spot (infeasible only if no
+transporter can, surfaced as `arc_unreachable`, §10.4). The full model is in
+`FORMULATION.md`.
+
+**Round-trip.** `interface` is supplied for the initial plan and **echoed in the
+plan output**; on a replan it is carried through unchanged (the boundary material
+does not move on its own). It constrains only **pending** boundary activities; once
+a boundary transport or its consuming/producing activity has started, that part is
+a fixed historical fact and is not re-checked against `interface` (§7).
+
+**Transition (current phase).** `interface` is **optional** in the current phase:
+when a workflow's Object-bearing entry input has no binding, the upstream mode is
+left unconstrained (the pre-`interface` behavior). A later phase makes a binding
+**required** for every Object-bearing entry input (`interface_input_missing`,
+§10.4) and removes the deprecated `placements` (§6.5).
+
+```yaml
+interface:
+  inputs:  { sample: incubator_0.slot_0 }
+  outputs: { plate:  output_rack.slot_0 }   # optional; omit to leave the output where produced
 ```
 
 ## 7. Execution status
 
 The execution status is the replanning input. It is the **same document as the
-execution plan (§6)**, used with `now` set (required for a replanning input,
-§9.3), a `status` on each started activity, and `placements` giving the current
-material positions; see §6, and the status example in §6.7. Entries that are
-`pending` or carry no `status` are ignored and re-derived from the workflow, so a
-prior plan can be fed back verbatim (§6.2).
+execution plan (§6)**, used with `now` set (the replan discriminator, required for
+a replanning input, §9.3), a `status` on each started activity, and the
+`interface` boundary constraint (§6.8) carried through unchanged; see §6, and the
+status example in §6.7. Entries that are `pending` or carry no `status` are ignored
+and re-derived from the workflow, so a prior plan can be fed back verbatim (§6.2).
 
 **Fixed parts are historical facts.** A `completed` / `running` activity or
 transport is pinned from its *reported* assignment — a processing's echo
@@ -691,10 +777,15 @@ or a status. Cross-document checks (that a `node` / `arc` / `process` exists in 
 workflow, or that a spot exists in the environment) are execution-layer (§9.3).
 
 - Top level: `activities` is required; `time` / `now` / `outcome` / `objective` /
-  `placements` / `meta` are optional. Unknown or extra keys are errors.
+  `interface` / `placements` / `meta` are optional. Unknown or extra keys are errors.
 - `now` (if present) is a non-negative integer; `outcome` (if present) is one of
   `optimal` / `feasible` / `infeasible` / `unknown`; `objective` (if present) has
   `kind: makespan` and a non-negative integer `value`.
+- `interface` (if present): `inputs` / `outputs` (each optional) are maps of a port
+  identifier to a qualified spot; a spot value is a well-formed qualified spot
+  (`<device>.<spot>`, exactly one `.`). (That a port is an Object-bearing boundary
+  port, and input-completeness / spot uniqueness / spot existence, are
+  execution-layer, §9.3.)
 - Each activity: `kind` is required and is `processing`, `transport`, or `relay`;
   `status` (if present) is `pending` / `running` / `completed`; `start` and `end`
   are required non-negative integers with `end >= start`. Unknown keys are errors.
@@ -703,7 +794,10 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
   - transport: `from_spot`, `to_spot` (qualified spots) and `arc` (`from` / `to`,
     each `{ node: <list>, port: <id> }`) are required; `transporter` is required
     unless the move is same-spot (`from_spot == to_spot`), where it may be omitted
-    (§6.4); `seq` (if present) is a non-negative integer. More than one transport
+    (§6.4); `seq` (if present) is a non-negative integer. A **boundary** transport's
+    `arc` has one endpoint with an **empty** node path (`node: []`, the workflow
+    interface, §6.4/§6.8); an empty node path is allowed there (but not as a
+    processing `node`, which stays non-empty). More than one transport
     may carry the same `arc` (the legs of a multi-leg move, §6.4.1).
   - relay: `arc` (as above), `spot` (a qualified spot), and `seq` (a non-negative
     integer) are required; `end` must equal `start` (`relay_nonzero_duration`
@@ -741,14 +835,27 @@ environment for processes the workflow never invokes are not checked.
 - **Reachability / solvability**: for each Object-bearing arc, a feasible
   combination of endpoint modes and a transporter that can move between the
   chosen spots exists (`arc_unreachable` otherwise). This depends on mode
-  selection and is a solvability concern, not a schema check.
+  selection and is a solvability concern, not a schema check. A **boundary** arc
+  (from `interface`, §6.8) is included: no transporter able to move between its
+  fixed spot and the consuming/producing mode's spot is likewise `arc_unreachable`.
+- **Interface** (§6.8): each bound port is an Object-bearing boundary port of the
+  workflow on the correct side — an entry input under `inputs`, a final output
+  under `outputs` (`interface_unknown_port` if it is not that port, or is mapped on
+  the wrong side; `interface_pure_data_port` if the port is Pure Data). Its spot
+  exists in the environment (`unknown_device` / `unknown_spot`, reused from §9.1).
+  No two `inputs` bind the same spot (`interface_duplicate_spot`). In the phase
+  where `interface` is required, every Object-bearing entry input is bound
+  (`interface_input_missing` otherwise); while `interface` is optional an unbound
+  input is left unconstrained.
 
-When a replanning status is supplied (`--status`), it is **normalized** against
-the instance (building the augmented instance the solver runs) after these
-checks, emitting the codes in §10.4. Reachability (`arc_unreachable`) is not
-checked per workflow arc for a replan; it is re-checked per **pending** leg of
-the normalized instance, so a committed transport with no direct current-env
-route (it re-routes through a relay) is not falsely rejected.
+When the execution document sets `now` (the replan discriminator, §6.1), it is
+**normalized** against the instance (building the augmented instance the solver
+runs) after these checks, emitting the codes in §10.4. Reachability
+(`arc_unreachable`) is not checked per workflow arc for a replan; it is re-checked
+per **pending** leg of the normalized instance, so a committed transport with no
+direct current-env route (it re-routes through a relay) is not falsely rejected.
+Boundary arcs normalize uniformly (a committed boundary leg is pinned like any
+committed leg; a pending one is re-derived).
 
 - **Reference time**: the status sets `now` (`status_missing_now` otherwise).
 - **Provenance resolves**: each started (`completed` / `running`) processing's
@@ -819,9 +926,9 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `unknown_status` | `status` is not `pending` / `running` / `completed` |
 | `unknown_outcome` | `outcome` is not one of the defined values |
 | `end_before_start` | `end` is earlier than `start` |
-| `empty_node_path` | `node` is an empty list |
+| `empty_node_path` | a processing `node` is an empty list (an `arc` boundary endpoint may be empty, §6.4) |
 | `malformed_arc` | an `arc`'s `from` / `to` / `node` / `port` structure is wrong |
-| `malformed_placement` | a `placements` `object` is not exactly one of `input` or `node` + `port` |
+| `malformed_placement` | a `placements` `object` is not exactly one of `input` or `node` + `port` (deprecated, §6.5) |
 | `relay_nonzero_duration` | a `relay` activity's `end` is not equal to its `start` |
 
 Absent `process` / `mode` / `from_spot` and similar use the shared
@@ -845,11 +952,15 @@ building the solver instance. All are error severity.
 | `wrong_port_direction` | a port is mapped on the wrong side (an output under `input_spots`, or an input under `output_spots`) |
 | `pure_data_port_mapped` | a mode maps a Pure Data (non-Object-bearing) port to a spot |
 | `mode_ports_incomplete` | a mode does not map every Object-bearing port of its process |
-| `arc_unreachable` | no endpoint-mode pair and transporter can serve an Object-bearing arc |
+| `arc_unreachable` | no endpoint-mode pair and transporter can serve an Object-bearing arc (interior or boundary, §6.8) |
+| `interface_unknown_port` | an `interface` binding names a port that is not an Object-bearing boundary port on that side (§6.8) |
+| `interface_pure_data_port` | an `interface` binding names a Pure Data port (occupies no spot) |
+| `interface_duplicate_spot` | two `interface.inputs` bind the same spot |
+| `interface_input_missing` | an Object-bearing entry input has no `interface` binding (only in the phase where `interface` is required, §6.8) |
 | `infeasible` | the solver proved the instance has no feasible schedule |
 
-Replanning (`--status`), emitted while matching an execution status (§7) against
-the instance:
+Replanning (a document that sets `now`, §6.1), emitted while matching an execution
+status (§7) against the instance:
 
 | code | meaning |
 | --- | --- |
