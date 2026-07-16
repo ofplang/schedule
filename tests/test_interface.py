@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 from ofplang.schedule import schedule
 from ofplang.schedule.scheduler.workflow import parse_workflow
 
@@ -377,3 +379,72 @@ def test_output_holds_spot_to_makespan(tmp_path):
     report = schedule(wf, ev, document_path=doc)
     assert report.ok and report.outcome == "optimal"
     assert report.makespan == 30
+
+
+# --- replan with interface (phase 1c) -------------------------------------------
+
+def test_replan_with_interface_input(tmp_path):
+    # Initial plan with the input boundary (sample -> slot_a): heat at_a plus a
+    # 0-distance boundary transport.
+    wf, ev, doc = _write(tmp_path, document=_iface("rack.slot_a"))
+    initial = schedule(wf, ev, document_path=doc)
+    assert initial.ok
+
+    # Feed the plan back as a replanning status at now=5: the boundary transport is
+    # completed and heat is running. interface rides along in the plan already.
+    status = dict(initial.plan)
+    status["now"] = 5
+    for a in status["activities"]:
+        a["status"] = "completed" if a["kind"] == "transport" else "running"
+    sp = tmp_path / "status.yaml"
+    sp.write_text(yaml.safe_dump(status), encoding="utf-8")
+
+    replan = schedule(wf, ev, document_path=sp)
+    assert replan.ok, [d.code for d in replan.diagnostics]
+    # heat stays pinned to at_a (running); the committed boundary leg is preserved;
+    # interface round-trips.
+    (heat,) = [a for a in replan.plan["activities"] if a["kind"] == "processing"]
+    assert heat["mode"] == "at_a" and heat["status"] == "running"
+    assert replan.makespan == 10
+    assert replan.plan["interface"] == {"inputs": {"sample": "rack.slot_a"}}
+    (t,) = [a for a in replan.plan["activities"] if a["kind"] == "transport"]
+    assert t["arc"]["from"] == {"node": [], "port": "sample"}
+
+
+def test_replan_with_interface_input_pending(tmp_path):
+    # Replan before anything started (now=0, no statuses): the boundary input arc is
+    # rebuilt from scratch and heat is still constrained to at_a.
+    wf, ev, doc = _write(tmp_path, document=_iface("rack.slot_a"))
+    initial = schedule(wf, ev, document_path=doc)
+    status = dict(initial.plan)
+    status["now"] = 0
+    # Drop per-activity statuses so everything is re-derived (pending).
+    for a in status["activities"]:
+        a.pop("status", None)
+    sp = tmp_path / "status.yaml"
+    sp.write_text(yaml.safe_dump(status), encoding="utf-8")
+
+    replan = schedule(wf, ev, document_path=sp)
+    assert replan.ok, [d.code for d in replan.diagnostics]
+    (heat,) = [a for a in replan.plan["activities"] if a["kind"] == "processing"]
+    assert heat["mode"] == "at_a"
+
+
+def test_replan_with_interface_output(tmp_path):
+    # Output boundary: after heat and its delivery complete, a replan keeps the
+    # boundary intact (output node re-created, committed leg preserved).
+    wf, ev, doc = _write(tmp_path, document=_oface("rack.slot_a"))
+    initial = schedule(wf, ev, document_path=doc)
+    assert initial.ok
+    status = dict(initial.plan)
+    status["now"] = 10
+    for a in status["activities"]:
+        a["status"] = "completed"
+    sp = tmp_path / "status.yaml"
+    sp.write_text(yaml.safe_dump(status), encoding="utf-8")
+
+    replan = schedule(wf, ev, document_path=sp)
+    assert replan.ok, [d.code for d in replan.diagnostics]
+    (heat,) = [a for a in replan.plan["activities"] if a["kind"] == "processing"]
+    assert heat["mode"] == "at_a" and heat["status"] == "completed"
+    assert replan.plan["interface"] == {"outputs": {"result": "rack.slot_a"}}

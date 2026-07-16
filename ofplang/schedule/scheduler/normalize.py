@@ -214,9 +214,11 @@ def _build_chain(arc_inst, legs, fixed_proc, node_index, now, env, activities, a
         arcs.append(ArcInstance(logical, src_i, dst_i, tuple(options)))
         return
 
-    # A committed leg means the source transport started, so the source
-    # processing must be completed.
-    if _node_of(activities, src_i) not in fixed_proc:
+    # A committed leg means the source transport started, so the source processing
+    # must be completed — unless the source is the input boundary node (SPEC §6.8),
+    # which is the workflow's origin (the entry Object is present from time 0), not a
+    # processing that runs.
+    if activities[src_i].boundary is None and _node_of(activities, src_i) not in fixed_proc:
         diags.error(errors.BROKEN_TRANSPORT_CHAIN, f"a started transport leaves {format_node_path(logical.src.node)} but that activity is not completed", "", at=None)
         return
 

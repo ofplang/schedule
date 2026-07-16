@@ -101,9 +101,11 @@ def schedule(
         fixation = None
     else:
         # 4. Replan: normalize the status into the augmented instance + fixation.
-        # (Boundary-node handling on replan is a later phase; interface is not yet
-        # threaded here.) Fixed parts are pinned as historical facts.
-        base, inst_diags = build_instance(workflow, env, check_reachability=False)
+        # The interface boundary nodes/arcs are re-created here too (they never
+        # appear in the status, so they are rebuilt from workflow + interface, like
+        # relays); committed boundary legs match by their empty-path arc. Fixed parts
+        # are pinned as historical facts.
+        base, inst_diags = build_instance(workflow, env, interface=interface, check_reachability=False)
         diagnostics += inst_diags.items
         if base is None:
             return ScheduleReport(None, None, None, diagnostics)
