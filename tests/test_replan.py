@@ -46,6 +46,20 @@ activities:
 """
 
 
+_SOURCE_FAILED = """
+time: { unit: second }
+now: 3
+activities:
+  - kind: processing
+    status: failed
+    start: 0
+    end: 3
+    process: source
+    mode: '0'
+    node: [SampleSource]
+"""
+
+
 def _status_file(tmp_path, text):
     p = tmp_path / "status.yaml"
     p.write_text(text, encoding="utf-8")
@@ -109,6 +123,16 @@ def test_replan_started_transport_to_pending_folds_stay_put_relay(tmp_path):
     assert validate_document(fed).ok
     second = schedule(WORKFLOW, ENV, document_path=fed)
     assert second.ok and second.makespan == report.makespan
+
+
+def test_replan_rejects_terminal_status(tmp_path):
+    # A terminal status (failed / cancelled) is a valid document shape but not a
+    # replan input: a stopped run has no remaining work to plan (§6.2, §9.3).
+    status = _status_file(tmp_path, _SOURCE_FAILED)
+    assert validate_document(status).ok  # the shape itself is valid
+    report = schedule(WORKFLOW, ENV, document_path=status)
+    assert not report.ok
+    assert "terminal_status_not_replannable" in {d.code for d in report.diagnostics}
 
 
 def test_cli_replan_writes_valid_plan(tmp_path):

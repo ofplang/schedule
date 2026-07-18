@@ -392,13 +392,21 @@ environment.
 ### 6.2 Activity — common fields
 
 - `kind` (required) — `processing`, `transport`, or `relay` (§6.4.1).
-- `status` (optional) — `pending`, `running`, or `completed`; default `pending`.
-  A plan leaves it out (all activities are pending). A status sets `completed` /
-  `running` on the activities that have started. Pending activities are normally
-  omitted from a status, but a replanning input **may** carry them (with any
-  planned times): the scheduler ignores every `pending` / status-less entry and
-  re-derives that work from the workflow, so a prior plan can be fed straight
-  back in as the next replanning input (its future is simply re-optimised).
+- `status` (optional) — `pending`, `running`, `completed`, `failed`, or
+  `cancelled`; default `pending`. A plan leaves it out (all activities are
+  pending). A status sets `completed` / `running` on the activities that have
+  started. Pending activities are normally omitted from a status, but a replanning
+  input **may** carry them (with any planned times): the scheduler ignores every
+  `pending` / status-less entry and re-derives that work from the workflow, so a
+  prior plan can be fed straight back in as the next replanning input (its future
+  is simply re-optimised).
+  `failed` and `cancelled` are **terminal** statuses that appear only in a final
+  status: v0 stops the whole run on any activity failure — the activity that ended
+  abnormally is `failed`, and work that was never started because of the stop is
+  `cancelled`. A terminal status is a valid document shape but is **not a
+  replanning input**: feeding a document with a `failed` / `cancelled` activity to
+  the scheduler is `terminal_status_not_replannable` (§9.3), because a stopped run
+  has no remaining work to plan.
 - `start`, `end` (required) — integers in `time.unit`. Planned times on a plan;
   actual times on a `completed` activity; on a `running` activity `start` is
   actual and `end` is the expected finish. On a replan the scheduler does not
@@ -921,7 +929,7 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | --- | --- |
 | `missing_activities` | `activities` is absent |
 | `unknown_activity_kind` | `kind` is not `processing` / `transport` / `relay` |
-| `unknown_status` | `status` is not `pending` / `running` / `completed` |
+| `unknown_status` | `status` is not `pending` / `running` / `completed` / `failed` / `cancelled` |
 | `unknown_outcome` | `outcome` is not one of the defined values |
 | `end_before_start` | `end` is earlier than `start` |
 | `empty_node_path` | a processing `node` is an empty list (an `arc` boundary endpoint may be empty, §6.4) |
@@ -968,3 +976,4 @@ status (§7) against the instance:
 | `status_time_inconsistent` | a `completed` activity ends after `now`, or a `running` activity starts after `now` |
 | `status_duplicate` | two status entries fix the same processing (`node`) or the same transport leg (`arc` + `seq`) |
 | `broken_transport_chain` | a committed transport leg's source is not completed, or a leg does not continue the previous leg's arrival spot |
+| `terminal_status_not_replannable` | a replan input carries a `failed` / `cancelled` (terminal) activity; a stopped run has no remaining work to plan |

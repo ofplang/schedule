@@ -106,6 +106,10 @@ STATUS_DUPLICATE = "status_duplicate"
 # transport leg whose source processing is not completed, a leg whose from_spot
 # does not continue the previous leg's arrival spot, or similar.
 BROKEN_TRANSPORT_CHAIN = "broken_transport_chain"
+# A replan input carries a terminal status (`failed` / `cancelled`). Such a status
+# is a valid execution-document shape, but a run that has failed is not replannable
+# (v0 stops the whole run on any failure), so it cannot be fed to the scheduler.
+TERMINAL_STATUS_NOT_REPLANNABLE = "terminal_status_not_replannable"
 
 # The `cross_kind_id_coincidence` code is the only warning; everything else is an
 # error. The runner and CLI use this to check severity.
@@ -166,6 +170,7 @@ ERROR_CODES = frozenset(
         STATUS_TIME_INCONSISTENT,
         STATUS_DUPLICATE,
         BROKEN_TRANSPORT_CHAIN,
+        TERMINAL_STATUS_NOT_REPLANNABLE,
     }
 )
 

@@ -16,7 +16,10 @@ from ofplang.schedule.validation import errors
 
 DOC_TOP = {"time", "now", "outcome", "objective", "interface", "activities", "meta"}
 OUTCOMES = {"optimal", "feasible", "infeasible", "unknown"}
-STATUSES = {"pending", "running", "completed"}
+# `failed` / `cancelled` are terminal statuses (§6.2): a run stops on any failure,
+# so they only ever appear in a final status, never fed back to the scheduler (a
+# terminal status as a replan input is rejected, `terminal_status_not_replannable`).
+STATUSES = {"pending", "running", "completed", "failed", "cancelled"}
 OBJECTIVE_KEYS = {"kind", "value"}
 TIME_KEYS = {"unit"}
 PROCESSING_KEYS = {"kind", "status", "start", "end", "process", "mode", "node", "devices", "input_spots", "output_spots"}
@@ -151,7 +154,12 @@ def _check_status(node: YNode | None, base: str, diags: Diagnostics) -> None:
     if node is None:
         return
     if not (isinstance(node, YScalar) and node.is_str and node.value in STATUSES):
-        diags.error(errors.UNKNOWN_STATUS, "status is not pending/running/completed", shape.join(base, "status"), at=node)
+        diags.error(
+            errors.UNKNOWN_STATUS,
+            "status is not pending/running/completed/failed/cancelled",
+            shape.join(base, "status"),
+            at=node,
+        )
 
 
 def _check_interval(amap: YMap, base: str, diags: Diagnostics) -> None:

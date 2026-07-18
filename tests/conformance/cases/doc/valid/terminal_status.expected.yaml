@@ -1,0 +1,2 @@
+{outcome: valid, notes: 'Terminal statuses failed / cancelled are valid document
+    shapes (a stopped run''s final status); spec §6.2, §9.2.'}

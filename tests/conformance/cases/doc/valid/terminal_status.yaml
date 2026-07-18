@@ -1,0 +1,19 @@
+# A final status of a stopped run: one activity failed, a later one was cancelled
+# (never started because of the stop). Both are valid document shapes (§6.2).
+time: {unit: second}
+now: 60
+activities:
+- kind: processing
+  status: failed
+  start: 0
+  end: 60
+  process: heat_sample
+  mode: fast
+  node: [heat]
+- kind: processing
+  status: cancelled
+  start: 60
+  end: 60
+  process: measure_od
+  mode: fast
+  node: [assay]

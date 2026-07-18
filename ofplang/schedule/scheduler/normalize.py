@@ -65,6 +65,10 @@ from ofplang.schedule.scheduler.status import (
 from ofplang.schedule.validation import errors
 
 _STARTED = ("completed", "running")
+# Terminal statuses (§6.2): a run stops on any failure, so a document carrying one
+# is a final status, not a replannable history. The scheduler rejects it rather
+# than silently treating it as pending.
+_TERMINAL = ("failed", "cancelled")
 
 
 @dataclass(frozen=True)
@@ -99,6 +103,17 @@ def normalize(base: Instance, root: YNode | None, env) -> tuple[Instance | None,
     has_now = isinstance(now_node, YScalar) and now_node.is_int
     if not has_now and isinstance(root, YMap) and _has_started_activities(root):
         diags.error(errors.STATUS_MISSING_NOW, "a document with started activities must set now", "now", at=root)
+        return None, None, diags
+
+    # A terminal status (failed / cancelled) means the run has stopped; there is no
+    # remaining work to plan, so such a document is not a valid replan input.
+    if isinstance(root, YMap) and _has_terminal_status(root):
+        diags.error(
+            errors.TERMINAL_STATUS_NOT_REPLANNABLE,
+            "a document with a failed / cancelled activity is terminal and cannot be replanned",
+            "activities",
+            at=root,
+        )
         return None, None, diags
     now = now_node.value if has_now else 0
 
@@ -153,6 +168,15 @@ def _has_started_activities(root: YMap) -> bool:
     if not isinstance(activities, YSeq):
         return False
     return any(isinstance(item, YMap) and _status_of(item) in _STARTED for item in activities.items)
+
+
+def _has_terminal_status(root: YMap) -> bool:
+    """Whether the document carries any `failed` / `cancelled` activity — a terminal
+    status that marks the run as stopped and so cannot be a replan input."""
+    activities = root.get("activities")
+    if not isinstance(activities, YSeq):
+        return False
+    return any(isinstance(item, YMap) and _status_of(item) in _TERMINAL for item in activities.items)
 
 
 # --------------------------------------------------------------------------
