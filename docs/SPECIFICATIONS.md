@@ -267,9 +267,12 @@ process:
   Usually one device, but a mode may occupy several. **Optional**: a
   Pure-Data-only process (e.g. a `python_script` step) may omit `devices` and
   declare only a `duration`, occupying no device and no spot.
-- `duration` — the estimated processing time, a **positive** integer in
-  `time.unit` (transport durations, §5.4, may be zero, but a processing mode may
-  not).
+- `duration` — the estimated processing time, an integer in `time.unit`. A mode
+  that occupies a device must have a **positive** duration (a real operation is
+  never instantaneous). A **device-less Pure-Data-only mode** (see `devices`
+  above) may have a duration of **zero**: it holds no device and no spot, so an
+  instantaneous step is coherent, exactly as for a relay or a same-spot transport
+  (§5.4). A negative duration is always invalid.
 - `input_spots` — a mapping from **Object-bearing** input port name to a spot,
   given in **qualified form** `<device>.<spot>` (§8). The qualified form is
   required because a mode may name more than one device, so a bare local spot name
@@ -902,7 +905,7 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `duplicate_transporter_id` | a transporter id repeats |
 | `duplicate_spot_id` | a spot name repeats within a device |
 | `cross_kind_id_coincidence` | a device / spot / transporter share an id (*warning*) |
-| `nonpositive_duration` | a processing mode `duration` is not positive |
+| `nonpositive_duration` | a device-occupying processing mode `duration` is not positive, or any mode `duration` is negative (a device-less pure-data mode may be zero) |
 | `empty_time_unit` | `time.unit` is empty or not a string |
 | `unknown_transporter` | `transports.transporter` is not a defined transporter |
 | `unknown_device` | a mode's `devices` entry, or the device part of a qualified spot, is not a defined device |

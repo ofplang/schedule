@@ -1,0 +1,8 @@
+time: {unit: second}
+devices:
+- id: reader_0
+  spots: [stage]
+processes:
+  compute_mean:
+    modes:
+    - {id: mean_v1, duration: -1}

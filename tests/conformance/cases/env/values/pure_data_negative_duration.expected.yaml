@@ -1,0 +1,6 @@
+outcome: invalid
+match: exact
+errors:
+- {code: nonpositive_duration}
+notes: A device-less mode may be zero, but a negative duration is always invalid;
+  spec §5.5, §9.1.

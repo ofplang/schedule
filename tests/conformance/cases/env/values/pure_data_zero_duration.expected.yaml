@@ -1,0 +1,2 @@
+{outcome: valid, notes: 'A device-less Pure-Data-only mode may have a zero duration
+    (it holds nothing physical, like a relay); spec §5.5, §9.1.'}

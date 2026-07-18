@@ -268,13 +268,24 @@ def _check_mode(node: YNode, base: str, devices: dict[str, set[str]], diags: Dia
                 if dv.value not in devices:
                     diags.error(errors.UNKNOWN_DEVICE, f"unknown device {dv.value!r}", path, at=dv)
 
-    # Required positive-integer duration.
+    # Required integer duration. A mode that occupies a device must take positive
+    # time (a real operation is never instantaneous). A device-less Pure-Data-only
+    # mode (§5.5) holds nothing physical, so a zero duration is coherent -- like a
+    # relay or a same-spot transport (§5.4) -- and is allowed. A negative duration
+    # is always invalid.
     dur = shape.require(mmap, "duration", base, diags)
     if dur is not None:
         if not (isinstance(dur, YScalar) and dur.is_int):
             diags.error(errors.WRONG_TYPE, "duration must be an integer", shape.join(base, "duration"), at=dur)
-        elif dur.value <= 0:
-            diags.error(errors.NONPOSITIVE_DURATION, "processing duration must be positive", shape.join(base, "duration"), at=dur)
+        else:
+            has_devices = bool(mode_devices)
+            if dur.value < 0 or (dur.value == 0 and has_devices):
+                diags.error(
+                    errors.NONPOSITIVE_DURATION,
+                    "processing duration must be positive (a device-less pure-data mode may be zero)",
+                    shape.join(base, "duration"),
+                    at=dur,
+                )
 
     _check_mode_spots(mmap.get("input_spots"), shape.join(base, "input_spots"), devices, mode_devices, errors.INPUT_SPOTS_SHARE_SPOT, diags)
     _check_mode_spots(mmap.get("output_spots"), shape.join(base, "output_spots"), devices, mode_devices, errors.OUTPUT_SPOTS_SHARE_SPOT, diags)
