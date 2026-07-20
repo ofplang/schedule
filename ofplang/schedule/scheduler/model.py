@@ -151,3 +151,38 @@ class Workflow:
     # classify an `interface` binding: unknown port vs Pure Data vs pass-through).
     entry_input_ports: dict[str, bool] = field(default_factory=dict)
     exit_output_ports: dict[str, bool] = field(default_factory=dict)
+
+    # -- Pure Data port-level dataflow, for external consumers only (D26-0) --------
+    #
+    # WHAT: the port-level producer->consumer mapping of Pure Data (`bind`)
+    # bindings, plus the Pure Data input boundary. The scheduler already carries the
+    # Object-bearing (`state`) equivalent in `arcs` / `entry_inputs`; these two
+    # fields are the Pure Data counterparts.
+    #
+    # WHY (this exists solely for the sibling `ofplang-run` runner): the runner
+    # propagates Pure Data *values* from each producer output port to the consumer
+    # input port it feeds. The scheduler compiles a `bind` down to a node-level
+    # `precedence` edge only (a Pure Data value affects ordering but not timing or
+    # resources), which *discards* which output port feeds which input port. That
+    # mapping cannot be recovered from `precedence` (it is ambiguous when a producer
+    # has several Pure Data outputs), so the flattener records it here for the runner.
+    #
+    # INVARIANT -- do not break these, or the runner mis-routes values silently:
+    #  1. These are additive metadata for an external consumer. The scheduler MUST
+    #     NOT use them for planning: the solver model, objective, and rendered plan
+    #     must be byte-for-byte identical whether or not these are populated. Do not
+    #     fold them into `arcs` / `precedence` / `entry_inputs` (which the solver
+    #     does read) -- keep them separate.
+    #  2. Endpoints here use the SAME node-path convention as `arcs` and the rendered
+    #     plan's `node` paths (`prefix + (node_id,)`, entry body prefixed by `()`).
+    #     The runner keys its value store by these paths, so changing the node-path
+    #     naming silently breaks the runner -- see `scheduler/workflow.py` and
+    #     coordinate any change with ofplang-run (its dev-notes design.md D26).
+    #
+    # (Pure Data final outputs need no new field: the runner reads `exit_outputs`
+    # together with `exit_output_ports` to recover every return, Object or Pure Data.)
+    #
+    # Pure Data connection: producer output Endpoint -> consumer input Endpoint.
+    data_arcs: tuple[Arc, ...] = ()
+    # main Pure Data input port name -> the atomic input Endpoint that consumes it.
+    data_entry_inputs: dict[str, Endpoint] = field(default_factory=dict)

@@ -130,6 +130,127 @@ def test_nested_composite_is_flattened(tmp_path):
     assert set(wf.processes) == {"source", "target"}
 
 
+# --- Pure Data port-level dataflow (D26-0, for the ofplang-run runner) ---------
+#
+# `bind` bindings are Pure Data: the scheduler keeps only a node-level precedence
+# edge, but the flattener also records the port-level output->input mapping in
+# `data_arcs` / `data_entry_inputs` for the runner to route Pure Data values
+# along. These must not affect the Object-bearing `arcs` / `entry_inputs` or the
+# plan; they are additive metadata only.
+
+_PURE_DATA = """\
+spec_version: "0.0"
+types:
+  Sample: {domain: object}
+  Reading: {domain: data}
+processes:
+  measure:
+    kind: atomic
+    inputs: {plate: {type: Sample, phase: data}}
+    outputs:
+      plate_out: {type: Sample, phase: data}
+      reading: {type: Reading, phase: data}
+    objects: {transform: [inputs.plate, outputs.plate_out]}
+  analyze:
+    kind: atomic
+    inputs:
+      reading: {type: Reading, phase: data}
+      cfg: {type: Reading, phase: data}
+    outputs: {score: {type: Reading, phase: data}}
+  main:
+    kind: composite
+    inputs:
+      sample: {type: Sample, phase: data}
+      config: {type: Reading, phase: data}
+    body:
+      nodes:
+        - {id: M, process: measure, state: {plate: {from: inputs.sample}}}
+        - id: A
+          process: analyze
+          bind: {reading: {from: M.reading}, cfg: {from: inputs.config}}
+      returns: {}
+entry: main
+"""
+
+
+def test_pure_data_arcs_are_recorded_separately(tmp_path):
+    doc = tmp_path / "pure_data.yaml"
+    doc.write_text(_PURE_DATA, encoding="utf-8")
+    wf, diags = parse_workflow(doc)
+    assert not _errors(diags)
+    assert wf is not None
+
+    # The Pure Data `bind` from M.reading -> A.reading is a port-level data arc,
+    # NOT an Object-bearing `arc` (which stays empty: sample enters as a boundary
+    # input, so there is no in-body Object arc here).
+    assert wf.data_arcs == (
+        Arc(Endpoint(("M",), "reading"), Endpoint(("A",), "reading")),
+    )
+    assert wf.arcs == ()
+    # A Pure Data entry input (config) bound into A.cfg is recorded as a Pure Data
+    # boundary, kept apart from the Object-bearing `entry_inputs` (sample -> M.plate).
+    assert wf.data_entry_inputs == {"config": Endpoint(("A",), "cfg")}
+    assert wf.entry_inputs == {"sample": Endpoint(("M",), "plate")}
+    # The precedence edge still exists (the solver's view of the same dependency).
+    assert (("M",), ("A",)) in wf.precedence
+
+
+# A Pure Data `bind` spliced across a composite boundary: main binds the analyzer's
+# `a_in` from M.reading, and the analyzer's inner atomic binds its `reading` from
+# `inputs.a_in`. The flattened data arc must connect M straight to the inner atomic.
+_PURE_DATA_NESTED = """\
+spec_version: "0.0"
+types:
+  Sample: {domain: object}
+  Reading: {domain: data}
+processes:
+  measure:
+    kind: atomic
+    inputs: {plate: {type: Sample, phase: data}}
+    outputs:
+      plate_out: {type: Sample, phase: data}
+      reading: {type: Reading, phase: data}
+    objects: {transform: [inputs.plate, outputs.plate_out]}
+  analyze:
+    kind: atomic
+    inputs: {reading: {type: Reading, phase: data}}
+    outputs: {score: {type: Reading, phase: data}}
+  analyzer:
+    kind: composite
+    inputs: {a_in: {type: Reading, phase: data}}
+    outputs: {a_out: {type: Reading, phase: data}}
+    body:
+      nodes:
+        - {id: A, process: analyze, bind: {reading: {from: inputs.a_in}}}
+      returns: {a_out: {from: A.score}}
+  main:
+    kind: composite
+    inputs: {sample: {type: Sample, phase: data}}
+    body:
+      nodes:
+        - {id: M, process: measure, state: {plate: {from: inputs.sample}}}
+        - {id: Az, process: analyzer, bind: {a_in: {from: M.reading}}}
+      returns: {}
+entry: main
+"""
+
+
+def test_pure_data_arc_spliced_across_composite_boundary(tmp_path):
+    doc = tmp_path / "pure_data_nested.yaml"
+    doc.write_text(_PURE_DATA_NESTED, encoding="utf-8")
+    wf, diags = parse_workflow(doc)
+    assert not _errors(diags)
+    assert wf is not None
+
+    # The inner atomic gains a qualified path; the Pure Data arc is spliced across
+    # the analyzer boundary from M straight to Az/A.
+    assert {a.path for a in wf.activities} == {("M",), ("Az", "A")}
+    assert wf.data_arcs == (
+        Arc(Endpoint(("M",), "reading"), Endpoint(("Az", "A"), "reading")),
+    )
+    assert (("M",), ("Az", "A")) in wf.precedence
+
+
 def test_recursive_composite_is_reported(tmp_path):
     # `loop` invokes itself -> the expander must stop and report, not recurse.
     doc = tmp_path / "recursive.yaml"

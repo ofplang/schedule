@@ -90,7 +90,7 @@ def parse_workflow(source) -> tuple[Workflow | None, Diagnostics]:
         diags.error(errors.UNSUPPORTED_FEATURE, f"entry process {entry!r} is not a composite")
         return None, diags
 
-    activities, arcs, precedence, used, entry_inputs, exit_outputs = _expand_body(
+    activities, arcs, precedence, used, entry_inputs, exit_outputs, data_arcs, data_entry_inputs = _expand_body(
         entry, entry_proc, procs, atomic, diags
     )
     # The entry composite's declared ports, tagged Object-bearing (for classifying
@@ -101,6 +101,9 @@ def parse_workflow(source) -> tuple[Workflow | None, Diagnostics]:
         Workflow(
             tuple(activities), tuple(arcs), tuple(precedence), used,
             entry_inputs, exit_outputs, in_ports, out_ports,
+            # Pure Data port-level dataflow for the runner (D26-0); the scheduler
+            # does not read these, so the plan is unaffected.
+            data_arcs=tuple(data_arcs), data_entry_inputs=data_entry_inputs,
         ),
         diags,
     )
@@ -154,7 +157,11 @@ def _expand_body(entry_name, entry_proc, procs, atomic, diags):
         if edge not in seen:
             seen.add(edge)
             precedence.append(edge)
-    return exp.activities, exp.arcs, precedence, exp.used, exp.entry_inputs, exp.exit_outputs
+    return (
+        exp.activities, exp.arcs, precedence, exp.used, exp.entry_inputs, exp.exit_outputs,
+        # Pure Data port-level dataflow, for the runner only (D26-0).
+        exp.data_arcs, exp.data_entry_inputs,
+    )
 
 
 @dataclass(frozen=True)
@@ -204,6 +211,15 @@ class _Expander:
         self.arcs: list[Arc] = []
         self.precedence: list[tuple[NodePath, NodePath]] = []
         self.used: dict[str, AtomicProcess] = {}
+        # Pure Data (`bind`) port-level dataflow, recorded for the sibling
+        # `ofplang-run` runner only (D26-0; see `model.Workflow.data_arcs`). The
+        # scheduler itself never reads these -- they are the Pure Data mirror of
+        # `arcs` / `entry_inputs`, capturing the output-port -> input-port mapping
+        # that a node-level `precedence` edge would otherwise throw away, so the
+        # runner can route Pure Data *values* along it. Populating them must not
+        # change the plan the solver produces.
+        self.data_arcs: list[Arc] = []
+        self.data_entry_inputs: dict[str, Endpoint] = {}
         # Boundary connections (SPEC §6.8): main input port -> consuming atomic
         # endpoint (recorded from `state` bindings that resolve to an entry input),
         # and main output port -> producing atomic endpoint (from the entry's
@@ -248,13 +264,22 @@ class _Expander:
                     if isinstance(producer, _EntryInput):
                         # A workflow entry input: no in-body producer, so no arc /
                         # precedence. A `state` (Object-bearing) binding records the
-                        # boundary connection; a `bind` (Pure Data) one carries no spot.
+                        # boundary connection; a `bind` (Pure Data) one carries no spot
+                        # but its port-level boundary is recorded for the runner (D26-0)
+                        # so it can seed the value that enters here.
                         if section == "state":
                             self.entry_inputs[producer.name] = Endpoint(path, port)
+                        else:  # bind: Pure Data entry input consumed at this atomic.
+                            self.data_entry_inputs[producer.name] = Endpoint(path, port)
                         continue
                     self.precedence.append((producer.path, path))
                     if section == "state":
                         self.arcs.append(Arc(Endpoint(producer.path, producer.port), Endpoint(path, port)))
+                    else:
+                        # A `bind` is Pure Data: a precedence edge for the solver (added
+                        # above), plus the port-level arc for the runner's value routing
+                        # (D26-0). The scheduler does not read `data_arcs`.
+                        self.data_arcs.append(Arc(Endpoint(producer.path, producer.port), Endpoint(path, port)))
         elif child_kind == "composite":
             # A composite invocation is structural: resolve its input bindings here,
             # then expand its body one level deeper with those producers in scope.
