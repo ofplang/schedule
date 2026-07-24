@@ -127,6 +127,27 @@ class Arc:
 
 
 @dataclass(frozen=True)
+class CompositeIO:
+    """The value-layer boundary of one composite invocation, for external consumers
+    only (the sibling `ofplang-run` runner's composite contract checks, D34).
+
+    A composite is flattened away in the schedulable graph -- only atomic activities
+    remain -- so the port-level mapping of a composite invocation's own inputs and
+    outputs to the concrete values that flow across its boundary is otherwise lost.
+    This records it: each input / output port maps either to the value-store key
+    (an atomic output `Endpoint`, or the workflow boundary `Endpoint((), name)`) that
+    supplies it, or -- when a port is bound to / returns a static literal -- to that
+    literal value. Same INVARIANTS as `data_arcs` (see `Workflow`): additive metadata
+    the scheduler MUST NOT read for planning, with plan-matching node paths."""
+
+    process: str
+    inputs: dict[str, Endpoint] = field(default_factory=dict)
+    input_literals: dict[str, object] = field(default_factory=dict)
+    outputs: dict[str, Endpoint] = field(default_factory=dict)
+    output_literals: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class Workflow:
     """The expanded, schedulable graph: atomic activities, Object-bearing arcs,
     precedence edges (a superset of arcs, covering Pure Data dependencies too),
@@ -192,3 +213,11 @@ class Workflow:
     # read it for planning, and its node paths match the plan's). The runner seeds
     # these as the input values of the ports they bind, in place of a typed default.
     data_literals: dict[Endpoint, object] = field(default_factory=dict)
+    # Nested composite invocation boundaries, keyed by the composite's node path ->
+    # its `CompositeIO` (port -> value-store key / literal). For the runner's composite
+    # contract checks only (D34); same INVARIANTS as `data_arcs` (the scheduler MUST
+    # NOT read this, and its node paths match the plan's). The top-level entry
+    # composite `()` is omitted -- the runner checks it via its whole-workflow
+    # boundary handles (D33); only nested composites need this. The runner uses only
+    # those with contracts.
+    composites: dict[NodePath, "CompositeIO"] = field(default_factory=dict)

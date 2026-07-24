@@ -25,6 +25,7 @@ from ofplang.schedule.core.diagnostics import Diagnostics
 from ofplang.schedule.scheduler.model import (
     Arc,
     AtomicProcess,
+    CompositeIO,
     Endpoint,
     NodeInvocation,
     NodePath,
@@ -92,7 +93,7 @@ def parse_workflow(source) -> tuple[Workflow | None, Diagnostics]:
 
     (
         activities, arcs, precedence, used, entry_inputs, exit_outputs,
-        data_arcs, data_entry_inputs, data_literals,
+        data_arcs, data_entry_inputs, data_literals, composites,
     ) = _expand_body(entry, entry_proc, procs, atomic, diags)
     # The entry composite's declared ports, tagged Object-bearing (for classifying
     # `interface` bindings). Values are `{type, phase}` specs like an atomic's.
@@ -106,6 +107,9 @@ def parse_workflow(source) -> tuple[Workflow | None, Diagnostics]:
             # does not read these, so the plan is unaffected.
             data_arcs=tuple(data_arcs), data_entry_inputs=data_entry_inputs,
             data_literals=data_literals,
+            # Nested composite invocation boundaries for the runner's contract checks
+            # (D34); value-independent, so the plan is unaffected.
+            composites=composites,
         ),
         diags,
     )
@@ -163,6 +167,8 @@ def _expand_body(entry_name, entry_proc, procs, atomic, diags):
         exp.activities, exp.arcs, precedence, exp.used, exp.entry_inputs, exp.exit_outputs,
         # Pure Data port-level dataflow and static literals, for the runner only (D26-0).
         exp.data_arcs, exp.data_entry_inputs, exp.data_literals,
+        # Nested composite invocation boundaries, for the runner's contract checks (D34).
+        exp.composites,
     )
 
 
@@ -244,6 +250,11 @@ class _Expander:
         # `returns`). Only Object-bearing ports land here (state = Object-bearing).
         self.entry_inputs: dict[str, Endpoint] = {}
         self.exit_outputs: dict[str, Endpoint] = {}
+        # Nested composite invocation boundaries (D34), keyed by the composite's node
+        # path -> CompositeIO. Recorded for the runner's composite contract checks
+        # only; the scheduler never reads them (like data_arcs). The entry composite
+        # `()` is omitted (the runner checks it via its whole-workflow handles, D33).
+        self.composites: dict[NodePath, CompositeIO] = {}
 
     def expand(self, comp: dict, prefix: NodePath, inputs_env: dict, stack: tuple[str, ...]) -> None:
         """Expand one composite `comp` whose body node paths are prefixed by
@@ -315,6 +326,11 @@ class _Expander:
                 return
             child_env = self._resolve_inputs(node, prefix, inputs_env, siblings, stack)
             self.expand(self.procs[pname], path, child_env, stack + (pname,))
+            # Record this composite invocation's value-layer boundary for the runner's
+            # contract checks (D34): its inputs (from `child_env`) and its outputs (its
+            # `returns`, resolved to producing atomics in its own scope). Value-
+            # independent metadata; the scheduler never reads it.
+            self._record_composite(pname, path, child_env, stack)
         else:
             self.diags.error(errors.UNSUPPORTED_FEATURE, f"node {node_id!r} invokes process {pname!r} of unsupported kind {child_kind!r}")
 
@@ -326,6 +342,42 @@ class _Expander:
             for port, binding in (node.get(section) or {}).items():
                 env[port] = self._resolve(_parse_ref(binding), prefix, inputs_env, siblings, stack)
         return env
+
+    def _record_composite(self, pname: str, path: NodePath, child_env: dict, stack: tuple[str, ...]) -> None:
+        """Record a composite invocation's value-layer boundary (D34): each input port
+        -> its source (from `child_env`), and each output port -> its source (its
+        `returns` resolved to the producing atomic in the composite's own scope). A
+        source is a producing atomic / boundary `Endpoint` or a static literal value."""
+        cproc = self.procs[pname]
+        inputs: dict[str, Endpoint] = {}
+        input_literals: dict[str, object] = {}
+        for port, producer in child_env.items():
+            self._place_source(producer, port, inputs, input_literals)
+        outputs: dict[str, Endpoint] = {}
+        output_literals: dict[str, object] = {}
+        for out_port, source in _returns(cproc).items():
+            producer = self._resolve(_parse_ref(source), path, child_env, _body_nodes(cproc), stack + (pname,))
+            self._place_source(producer, out_port, outputs, output_literals)
+        self.composites[path] = CompositeIO(
+            process=pname,
+            inputs=inputs,
+            input_literals=input_literals,
+            outputs=outputs,
+            output_literals=output_literals,
+        )
+
+    @staticmethod
+    def _place_source(producer, port: str, endpoints: dict, literals: dict) -> None:
+        """Classify a resolved producer into a value source: a producing atomic
+        `Endpoint`, the workflow boundary `Endpoint((), name)` for an entry input, or a
+        static literal value. An unconnected source (None) records nothing -- no value
+        flows into that port, so a contract referencing it never becomes ready."""
+        if isinstance(producer, _Producer):
+            endpoints[port] = Endpoint(producer.path, producer.port)
+        elif isinstance(producer, _EntryInput):
+            endpoints[port] = Endpoint((), producer.name)  # boundary value-store key
+        elif isinstance(producer, _Literal):
+            literals[port] = producer.value
 
     def _resolve(self, ref, prefix: NodePath, inputs_env: dict, siblings: dict, stack: tuple[str, ...]):
         """Resolve a body dataflow reference to the atomic that produces it (a

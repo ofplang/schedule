@@ -380,3 +380,60 @@ def test_structured_node_is_unsupported(tmp_path):
     wf, diags = parse_workflow(doc)
     codes = {d.code for d in _errors(diags)}
     assert "unsupported_feature" in codes
+
+
+# A nested composite invocation's value-layer boundary is recorded in `composites`
+# for the runner's composite contract checks (D34). It maps each of the composite's
+# own input / output ports to the value-store key that supplies it -- a producing
+# atomic, the workflow boundary `((), name)`, or a static literal -- even though the
+# composite itself is flattened away. Value-independent metadata: the scheduler
+# never reads it, so the plan is unaffected (the rest of the suite pins that).
+_COMPOSITE_IO = """
+processes:
+  add:
+    kind: atomic
+    inputs: {x: {type: Int, phase: data}, y: {type: Int, phase: data}}
+    outputs: {s: {type: Int, phase: data}}
+  wrap:
+    kind: composite
+    inputs: {base: {type: Int, phase: data}, cfg: {type: Int, phase: data}}
+    outputs: {out: {type: Int, phase: data}}
+    body:
+      nodes:
+        - id: A
+          process: add
+          bind: {x: {from: inputs.base}, y: {from: inputs.cfg}}
+      returns: {out: {from: A.s}}
+  main:
+    kind: composite
+    inputs: {a: {type: Int, phase: data}}
+    outputs: {r: {type: Int, phase: data}}
+    body:
+      nodes:
+        - id: W
+          process: wrap
+          bind: {base: {from: inputs.a}, cfg: {value: 5}}
+      returns: {r: {from: W.out}}
+entry: main
+"""
+
+
+def test_nested_composite_boundary_is_recorded(tmp_path):
+    doc = tmp_path / "composite_io.yaml"
+    doc.write_text(_COMPOSITE_IO, encoding="utf-8")
+    wf, diags = parse_workflow(doc)
+    assert not _errors(diags)
+
+    # Only the nested composite `W` is recorded (the entry `main` `()` is omitted --
+    # the runner checks it via its whole-workflow handles, D33).
+    assert set(wf.composites) == {("W",)}
+    io = wf.composites[("W",)]
+    assert io.process == "wrap"
+    # `base` comes from the workflow boundary input `a`; `cfg` is a static literal.
+    assert io.inputs == {"base": Endpoint((), "a")}
+    assert io.input_literals == {"cfg": 5}
+    # `out` is produced by the inner atomic `A` (path matches the plan's activity).
+    assert io.outputs == {"out": Endpoint(("W", "A"), "s")}
+    assert io.output_literals == {}
+    # The recorded output endpoint is an actual activity path.
+    assert ("W", "A") in {a.path for a in wf.activities}
