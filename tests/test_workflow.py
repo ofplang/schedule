@@ -251,6 +251,100 @@ def test_pure_data_arc_spliced_across_composite_boundary(tmp_path):
     assert (("M",), ("Az", "A")) in wf.precedence
 
 
+# Static literal `bind` values (`bind: {port: {value: ...}}`, §11) are Pure Data
+# constants with no in-body producer. The flattener records them in `data_literals`
+# (keyed by the consuming atomic input) for the runner to seed; they add no arc,
+# data_arc, or precedence, and the scheduler never reads them.
+
+_LITERAL = """\
+spec_version: "0.0"
+types:
+  Reading: {domain: data}
+processes:
+  source:
+    kind: atomic
+    outputs: {reading: {type: Reading, phase: data}}
+  analyze:
+    kind: atomic
+    inputs:
+      reading: {type: Reading, phase: data}
+      cfg: {type: Int, phase: data}
+    outputs: {score: {type: Reading, phase: data}}
+  main:
+    kind: composite
+    inputs: {}
+    body:
+      nodes:
+        - {id: S, process: source}
+        - id: A
+          process: analyze
+          bind:
+            reading: {from: S.reading}
+            cfg: {value: 3}
+      returns: {}
+entry: main
+"""
+
+
+def test_static_literal_is_recorded_separately(tmp_path):
+    doc = tmp_path / "literal.yaml"
+    doc.write_text(_LITERAL, encoding="utf-8")
+    wf, diags = parse_workflow(doc)
+    assert not _errors(diags)
+    assert wf is not None
+
+    # The literal `cfg: {value: 3}` is recorded against the consuming atomic input.
+    assert wf.data_literals == {Endpoint(("A",), "cfg"): 3}
+    # It adds no data_arc (that is only for producer->consumer bindings) and no
+    # precedence edge (a constant imposes no ordering). The `from` bind still does.
+    assert wf.data_arcs == (Arc(Endpoint(("S",), "reading"), Endpoint(("A",), "reading")),)
+    assert (("S",), ("A",)) in wf.precedence
+    assert wf.arcs == ()
+
+
+# A literal bound into a composite invocation must reach the inner atomic that
+# ultimately consumes it -- the `_Literal` marker propagates through the composite
+# input environment, just like an entry-input marker.
+_LITERAL_NESTED = """\
+spec_version: "0.0"
+processes:
+  compute:
+    kind: atomic
+    inputs: {cfg: {type: Int, phase: data}}
+    outputs: {out: {type: Int, phase: data}}
+  wrap:
+    kind: composite
+    inputs: {w_in: {type: Int, phase: data}}
+    outputs: {w_out: {type: Int, phase: data}}
+    body:
+      nodes:
+        - {id: A, process: compute, bind: {cfg: {from: inputs.w_in}}}
+      returns: {w_out: {from: A.out}}
+  main:
+    kind: composite
+    inputs: {}
+    body:
+      nodes:
+        - {id: W, process: wrap, bind: {w_in: {value: 7}}}
+      returns: {}
+entry: main
+"""
+
+
+def test_static_literal_spliced_across_composite_boundary(tmp_path):
+    doc = tmp_path / "literal_nested.yaml"
+    doc.write_text(_LITERAL_NESTED, encoding="utf-8")
+    wf, diags = parse_workflow(doc)
+    assert not _errors(diags)
+    assert wf is not None
+
+    # The literal supplied to the composite's `w_in` reaches the inner atomic's `cfg`
+    # at its qualified path -- the marker propagated across the composite boundary.
+    assert {a.path for a in wf.activities} == {("W", "A")}
+    assert wf.data_literals == {Endpoint(("W", "A"), "cfg"): 7}
+    assert wf.data_arcs == ()
+
+
 def test_recursive_composite_is_reported(tmp_path):
     # `loop` invokes itself -> the expander must stop and report, not recurse.
     doc = tmp_path / "recursive.yaml"

@@ -90,9 +90,10 @@ def parse_workflow(source) -> tuple[Workflow | None, Diagnostics]:
         diags.error(errors.UNSUPPORTED_FEATURE, f"entry process {entry!r} is not a composite")
         return None, diags
 
-    activities, arcs, precedence, used, entry_inputs, exit_outputs, data_arcs, data_entry_inputs = _expand_body(
-        entry, entry_proc, procs, atomic, diags
-    )
+    (
+        activities, arcs, precedence, used, entry_inputs, exit_outputs,
+        data_arcs, data_entry_inputs, data_literals,
+    ) = _expand_body(entry, entry_proc, procs, atomic, diags)
     # The entry composite's declared ports, tagged Object-bearing (for classifying
     # `interface` bindings). Values are `{type, phase}` specs like an atomic's.
     in_ports = {n: _object_bearing((s or {}).get("type", ""), domains) for n, s in (entry_proc.get("inputs") or {}).items()}
@@ -104,6 +105,7 @@ def parse_workflow(source) -> tuple[Workflow | None, Diagnostics]:
             # Pure Data port-level dataflow for the runner (D26-0); the scheduler
             # does not read these, so the plan is unaffected.
             data_arcs=tuple(data_arcs), data_entry_inputs=data_entry_inputs,
+            data_literals=data_literals,
         ),
         diags,
     )
@@ -159,8 +161,8 @@ def _expand_body(entry_name, entry_proc, procs, atomic, diags):
             precedence.append(edge)
     return (
         exp.activities, exp.arcs, precedence, exp.used, exp.entry_inputs, exp.exit_outputs,
-        # Pure Data port-level dataflow, for the runner only (D26-0).
-        exp.data_arcs, exp.data_entry_inputs,
+        # Pure Data port-level dataflow and static literals, for the runner only (D26-0).
+        exp.data_arcs, exp.data_entry_inputs, exp.data_literals,
     )
 
 
@@ -183,6 +185,18 @@ class _EntryInput:
     the marker propagates through composite input environments."""
 
     name: str
+
+
+@dataclass(frozen=True)
+class _Literal:
+    """A binding to a static literal value (`bind: {port: {value: ...}}`, §11), which
+    has no in-body producer. Carried like `_EntryInput` so the atomic that ultimately
+    consumes it can be recorded (`Workflow.data_literals`); the value survives nesting
+    because the marker propagates through composite input environments. Literals are
+    Pure Data (`bind` only) and, like `data_arcs`, are recorded for the sibling
+    `ofplang-run` runner alone -- the scheduler never reads them."""
+
+    value: object
 
 
 class _Expander:
@@ -220,6 +234,10 @@ class _Expander:
         # change the plan the solver produces.
         self.data_arcs: list[Arc] = []
         self.data_entry_inputs: dict[str, Endpoint] = {}
+        # Static literal bindings (`bind: {port: {value: ...}}`, §11) keyed by the
+        # consuming atomic input endpoint. Recorded for the runner's value layer only
+        # (like data_arcs); the scheduler never reads them.
+        self.data_literals: dict[Endpoint, object] = {}
         # Boundary connections (SPEC §6.8): main input port -> consuming atomic
         # endpoint (recorded from `state` bindings that resolve to an entry input),
         # and main output port -> producing atomic endpoint (from the entry's
@@ -260,7 +278,16 @@ class _Expander:
                 for port, binding in (node.get(section) or {}).items():
                     producer = self._resolve(_parse_ref(binding), prefix, inputs_env, siblings, stack)
                     if producer is None:
-                        continue  # a literal `value`, or an unconnected workflow input
+                        continue  # an unconnected workflow input
+                    if isinstance(producer, _Literal):
+                        # A Pure Data static literal: no producer, no precedence, no
+                        # arc. Recorded port-level for the runner's value layer only
+                        # (like data_arcs); the scheduler never reads it. Literals are
+                        # Pure Data, so this happens under `bind` (a literal wrongly on
+                        # `state` is a validation error, caught upstream; ignore here).
+                        if section == "bind":
+                            self.data_literals[Endpoint(path, port)] = producer.value
+                        continue
                     if isinstance(producer, _EntryInput):
                         # A workflow entry input: no in-body producer, so no arc /
                         # precedence. A `state` (Object-bearing) binding records the
@@ -300,12 +327,17 @@ class _Expander:
                 env[port] = self._resolve(_parse_ref(binding), prefix, inputs_env, siblings, stack)
         return env
 
-    def _resolve(self, ref, prefix: NodePath, inputs_env: dict, siblings: dict, stack: tuple[str, ...]) -> _Producer | None:
-        """Resolve a body dataflow reference to the atomic that produces it, or None
-        for a literal / unconnected source."""
+    def _resolve(self, ref, prefix: NodePath, inputs_env: dict, siblings: dict, stack: tuple[str, ...]):
+        """Resolve a body dataflow reference to the atomic that produces it (a
+        `_Producer`), a boundary marker (`_EntryInput` / `_Literal`), or None for an
+        unconnected source."""
         if ref is None:
             return None
         kind, left, right = ref
+        if kind == "literal":
+            # A static literal (`value`): carried to the consuming atomic (like an
+            # entry input) so the runner can seed it. `left` holds the literal value.
+            return _Literal(left)
         if kind == "input":
             # `inputs.X` -> whatever the enclosing invocation bound to port X.
             return inputs_env.get(left)
@@ -356,9 +388,13 @@ def _parse_ref(binding):
     if not isinstance(binding, dict):
         return None
     frm = binding.get("from")
-    if not isinstance(frm, str) or "." not in frm:
-        return None
-    left, right = frm.split(".", 1)
-    if left == "inputs":
-        return ("input", right, None)
-    return ("node", left, right)
+    if isinstance(frm, str) and "." in frm:
+        left, right = frm.split(".", 1)
+        if left == "inputs":
+            return ("input", right, None)
+        return ("node", left, right)
+    # No `from`: a static literal `value` (§11) is a distinct reference so the runner
+    # can seed it; anything else is an unconnected / malformed binding (None).
+    if "value" in binding:
+        return ("literal", binding["value"], None)
+    return None

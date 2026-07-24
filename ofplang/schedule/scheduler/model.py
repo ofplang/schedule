@@ -186,3 +186,9 @@ class Workflow:
     data_arcs: tuple[Arc, ...] = ()
     # main Pure Data input port name -> the atomic input Endpoint that consumes it.
     data_entry_inputs: dict[str, Endpoint] = field(default_factory=dict)
+    # Static literal bindings (`bind: {port: {value: ...}}`, §11): the consuming
+    # atomic input Endpoint -> the literal value. Like `data_arcs`, this is additive
+    # metadata for the runner only (same INVARIANTS above -- the scheduler MUST NOT
+    # read it for planning, and its node paths match the plan's). The runner seeds
+    # these as the input values of the ports they bind, in place of a typed default.
+    data_literals: dict[Endpoint, object] = field(default_factory=dict)
