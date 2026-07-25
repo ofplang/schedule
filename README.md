@@ -1,5 +1,7 @@
 # ofplang schedule
 
+[![CI](https://github.com/ofplang/schedule/actions/workflows/ci.yml/badge.svg)](https://github.com/ofplang/schedule/actions/workflows/ci.yml)
+
 A scheduler for **Object-flow Programming Language v0** — a YAML-based dataflow
 workflow IR with linear Object tracking. The language is defined in the
 [ofplang/spec](https://github.com/ofplang/spec) repository.
