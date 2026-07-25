@@ -139,6 +139,35 @@ def test_committed_transport_derives_relay_and_retransport():
     assert 0 in fix.arcs and 1 not in fix.arcs
 
 
+def test_committed_leg_departing_before_source_ends_is_inconsistent():
+    # The source completes at t=5 but its Object's transport leg departed at t=2 --
+    # a self-contradictory status. Report it, not a bare INFEASIBLE (review #3).
+    text = (
+        "now: 5\nactivities:\n"
+        "- { kind: processing, status: completed, start: 0, end: 5, process: source, mode: '0', node: [SampleSource], output_spots: { source_out: station_0.core } }\n"
+        "- kind: transport\n  status: completed\n  start: 2\n  end: 3\n  seq: 0\n"
+        "  from_spot: station_0.core\n  to_spot: station_1.core\n  transporter: transport\n"
+        "  arc: { from: { node: [SampleSource], port: source_out }, to: { node: [SampleTarget], port: target_in } }\n"
+    )
+    inst, fix, diags = _run(text)
+    assert _codes(diags) == ["status_time_inconsistent"]
+    assert inst is None
+
+
+def test_committed_leg_ending_before_it_starts_is_inconsistent():
+    # A committed leg with end < start (a negative-length move) is inconsistent.
+    text = (
+        "now: 5\nactivities:\n"
+        "- { kind: processing, status: completed, start: 0, end: 2, process: source, mode: '0', node: [SampleSource], output_spots: { source_out: station_0.core } }\n"
+        "- kind: transport\n  status: completed\n  start: 3\n  end: 2\n  seq: 0\n"
+        "  from_spot: station_0.core\n  to_spot: station_1.core\n  transporter: transport\n"
+        "  arc: { from: { node: [SampleSource], port: source_out }, to: { node: [SampleTarget], port: target_in } }\n"
+    )
+    inst, fix, diags = _run(text)
+    assert _codes(diags) == ["status_time_inconsistent"]
+    assert inst is None
+
+
 # --- multi-input successor (each incoming arc normalized independently) ---
 
 _MULTI_ENV = """

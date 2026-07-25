@@ -265,6 +265,19 @@ def _build_chain(arc_inst, legs, fixed_proc, node_index, now, env, activities, a
         diags.error(errors.BROKEN_TRANSPORT_CHAIN, f"a started transport leaves {format_node_path(logical.src.node)} but that activity is not completed", "", at=None)
         return
 
+    # Cross-activity temporal consistency of the committed legs (review #3): a leg
+    # cannot end before it starts, and the first leg cannot depart before its source
+    # activity completed. Either is a self-contradictory status; report it here so it
+    # surfaces as a diagnostic rather than as a bare INFEASIBLE from the pinned model.
+    src_fix = act_fix.get(src_i)
+    for k, leg in enumerate(legs):
+        if leg.end < leg.start:
+            diags.error(errors.STATUS_TIME_INCONSISTENT, f"transport leg seq {leg.seq} ends before it starts", "", at=None)
+            return
+        if k == 0 and src_fix is not None and leg.start < src_fix.end:
+            diags.error(errors.STATUS_TIME_INCONSISTENT, f"transport leg seq {leg.seq} departs before its source activity ends", "", at=None)
+            return
+
     prev_i = src_i
     prev_spot = None  # the spot the previous leg delivered to (None before leg 0)
     for k, leg in enumerate(legs):
