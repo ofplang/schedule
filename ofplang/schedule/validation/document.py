@@ -10,7 +10,7 @@ from __future__ import annotations
 from ofplang.schedule.core import yamlnode
 from ofplang.schedule.core.diagnostics import Diagnostics, ValidationResult
 from ofplang.schedule.core.identifiers import is_identifier, parse_qualified_spot
-from ofplang.schedule.core.yamlnode import YMap, YScalar, YSeq, YNode
+from ofplang.schedule.core.yamlnode import YMap, YNode, YScalar, YSeq
 from ofplang.schedule.validation import _shape as shape
 from ofplang.schedule.validation import errors
 
@@ -22,10 +22,31 @@ OUTCOMES = {"optimal", "feasible", "infeasible", "unknown"}
 STATUSES = {"pending", "running", "completed", "failed", "cancelled"}
 OBJECTIVE_KEYS = {"kind", "value"}
 TIME_KEYS = {"unit"}
-PROCESSING_KEYS = {"kind", "status", "start", "end", "process", "mode", "node", "devices", "input_spots", "output_spots"}
+PROCESSING_KEYS = {
+    "kind",
+    "status",
+    "start",
+    "end",
+    "process",
+    "mode",
+    "node",
+    "devices",
+    "input_spots",
+    "output_spots",
+}
 # A transport carries an optional `seq` (its position in a multi-leg chain that
 # serves one logical arc; absent on a single-leg transport). See §6.6.
-TRANSPORT_KEYS = {"kind", "status", "start", "end", "from_spot", "to_spot", "transporter", "arc", "seq"}
+TRANSPORT_KEYS = {
+    "kind",
+    "status",
+    "start",
+    "end",
+    "from_spot",
+    "to_spot",
+    "transporter",
+    "arc",
+    "seq",
+}
 # A relay (§6) is a transport junction: it belongs to a logical `arc` at a `seq`
 # position, occupies one `spot`, and is instantaneous (end == start).
 RELAY_KEYS = {"kind", "status", "start", "end", "arc", "seq", "spot"}
@@ -79,7 +100,12 @@ def _check_time(node: YNode | None, diags: Diagnostics) -> None:
         diags.error(errors.MISSING_REQUIRED_FIELD, "time.unit is required", "time.unit", at=tmap)
         return
     if not (isinstance(unit, YScalar) and unit.is_str and unit.text.strip()):
-        diags.error(errors.EMPTY_TIME_UNIT, "time.unit must be a non-empty string", "time.unit", at=unit or tmap)
+        diags.error(
+            errors.EMPTY_TIME_UNIT,
+            "time.unit must be a non-empty string",
+            "time.unit",
+            at=unit or tmap,
+        )
 
 
 def _check_outcome(node: YNode | None, diags: Diagnostics) -> None:
@@ -96,9 +122,16 @@ def _check_objective(node: YNode | None, diags: Diagnostics) -> None:
     shape.unknown_keys(omap, OBJECTIVE_KEYS, "objective", diags)
     kind = omap.get("kind")
     if kind is None:
-        diags.error(errors.MISSING_REQUIRED_FIELD, "objective.kind is required", "objective.kind", at=omap)
+        diags.error(
+            errors.MISSING_REQUIRED_FIELD, "objective.kind is required", "objective.kind", at=omap
+        )
     elif not (isinstance(kind, YScalar) and kind.is_str and kind.value == "makespan"):
-        diags.error(errors.UNKNOWN_OBJECTIVE_KIND, "objective.kind must be makespan", "objective.kind", at=kind)
+        diags.error(
+            errors.UNKNOWN_OBJECTIVE_KIND,
+            "objective.kind must be makespan",
+            "objective.kind",
+            at=kind,
+        )
     shape.nonneg_int(omap.get("value"), "objective.value", diags)
 
 
@@ -117,7 +150,12 @@ def _check_interface(node: YNode | None, diags: Diagnostics) -> None:
         for entry in smap.entries:
             path = f"interface.{side}.{entry.key}"
             if not is_identifier(entry.key):
-                diags.error(errors.INVALID_IDENTIFIER, f"invalid port name {entry.key!r}", path, at=entry.value or smap)
+                diags.error(
+                    errors.INVALID_IDENTIFIER,
+                    f"invalid port name {entry.key!r}",
+                    path,
+                    at=entry.value or smap,
+                )
             _check_qualified_spot(entry.value, path, diags)
 
 
@@ -130,14 +168,27 @@ def _check_activity(node: YNode, base: str, diags: Diagnostics) -> None:
     # cannot validate the other fields, so we stop after that one diagnostic.
     kind_node = amap.get("kind")
     if kind_node is None:
-        diags.error(errors.MISSING_REQUIRED_FIELD, "kind is required", shape.join(base, "kind"), at=amap)
+        diags.error(
+            errors.MISSING_REQUIRED_FIELD, "kind is required", shape.join(base, "kind"), at=amap
+        )
         return
-    if not (isinstance(kind_node, YScalar) and kind_node.is_str and kind_node.value in ACTIVITY_KINDS):
-        diags.error(errors.UNKNOWN_ACTIVITY_KIND, "kind must be processing, transport, or relay", shape.join(base, "kind"), at=kind_node)
+    if not (
+        isinstance(kind_node, YScalar) and kind_node.is_str and kind_node.value in ACTIVITY_KINDS
+    ):
+        diags.error(
+            errors.UNKNOWN_ACTIVITY_KIND,
+            "kind must be processing, transport, or relay",
+            shape.join(base, "kind"),
+            at=kind_node,
+        )
         return
     kind = kind_node.value
 
-    allowed = {"processing": PROCESSING_KEYS, "transport": TRANSPORT_KEYS, "relay": RELAY_KEYS}[kind]
+    allowed = {
+        "processing": PROCESSING_KEYS,
+        "transport": TRANSPORT_KEYS,
+        "relay": RELAY_KEYS,
+    }[kind]
     shape.unknown_keys(amap, allowed, base, diags)
     _check_status(amap.get("status"), base, diags)
     _check_interval(amap, base, diags)
@@ -168,8 +219,16 @@ def _check_interval(amap: YMap, base: str, diags: Diagnostics) -> None:
     shape.nonneg_int(start, shape.join(base, "start"), diags)
     shape.nonneg_int(end, shape.join(base, "end"), diags)
     # Ordering is only meaningful once both are integers.
-    if isinstance(start, YScalar) and start.is_int and isinstance(end, YScalar) and end.is_int and end.value < start.value:
-        diags.error(errors.END_BEFORE_START, "end is earlier than start", shape.join(base, "end"), at=end)
+    if (
+        isinstance(start, YScalar)
+        and start.is_int
+        and isinstance(end, YScalar)
+        and end.is_int
+        and end.value < start.value
+    ):
+        diags.error(
+            errors.END_BEFORE_START, "end is earlier than start", shape.join(base, "end"), at=end
+        )
 
 
 def _check_processing(amap: YMap, base: str, diags: Diagnostics) -> None:
@@ -188,9 +247,16 @@ def _check_node_path(node: YNode | None, path: str, diags: Diagnostics) -> None:
         return
     for i, element in enumerate(seq.items):
         if not (isinstance(element, YScalar) and element.is_str):
-            diags.error(errors.WRONG_TYPE, "node-path element must be a string", f"{path}[{i}]", at=element)
+            diags.error(
+                errors.WRONG_TYPE, "node-path element must be a string", f"{path}[{i}]", at=element
+            )
         elif not is_identifier(element.value):
-            diags.error(errors.INVALID_IDENTIFIER, f"invalid node id {element.value!r}", f"{path}[{i}]", at=element)
+            diags.error(
+                errors.INVALID_IDENTIFIER,
+                f"invalid node id {element.value!r}",
+                f"{path}[{i}]",
+                at=element,
+            )
 
 
 def _check_transport(amap: YMap, base: str, diags: Diagnostics) -> None:
@@ -229,7 +295,12 @@ def _check_relay(amap: YMap, base: str, diags: Diagnostics) -> None:
         and isinstance(end, YScalar) and end.is_int
         and end.value != start.value
     ):
-        diags.error(errors.RELAY_NONZERO_DURATION, "a relay is instantaneous (end must equal start)", shape.join(base, "end"), at=end)
+        diags.error(
+            errors.RELAY_NONZERO_DURATION,
+            "a relay is instantaneous (end must equal start)",
+            shape.join(base, "end"),
+            at=end,
+        )
 
 
 def _check_arc(node: YNode, path: str, diags: Diagnostics) -> None:
@@ -237,7 +308,12 @@ def _check_arc(node: YNode, path: str, diags: Diagnostics) -> None:
     # deviation is reported as a single malformed_arc.
     ok = isinstance(node, YMap) and _endpoint_ok(node.get("from")) and _endpoint_ok(node.get("to"))
     if not ok:
-        diags.error(errors.MALFORMED_ARC, "malformed arc (need from/to each with node and port)", path, at=node)
+        diags.error(
+            errors.MALFORMED_ARC,
+            "malformed arc (need from/to each with node and port)",
+            path,
+            at=node,
+        )
 
 
 def _endpoint_ok(node: YNode | None) -> bool:
@@ -265,7 +341,9 @@ def _check_qualified_spot(node: YNode | None, path: str, diags: Diagnostics) -> 
         diags.error(errors.WRONG_TYPE, "expected a qualified spot string", path, at=node)
         return
     if parse_qualified_spot(node.value) is None:
-        diags.error(errors.MALFORMED_QUALIFIED_SPOT, f"malformed spot {node.value!r}", path, at=node)
+        diags.error(
+            errors.MALFORMED_QUALIFIED_SPOT, f"malformed spot {node.value!r}", path, at=node
+        )
 
 
 def _same_spot(from_spot: YNode | None, to_spot: YNode | None) -> bool:

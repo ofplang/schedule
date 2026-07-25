@@ -118,7 +118,13 @@ def _wrap(node, loader: yaml.SafeLoader, file: str | None) -> YNode:
             key = str(loader.construct_object(key_node, deep=True))
             child = _wrap(value_node, loader, file)
             entries.append(
-                YEntry(key, file, key_node.start_mark.line + 1, key_node.start_mark.column + 1, child)
+                YEntry(
+                    key,
+                    file,
+                    key_node.start_mark.line + 1,
+                    key_node.start_mark.column + 1,
+                    child,
+                )
             )
             by_key.setdefault(key, child)
         return YMap(entries, by_key, file, line, col)

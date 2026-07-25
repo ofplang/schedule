@@ -50,7 +50,7 @@ from ofplang.schedule.scheduler.instance import (
     RelayInfo,
     _transport_options,
 )
-from ofplang.schedule.scheduler.model import Arc, Endpoint, Mode, NodePath
+from ofplang.schedule.scheduler.model import Arc, Mode, NodePath
 from ofplang.schedule.scheduler.status import (
     ActivityFixation,
     ArcFixation,
@@ -84,7 +84,9 @@ class _Leg:
     transporter: str
 
 
-def normalize(base: Instance, root: YNode | None, env) -> tuple[Instance | None, Fixation | None, Diagnostics]:
+def normalize(
+    base: Instance, root: YNode | None, env
+) -> tuple[Instance | None, Fixation | None, Diagnostics]:
     """Build the augmented instance and fixation from `base` (the workflow
     instance, built with `check_reachability=False`) and the status `root`."""
     diags = Diagnostics()
@@ -102,7 +104,12 @@ def normalize(base: Instance, root: YNode | None, env) -> tuple[Instance | None,
     now_node = root.get("now") if isinstance(root, YMap) else None
     has_now = isinstance(now_node, YScalar) and now_node.is_int
     if not has_now and isinstance(root, YMap) and _has_started_activities(root):
-        diags.error(errors.STATUS_MISSING_NOW, "a document with started activities must set now", "now", at=root)
+        diags.error(
+            errors.STATUS_MISSING_NOW,
+            "a document with started activities must set now",
+            "now",
+            at=root,
+        )
         return None, None, diags
 
     # A terminal status (failed / cancelled) means the run has stopped; there is no
@@ -115,7 +122,7 @@ def normalize(base: Instance, root: YNode | None, env) -> tuple[Instance | None,
             at=root,
         )
         return None, None, diags
-    now = now_node.value if has_now else 0
+    now = now_node.value if isinstance(now_node, YScalar) and now_node.is_int else 0
 
     node_index = {act.node: i for i, act in enumerate(base.activities)}
     arc_keys = {_arc_key_of(a.arc) for a in base.arcs}
@@ -181,7 +188,9 @@ def _has_terminal_status(root: YMap) -> bool:
     activities = root.get("activities")
     if not isinstance(activities, YSeq):
         return False
-    return any(isinstance(item, YMap) and _status_of(item) in _TERMINAL for item in activities.items)
+    return any(
+        isinstance(item, YMap) and _status_of(item) in _TERMINAL for item in activities.items
+    )
 
 
 # --------------------------------------------------------------------------
@@ -218,10 +227,21 @@ def _read_status(root, node_index, arc_keys, now, diags):
         if kind == "processing":
             path = _node_path(item.get("node"))
             if path not in node_index:
-                diags.error(errors.STATUS_NODE_UNKNOWN, f"status references a processing node not in the workflow: {format_node_path(path)}", f"{base}.node", at=item.get("node") or item)
+                diags.error(
+                    errors.STATUS_NODE_UNKNOWN,
+                    f"status references a processing node not in the workflow: "
+                    f"{format_node_path(path)}",
+                    f"{base}.node",
+                    at=item.get("node") or item,
+                )
                 continue
             if path in fixed_proc:
-                diags.error(errors.STATUS_DUPLICATE, f"processing node {format_node_path(path)} is fixed more than once", base, at=item)
+                diags.error(
+                    errors.STATUS_DUPLICATE,
+                    f"processing node {format_node_path(path)} is fixed more than once",
+                    base,
+                    at=item,
+                )
                 continue
             _check_times(status, start, end, now, item, base, diags)
             fixed_proc[path] = _FixedProc(status, start, end, item)
@@ -230,15 +250,35 @@ def _read_status(root, node_index, arc_keys, now, diags):
             if key is None:
                 continue
             if key not in arc_keys:
-                diags.error(errors.STATUS_ARC_UNKNOWN, "status references a transport arc not in the workflow", f"{base}.arc", at=item.get("arc") or item)
+                diags.error(
+                    errors.STATUS_ARC_UNKNOWN,
+                    "status references a transport arc not in the workflow",
+                    f"{base}.arc",
+                    at=item.get("arc") or item,
+                )
                 continue
             seq = _seq_of(item)
             if (key, seq) in seen_arc_seq:
-                diags.error(errors.STATUS_DUPLICATE, "transport leg is fixed more than once (same arc + seq)", base, at=item)
+                diags.error(
+                    errors.STATUS_DUPLICATE,
+                    "transport leg is fixed more than once (same arc + seq)",
+                    base,
+                    at=item,
+                )
                 continue
             seen_arc_seq.add((key, seq))
             _check_times(status, start, end, now, item, base, diags)
-            legs_by_arc[key].append(_Leg(seq, status, start, end, _text(item.get("from_spot")), _text(item.get("to_spot")), _text(item.get("transporter"))))
+            legs_by_arc[key].append(
+                _Leg(
+                    seq,
+                    status,
+                    start,
+                    end,
+                    _text(item.get("from_spot")),
+                    _text(item.get("to_spot")),
+                    _text(item.get("transporter")),
+                )
+            )
     return fixed_proc, legs_by_arc
 
 
@@ -247,7 +287,9 @@ def _read_status(root, node_index, arc_keys, now, diags):
 # --------------------------------------------------------------------------
 
 
-def _build_chain(arc_inst, legs, fixed_proc, node_index, now, env, activities, act_fix, arcs, arc_fix, diags):
+def _build_chain(
+    arc_inst, legs, fixed_proc, node_index, now, env, activities, act_fix, arcs, arc_fix, diags
+):
     logical = arc_inst.arc
     src_i, dst_i = arc_inst.src_activity, arc_inst.dst_activity
     dst_fixed = _node_of(activities, dst_i) in fixed_proc
@@ -258,7 +300,9 @@ def _build_chain(arc_inst, legs, fixed_proc, node_index, now, env, activities, a
         # No committed leg: a single pending transport, resolved against the
         # (possibly frozen) endpoints. Reachability of pending legs is checked
         # by the caller after normalization.
-        options = _transport_options(activities[src_i], logical.src.port, activities[dst_i], logical.dst.port, env)
+        options = _transport_options(
+            activities[src_i], logical.src.port, activities[dst_i], logical.dst.port, env
+        )
         arcs.append(ArcInstance(logical, src_i, dst_i, tuple(options)))
         return
 
@@ -267,7 +311,13 @@ def _build_chain(arc_inst, legs, fixed_proc, node_index, now, env, activities, a
     # which is the workflow's origin (the entry Object is present from time 0), not a
     # processing that runs.
     if activities[src_i].boundary is None and _node_of(activities, src_i) not in fixed_proc:
-        diags.error(errors.BROKEN_TRANSPORT_CHAIN, f"a started transport leaves {format_node_path(logical.src.node)} but that activity is not completed", "", at=None)
+        diags.error(
+            errors.BROKEN_TRANSPORT_CHAIN,
+            f"a started transport leaves {format_node_path(logical.src.node)} "
+            f"but that activity is not completed",
+            "",
+            at=None,
+        )
         return
 
     # Cross-activity temporal consistency of the committed legs (review #3): a leg
@@ -277,10 +327,20 @@ def _build_chain(arc_inst, legs, fixed_proc, node_index, now, env, activities, a
     src_fix = act_fix.get(src_i)
     for k, leg in enumerate(legs):
         if leg.end < leg.start:
-            diags.error(errors.STATUS_TIME_INCONSISTENT, f"transport leg seq {leg.seq} ends before it starts", "", at=None)
+            diags.error(
+                errors.STATUS_TIME_INCONSISTENT,
+                f"transport leg seq {leg.seq} ends before it starts",
+                "",
+                at=None,
+            )
             return
         if k == 0 and src_fix is not None and leg.start < src_fix.end:
-            diags.error(errors.STATUS_TIME_INCONSISTENT, f"transport leg seq {leg.seq} departs before its source activity ends", "", at=None)
+            diags.error(
+                errors.STATUS_TIME_INCONSISTENT,
+                f"transport leg seq {leg.seq} departs before its source activity ends",
+                "",
+                at=None,
+            )
             return
 
     prev_i = src_i
@@ -289,7 +349,13 @@ def _build_chain(arc_inst, legs, fixed_proc, node_index, now, env, activities, a
         is_last = k == len(legs) - 1
         # Continuity: each leg departs from where the previous one arrived.
         if prev_spot is not None and leg.from_spot != prev_spot:
-            diags.error(errors.BROKEN_TRANSPORT_CHAIN, f"transport leg seq {leg.seq} departs {leg.from_spot!r} but the previous leg arrived at {prev_spot!r}", "", at=None)
+            diags.error(
+                errors.BROKEN_TRANSPORT_CHAIN,
+                f"transport leg seq {leg.seq} departs {leg.from_spot!r} "
+                f"but the previous leg arrived at {prev_spot!r}",
+                "",
+                at=None,
+            )
             return
 
         if is_last and dst_fixed:
@@ -308,7 +374,9 @@ def _build_chain(arc_inst, legs, fixed_proc, node_index, now, env, activities, a
     # After the committed legs: if the destination is still pending, add a
     # pending re-transport from the last committed spot to the successor.
     if not dst_fixed:
-        options = _transport_options(activities[prev_i], "out", activities[dst_i], logical.dst.port, env)
+        options = _transport_options(
+            activities[prev_i], "out", activities[dst_i], logical.dst.port, env
+        )
         arcs.append(ArcInstance(logical, prev_i, dst_i, tuple(options), seq=legs[-1].seq + 2))
 
 
@@ -317,8 +385,16 @@ def _append_relay(activities, act_fix, logical, leg, now) -> int:
     relay whose delivering leg has completed is itself fixed (its arrival is a
     fact); one fed by a running leg is pending (the Object is still on its way)."""
     idx = len(activities)
-    mode = Mode(id="relay", devices=(), duration=0, input_spots={"in": leg.to_spot}, output_spots={"out": leg.to_spot})
-    activities.append(ActivityInstance((), "", (mode,), relay=RelayInfo(logical, leg.seq + 1, leg.to_spot)))
+    mode = Mode(
+        id="relay",
+        devices=(),
+        duration=0,
+        input_spots={"in": leg.to_spot},
+        output_spots={"out": leg.to_spot},
+    )
+    activities.append(
+        ActivityInstance((), "", (mode,), relay=RelayInfo(logical, leg.seq + 1, leg.to_spot))
+    )
     if leg.status == "completed":
         act_fix[idx] = ActivityFixation("completed", leg.end, leg.end, 0)
     return idx
@@ -327,7 +403,9 @@ def _append_relay(activities, act_fix, logical, leg, now) -> int:
 def _frozen_leg_option(leg: _Leg):
     from ofplang.schedule.scheduler.instance import TransportOption
 
-    return TransportOption(0, 0, leg.transporter, leg.from_spot, leg.to_spot, max(0, leg.end - leg.start))
+    return TransportOption(
+        0, 0, leg.transporter, leg.from_spot, leg.to_spot, max(0, leg.end - leg.start)
+    )
 
 
 def _frozen_processing_mode(entry: YMap, process: str, env, diags) -> Mode | None:
@@ -345,7 +423,13 @@ def _frozen_processing_mode(entry: YMap, process: str, env, diags) -> Mode | Non
         for mode in capability.modes:
             if mode.id == mode_id:
                 return mode
-    diags.error(errors.STATUS_MODE_UNKNOWN, f"cannot pin fixed activity: mode {mode_id!r} has no echo and process {process!r} does not offer it", "", at=entry)
+    diags.error(
+        errors.STATUS_MODE_UNKNOWN,
+        f"cannot pin fixed activity: mode {mode_id!r} has no echo and "
+        f"process {process!r} does not offer it",
+        "",
+        at=entry,
+    )
     return None
 
 
@@ -369,9 +453,19 @@ def _seq_of(item: YMap) -> int:
 
 def _check_times(status: str, start: int, end: int, now: int, item: YMap, base: str, diags) -> None:
     if status == "completed" and end > now:
-        diags.error(errors.STATUS_TIME_INCONSISTENT, "completed activity ends after now", f"{base}.end", at=item.get("end") or item)
+        diags.error(
+            errors.STATUS_TIME_INCONSISTENT,
+            "completed activity ends after now",
+            f"{base}.end",
+            at=item.get("end") or item,
+        )
     elif status == "running" and start > now:
-        diags.error(errors.STATUS_TIME_INCONSISTENT, "running activity starts after now", f"{base}.start", at=item.get("start") or item)
+        diags.error(
+            errors.STATUS_TIME_INCONSISTENT,
+            "running activity starts after now",
+            f"{base}.start",
+            at=item.get("start") or item,
+        )
 
 
 def _has_error(diags: Diagnostics) -> bool:

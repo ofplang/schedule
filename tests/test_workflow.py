@@ -43,7 +43,10 @@ def test_parse_reformatter():
     assert len(wf.arcs) == 12
 
     # A representative arc: Preparation feeds Reformatter12.
-    assert Arc(Endpoint(("Preparation",), "prep_out_rf12"), Endpoint(("Reformatter12",), "rf12_in")) in wf.arcs
+    assert (
+        Arc(Endpoint(("Preparation",), "prep_out_rf12"), Endpoint(("Reformatter12",), "rf12_in"))
+        in wf.arcs
+    )
     # Reformatter20 has three inputs and two outputs, all Object-bearing.
     assert wf.processes["reformatter_20"].object_input_names() == (
         "rf20_in_rf12",
@@ -368,7 +371,8 @@ def test_structured_node_is_unsupported(tmp_path):
     doc.write_text(
         "types: {Cup: {domain: object}}\n"
         "processes:\n"
-        "  make: {kind: atomic, outputs: {cup: {type: Cup, phase: data}}, objects: {create: [outputs.cup]}}\n"
+        "  make: {kind: atomic, outputs: {cup: {type: Cup, phase: data}}, "
+        "objects: {create: [outputs.cup]}}\n"
         "  main:\n"
         "    kind: composite\n"
         "    body:\n"

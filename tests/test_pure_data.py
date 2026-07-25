@@ -13,8 +13,6 @@ it and it holds no resource.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from ofplang.schedule import schedule, validate_document
 from ofplang.schedule.scheduler.plan import to_yaml
 

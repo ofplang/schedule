@@ -17,7 +17,10 @@ def test_valid_environment_is_ok():
 
 
 def test_invalid_environment_is_invalid():
-    assert cli.main(["validate", str(CASES / "env" / "shape" / "empty_devices.yaml")]) == cli.EXIT_INVALID
+    assert (
+        cli.main(["validate", str(CASES / "env" / "shape" / "empty_devices.yaml")])
+        == cli.EXIT_INVALID
+    )
 
 
 def test_valid_document_is_ok():

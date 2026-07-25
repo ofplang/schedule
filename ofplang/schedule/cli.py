@@ -21,6 +21,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -45,7 +46,9 @@ _RESET = "\033[0m"
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="ofp-schedule", description="Schedule ofplang v0 documents.")
+    parser = argparse.ArgumentParser(
+        prog="ofp-schedule", description="Schedule ofplang v0 documents."
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     v = sub.add_parser("validate", help="validate an environment definition or execution document")
@@ -62,12 +65,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("schedule", help="produce an execution plan from a workflow and environment")
     s.add_argument("workflow", metavar="WORKFLOW", help="ofplang v0 workflow YAML")
-    s.add_argument("--env", required=True, metavar="ENV", help="execution environment definition YAML")
+    s.add_argument(
+        "--env", required=True, metavar="ENV", help="execution environment definition YAML"
+    )
     s.add_argument(
         "--document",
         metavar="DOC",
         help="execution document (§6): carries the interface boundary constraint (§6.8), and — "
-        "when it sets `now` — the prior status to replan from (fix completed/running, re-optimise the rest)",
+        "when it sets `now` — the prior status to replan from "
+        "(fix completed/running, re-optimise the rest)",
     )
     s.add_argument(
         "--running-margin",
@@ -89,14 +95,22 @@ def _build_parser() -> argparse.ArgumentParser:
 
     z = sub.add_parser("visualize", help="render an execution plan as an HTML/SVG Gantt chart")
     z.add_argument("plan", metavar="PLAN", help="execution plan/document YAML")
-    z.add_argument("--view", choices=["device", "workflow", "lane"], default="device", help="lane layout")
+    z.add_argument(
+        "--view", choices=["device", "workflow", "lane"], default="device", help="lane layout"
+    )
     z.add_argument(
         "--theme",
         choices=["light", "dark", "auto"],
         default="light",
-        help="light/dark = fixed colours (PowerPoint-safe); auto = adapts to the viewer (browsers only)",
+        help="light/dark = fixed colours (PowerPoint-safe); auto = adapts to the viewer "
+        "(browsers only)",
     )
-    z.add_argument("--format", choices=["html", "svg"], default=None, help="output format (default: svg, or html when -o ends in .html)")
+    z.add_argument(
+        "--format",
+        choices=["html", "svg"],
+        default=None,
+        help="output format (default: svg, or html when -o ends in .html)",
+    )
     z.add_argument("-o", "--out", metavar="FILE", help="write the chart here (default: stdout)")
 
     return parser
@@ -202,7 +216,10 @@ def _cmd_validate(args) -> int:
         if kind == "auto":
             kind = _detect_kind(path)
             if kind is None:
-                print(f"ofp-schedule: cannot determine kind of {path!r}; pass --kind", file=sys.stderr)
+                print(
+                    f"ofp-schedule: cannot determine kind of {path!r}; pass --kind",
+                    file=sys.stderr,
+                )
                 return EXIT_USAGE
         try:
             results.append(_validate_one(path, kind))
@@ -251,10 +268,19 @@ def _cmd_schedule(args) -> int:
             print(f"{locator}: error {diag.code}{message}", file=sys.stderr)
         return EXIT_INVALID
 
-    text = to_yaml(report.plan) if args.format == "yaml" else json.dumps(report.plan, indent=2, ensure_ascii=False)
+    assert report.plan is not None  # report.ok (checked above) implies a plan
+    text = (
+        to_yaml(report.plan)
+        if args.format == "yaml"
+        else json.dumps(report.plan, indent=2, ensure_ascii=False)
+    )
     if args.out:
         Path(args.out).write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
-        print(f"ofp-schedule: wrote plan to {args.out} (outcome={report.outcome}, makespan={report.makespan})", file=sys.stderr)
+        print(
+            f"ofp-schedule: wrote plan to {args.out} "
+            f"(outcome={report.outcome}, makespan={report.makespan})",
+            file=sys.stderr,
+        )
     else:
         print(text if not text.endswith("\n") else text, end="" if text.endswith("\n") else "\n")
     return EXIT_OK
@@ -270,7 +296,10 @@ def _cmd_visualize(args) -> int:
         print(f"ofp-schedule: cannot parse {args.plan!r}: {exc}", file=sys.stderr)
         return EXIT_USAGE
     if not isinstance(plan, dict) or "activities" not in plan:
-        print(f"ofp-schedule: {args.plan!r} is not an execution document (no 'activities')", file=sys.stderr)
+        print(
+            f"ofp-schedule: {args.plan!r} is not an execution document (no 'activities')",
+            file=sys.stderr,
+        )
         return EXIT_USAGE
 
     # Format: explicit --format wins; otherwise the default is svg, except when
@@ -283,7 +312,10 @@ def _cmd_visualize(args) -> int:
     text = render(plan, view=args.view, theme=args.theme)
     if args.out:
         Path(args.out).write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
-        print(f"ofp-schedule: wrote {args.view} view ({fmt}, {args.theme}) to {args.out}", file=sys.stderr)
+        print(
+            f"ofp-schedule: wrote {args.view} view ({fmt}, {args.theme}) to {args.out}",
+            file=sys.stderr,
+        )
     else:
         print(text, end="" if text.endswith("\n") else "\n")
     return EXIT_OK
@@ -292,10 +324,9 @@ def _cmd_visualize(args) -> int:
 def main(argv: list[str] | None = None) -> int:
     # Emit UTF-8 to stdout regardless of the console's default encoding (e.g. a
     # cp932 Windows console), so piped SVG/YAML never hits an encode error.
-    try:
+    # AttributeError/ValueError when stdout is not a real TextIO (e.g. under capture).
+    with contextlib.suppress(AttributeError, ValueError):
         sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
-    except (AttributeError, ValueError):  # pragma: no cover - not a real TextIO (e.g. under capture)
-        pass
 
     args = _build_parser().parse_args(argv)
     if args.command == "validate":

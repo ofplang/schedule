@@ -90,7 +90,17 @@ def _svg_markup(plan: dict, view: str, theme: str) -> str:
         lanes, bars, arrows = _device_layout(activities)
 
     t_max = makespan if isinstance(makespan, (int, float)) else _max_end(activities)
-    return _svg(lanes, bars, arrows, t_max=float(t_max or 0), now=now, unit=unit, view=view, makespan=makespan, theme=theme)
+    return _svg(
+        lanes,
+        bars,
+        arrows,
+        t_max=float(t_max or 0),
+        now=now,
+        unit=unit,
+        view=view,
+        makespan=makespan,
+        theme=theme,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -113,7 +123,9 @@ def _device_layout(activities):
                 transporters.add(a["transporter"])
     devices.discard("")
 
-    lane_labels = [f"{d}" for d in sorted(devices)] + [f"{t} (transporter)" for t in sorted(transporters)]
+    lane_labels = [f"{d}" for d in sorted(devices)] + [
+        f"{t} (transporter)" for t in sorted(transporters)
+    ]
     index = {}
     for d in sorted(devices):
         index[("dev", d)] = len(index)
@@ -278,8 +290,16 @@ def _lane_layout(activities):
     bars: list[_Bar] = []
     for a in proc:
         node = tuple(a.get("node") or [])
-        bars.append(_Bar(remap[lane_by_node[node]], float(a.get("start", 0)), float(a.get("end", 0)), _proc_label(a), "proc"))
-    for (lane, s, e, src, dst), t in zip(xfer_info, xfer):
+        bars.append(
+            _Bar(
+                remap[lane_by_node[node]],
+                float(a.get("start", 0)),
+                float(a.get("end", 0)),
+                _proc_label(a),
+                "proc",
+            )
+        )
+    for (lane, s, e, _src, _dst), t in zip(xfer_info, xfer, strict=False):
         bars.append(_Bar(remap[lane], s, e, _xfer_label(t), "xfer"))
 
     # Arrows: source proc -> transport -> destination proc.
@@ -325,7 +345,7 @@ _PALETTES = {
 # Each semantic role: fill vs stroke, its palette colour, and extra presentation
 # attributes (opacity, stroke width, dash). Opacity is kept separate from the
 # colour so no 8-digit hex is ever emitted (PowerPoint renders those as black).
-_ROLE = {
+_ROLE: dict[str, tuple[str, str, dict[str, object]]] = {
     "title": ("fill", "fg", {}),
     "subtitle": ("fill", "muted", {}),
     "tick": ("fill", "muted", {}),
@@ -404,7 +424,8 @@ def _svg(lane_labels, bars, arrows, *, t_max: float, now, unit, view, makespan, 
     parts: list[str] = []
     parts.append(
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width:.0f} {height:.0f}" '
-        f'width="{width:.0f}" height="{height:.0f}" font-family="system-ui, sans-serif" font-size="12">'
+        f'width="{width:.0f}" height="{height:.0f}" '
+        f'font-family="system-ui, sans-serif" font-size="12">'
     )
     # CSS is emitted only for the browser-adaptive "auto" theme; the fixed
     # light/dark themes paint every element with inline attributes instead.
@@ -430,32 +451,52 @@ def _svg(lane_labels, bars, arrows, *, t_max: float, now, unit, view, makespan, 
     t = 0.0
     while t <= span + 1e-9:
         gx = x(t)
-        parts.append(f'<line {_attr("grid", theme)} x1="{gx:.1f}" y1="{_TOP - 6:.1f}" x2="{gx:.1f}" y2="{bottom:.1f}"/>')
-        parts.append(f'<text {_attr("tick", theme)} x="{gx:.1f}" y="{_TOP - 12:.1f}" text-anchor="middle">{_fmt(t)}</text>')
+        parts.append(
+            f'<line {_attr("grid", theme)} x1="{gx:.1f}" y1="{_TOP - 6:.1f}" '
+            f'x2="{gx:.1f}" y2="{bottom:.1f}"/>'
+        )
+        parts.append(
+            f'<text {_attr("tick", theme)} x="{gx:.1f}" y="{_TOP - 12:.1f}" '
+            f'text-anchor="middle">{_fmt(t)}</text>'
+        )
         t += step
     axis_label = f"time ({unit})" if unit else "time"
-    parts.append(f'<text {_attr("axis", theme)} x="{_LEFT:.1f}" y="{chart_h - 8:.1f}">{_esc(axis_label)}</text>')
+    parts.append(
+        f'<text {_attr("axis", theme)} x="{_LEFT:.1f}" '
+        f'y="{chart_h - 8:.1f}">{_esc(axis_label)}</text>'
+    )
 
     # Lane labels + separators.
     for i, label in enumerate(lane_labels):
         y = lane_y(i)
-        parts.append(f'<line {_attr("lane", theme)} x1="0" y1="{y + _ROW:.1f}" x2="{width:.1f}" y2="{y + _ROW:.1f}"/>')
         parts.append(
-            f'<text {_attr("lanelabel", theme)} x="{_LEFT - 10:.1f}" y="{y + _ROW / 2 + 4:.1f}" text-anchor="end">{_esc(label)}</text>'
+            f'<line {_attr("lane", theme)} x1="0" y1="{y + _ROW:.1f}" '
+            f'x2="{width:.1f}" y2="{y + _ROW:.1f}"/>'
+        )
+        parts.append(
+            f'<text {_attr("lanelabel", theme)} x="{_LEFT - 10:.1f}" '
+            f'y="{y + _ROW / 2 + 4:.1f}" text-anchor="end">{_esc(label)}</text>'
         )
 
     # `now` marker (replanning).
     if isinstance(now, (int, float)):
         nx = x(float(now))
-        parts.append(f'<line {_attr("now", theme)} x1="{nx:.1f}" y1="{_TOP - 6:.1f}" x2="{nx:.1f}" y2="{bottom:.1f}"/>')
-        parts.append(f'<text {_attr("nowlabel", theme)} x="{nx + 3:.1f}" y="{_TOP - 12:.1f}">now={_fmt(float(now))}</text>')
+        parts.append(
+            f'<line {_attr("now", theme)} x1="{nx:.1f}" y1="{_TOP - 6:.1f}" '
+            f'x2="{nx:.1f}" y2="{bottom:.1f}"/>'
+        )
+        parts.append(
+            f'<text {_attr("nowlabel", theme)} x="{nx + 3:.1f}" '
+            f'y="{_TOP - 12:.1f}">now={_fmt(float(now))}</text>'
+        )
 
     # Arrows (workflow view).
     for a in arrows:
         y1 = lane_y(a.lane1) + _ROW / 2
         y2 = lane_y(a.lane2) + _ROW / 2
         parts.append(
-            f'<path {_attr("arrow", theme)} d="M{x(a.x1):.1f},{y1:.1f} C{x(a.x1) + 16:.1f},{y1:.1f} '
+            f'<path {_attr("arrow", theme)} d="M{x(a.x1):.1f},{y1:.1f} '
+            f'C{x(a.x1) + 16:.1f},{y1:.1f} '
             f'{x(a.x2) - 16:.1f},{y2:.1f} {x(a.x2):.1f},{y2:.1f}" marker-end="url(#ah)"/>'
         )
 
@@ -465,11 +506,15 @@ def _svg(lane_labels, bars, arrows, *, t_max: float, now, unit, view, makespan, 
         bw = max(2.0, (b.end - b.start) * scale)
         by = lane_y(b.lane) + (_ROW - _BAR) / 2
         role = "ghost" if b.css == "xfer-ghost" else b.css  # proc | xfer | ghost
-        parts.append(f'<rect {_attr(role, theme)} x="{bx:.1f}" y="{by:.1f}" width="{bw:.1f}" height="{_BAR}" rx="3"/>')
+        parts.append(
+            f'<rect {_attr(role, theme)} x="{bx:.1f}" y="{by:.1f}" '
+            f'width="{bw:.1f}" height="{_BAR}" rx="3"/>'
+        )
         if b.label and bw > 26:
             lbl_role = "barlabel-xfer" if b.css == "xfer" else "barlabel-proc"
             parts.append(
-                f'<text {_attr(lbl_role, theme)} x="{bx + 4:.1f}" y="{by + _BAR - 6:.1f}">{_esc(_clip(b.label, bw))}</text>'
+                f'<text {_attr(lbl_role, theme)} x="{bx + 4:.1f}" '
+                f'y="{by + _BAR - 6:.1f}">{_esc(_clip(b.label, bw))}</text>'
             )
 
     parts.append("</g></svg>")

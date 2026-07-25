@@ -219,4 +219,4 @@ class Workflow:
     # composite `()` is omitted -- the runner checks it via its whole-workflow
     # boundary handles (D33); only nested composites need this. The runner uses only
     # those with contracts.
-    composites: dict[NodePath, "CompositeIO"] = field(default_factory=dict)
+    composites: dict[NodePath, CompositeIO] = field(default_factory=dict)

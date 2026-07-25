@@ -76,8 +76,10 @@ def test_nested_workflow_builds_equivalent_instance(tmp_path):
         "spec_version: \"0.0\"\n"
         "types: {Sample: {domain: object}}\n"
         "processes:\n"
-        "  source: {kind: atomic, outputs: {source_out: {type: Sample, phase: data}}, objects: {create: [outputs.source_out]}}\n"
-        "  target: {kind: atomic, inputs: {target_in: {type: Sample, phase: data}}, objects: {consume: [inputs.target_in]}}\n"
+        "  source: {kind: atomic, outputs: {source_out: {type: Sample, phase: data}}, "
+        "objects: {create: [outputs.source_out]}}\n"
+        "  target: {kind: atomic, inputs: {target_in: {type: Sample, phase: data}}, "
+        "objects: {consume: [inputs.target_in]}}\n"
         "  producer:\n"
         "    kind: composite\n"
         "    outputs: {p_out: {type: Sample, phase: data}}\n"
@@ -101,7 +103,11 @@ def test_nested_workflow_builds_equivalent_instance(tmp_path):
     assert len(inst.activities) == 2
     assert len(inst.arcs) == 1
     opt = inst.arcs[0].options[0]
-    assert opt.from_spot == "station_0.core" and opt.to_spot == "station_1.core" and opt.duration == 1
+    assert (
+        opt.from_spot == "station_0.core"
+        and opt.to_spot == "station_1.core"
+        and opt.duration == 1
+    )
 
 
 def test_unreachable_arc_is_reported():

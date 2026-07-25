@@ -9,7 +9,7 @@ from __future__ import annotations
 from ofplang.schedule.core import yamlnode
 from ofplang.schedule.core.diagnostics import Diagnostics, ValidationResult
 from ofplang.schedule.core.identifiers import is_identifier, parse_qualified_spot
-from ofplang.schedule.core.yamlnode import YMap, YScalar, YNode
+from ofplang.schedule.core.yamlnode import YMap, YNode, YScalar
 from ofplang.schedule.validation import _shape as shape
 from ofplang.schedule.validation import errors
 
@@ -67,7 +67,12 @@ def _check_time(node: YNode | None, diags: Diagnostics) -> None:
         return
     # A non-string or empty/whitespace unit is reported with the dedicated code.
     if not (isinstance(unit, YScalar) and unit.is_str and unit.text.strip()):
-        diags.error(errors.EMPTY_TIME_UNIT, "time.unit must be a non-empty string", "time.unit", at=unit or tmap)
+        diags.error(
+            errors.EMPTY_TIME_UNIT,
+            "time.unit must be a non-empty string",
+            "time.unit",
+            at=unit or tmap,
+        )
 
 
 def _check_devices(node: YNode | None, diags: Diagnostics) -> dict[str, set[str]]:
@@ -90,7 +95,12 @@ def _check_devices(node: YNode | None, diags: Diagnostics) -> dict[str, set[str]
         spots = _check_spots(dmap.get("spots"), base, diags)
         if dev_id is not None:
             if dev_id in devices:
-                diags.error(errors.DUPLICATE_DEVICE_ID, f"duplicate device id {dev_id!r}", shape.join(base, "id"), at=dmap.get("id"))
+                diags.error(
+                    errors.DUPLICATE_DEVICE_ID,
+                    f"duplicate device id {dev_id!r}",
+                    shape.join(base, "id"),
+                    at=dmap.get("id"),
+                )
             else:
                 devices[dev_id] = spots
     return devices
@@ -107,7 +117,9 @@ def _check_spots(node: YNode | None, base: str, diags: Diagnostics) -> set[str]:
             diags.error(errors.WRONG_TYPE, "spot name must be a string", path, at=item)
             continue
         if not is_identifier(item.value):
-            diags.error(errors.INVALID_IDENTIFIER, f"invalid spot name {item.value!r}", path, at=item)
+            diags.error(
+                errors.INVALID_IDENTIFIER, f"invalid spot name {item.value!r}", path, at=item
+            )
             continue
         if item.value in spots:
             diags.error(errors.DUPLICATE_SPOT_ID, f"duplicate spot {item.value!r}", path, at=item)
@@ -131,13 +143,20 @@ def _check_transporters(node: YNode | None, diags: Diagnostics) -> set[str]:
         if tid is None:
             continue
         if tid in transporters:
-            diags.error(errors.DUPLICATE_TRANSPORTER_ID, f"duplicate transporter id {tid!r}", shape.join(base, "id"), at=tmap.get("id"))
+            diags.error(
+                errors.DUPLICATE_TRANSPORTER_ID,
+                f"duplicate transporter id {tid!r}",
+                shape.join(base, "id"),
+                at=tmap.get("id"),
+            )
         else:
             transporters.add(tid)
     return transporters
 
 
-def _check_id(ymap: YMap, base: str, kind: str, invalid_code: str, diags: Diagnostics) -> str | None:
+def _check_id(
+    ymap: YMap, base: str, kind: str, invalid_code: str, diags: Diagnostics
+) -> str | None:
     """Require a string identifier `id`; return it when valid, else None."""
     node = shape.require(ymap, "id", base, diags)
     if node is None:
@@ -152,7 +171,9 @@ def _check_id(ymap: YMap, base: str, kind: str, invalid_code: str, diags: Diagno
     return node.value
 
 
-def _check_cross_kind(devices: dict[str, set[str]], transporters: set[str], root: YNode, diags: Diagnostics) -> None:
+def _check_cross_kind(
+    devices: dict[str, set[str]], transporters: set[str], root: YNode, diags: Diagnostics
+) -> None:
     """Warn (never error) when one string is used as more than one kind of id."""
     spot_names: set[str] = set()
     for names in devices.values():
@@ -167,10 +188,20 @@ def _check_cross_kind(devices: dict[str, set[str]], transporters: set[str], root
             else:
                 owner[value] = kind
     for value in sorted(coincident):
-        diags.warning(errors.CROSS_KIND_ID_COINCIDENCE, f"id {value!r} is used across device/spot/transporter", "", at=root)
+        diags.warning(
+            errors.CROSS_KIND_ID_COINCIDENCE,
+            f"id {value!r} is used across device/spot/transporter",
+            "",
+            at=root,
+        )
 
 
-def _check_transports(node: YNode | None, devices: dict[str, set[str]], transporters: set[str], diags: Diagnostics) -> None:
+def _check_transports(
+    node: YNode | None,
+    devices: dict[str, set[str]],
+    transporters: set[str],
+    diags: Diagnostics,
+) -> None:
     seq = shape.as_seq(node, "transports", diags)
     if seq is None:
         return
@@ -185,24 +216,40 @@ def _check_transports(node: YNode | None, devices: dict[str, set[str]], transpor
         tr = shape.require(tmap, "transporter", base, diags)
         if tr is not None:
             if not (isinstance(tr, YScalar) and tr.is_str):
-                diags.error(errors.WRONG_TYPE, "transporter must be a string", shape.join(base, "transporter"), at=tr)
+                diags.error(
+                    errors.WRONG_TYPE,
+                    "transporter must be a string",
+                    shape.join(base, "transporter"),
+                    at=tr,
+                )
             elif tr.value not in transporters:
-                diags.error(errors.UNKNOWN_TRANSPORTER, f"unknown transporter {tr.value!r}", shape.join(base, "transporter"), at=tr)
+                diags.error(
+                    errors.UNKNOWN_TRANSPORTER,
+                    f"unknown transporter {tr.value!r}",
+                    shape.join(base, "transporter"),
+                    at=tr,
+                )
 
         _check_ref_spot(tmap, "from", base, devices, diags)
         _check_ref_spot(tmap, "to", base, devices, diags)
-        shape.nonneg_int(shape.require(tmap, "duration", base, diags), shape.join(base, "duration"), diags)
+        shape.nonneg_int(
+            shape.require(tmap, "duration", base, diags), shape.join(base, "duration"), diags
+        )
 
         # Duplicate (transporter, from, to) triple — compared on raw scalar text.
         triple = tuple(_scalar(tmap.get(k)) for k in ("transporter", "from", "to"))
         if None not in triple:
             if triple in seen:
-                diags.error(errors.DUPLICATE_TRANSPORT_ENTRY, "duplicate transport entry", base, at=tmap)
+                diags.error(
+                    errors.DUPLICATE_TRANSPORT_ENTRY, "duplicate transport entry", base, at=tmap
+                )
             else:
                 seen.add(triple)
 
 
-def _check_ref_spot(tmap: YMap, key: str, base: str, devices: dict[str, set[str]], diags: Diagnostics) -> None:
+def _check_ref_spot(
+    tmap: YMap, key: str, base: str, devices: dict[str, set[str]], diags: Diagnostics
+) -> None:
     """Validate a required qualified-spot reference (`from`/`to`) against the
     defined devices/spots, short-circuiting so one bad ref yields one code."""
     node = tmap.get(key)
@@ -226,11 +273,15 @@ def _check_processes(node: YNode | None, devices: dict[str, set[str]], diags: Di
         if proc is None:
             continue
         shape.unknown_keys(proc, PROCESS_KEYS, base, diags)
-        modes = shape.as_seq(shape.require(proc, "modes", base, diags), shape.join(base, "modes"), diags)
+        modes = shape.as_seq(
+            shape.require(proc, "modes", base, diags), shape.join(base, "modes"), diags
+        )
         if modes is None:
             continue
         if not modes.items:
-            diags.error(errors.EMPTY_MODES, "process has no modes", shape.join(base, "modes"), at=modes)
+            diags.error(
+                errors.EMPTY_MODES, "process has no modes", shape.join(base, "modes"), at=modes
+            )
             continue
         for j, mode in enumerate(modes.items):
             _check_mode(mode, f"{base}.modes[{j}]", devices, diags)
@@ -246,9 +297,16 @@ def _check_mode(node: YNode, base: str, devices: dict[str, set[str]], diags: Dia
     idn = mmap.get("id")
     if idn is not None:
         if not (isinstance(idn, YScalar) and idn.is_str):
-            diags.error(errors.WRONG_TYPE, "mode id must be a string", shape.join(base, "id"), at=idn)
+            diags.error(
+                errors.WRONG_TYPE, "mode id must be a string", shape.join(base, "id"), at=idn
+            )
         elif not is_identifier(idn.value):
-            diags.error(errors.INVALID_IDENTIFIER, f"invalid mode id {idn.value!r}", shape.join(base, "id"), at=idn)
+            diags.error(
+                errors.INVALID_IDENTIFIER,
+                f"invalid mode id {idn.value!r}",
+                shape.join(base, "id"),
+                at=idn,
+            )
 
     # Optional devices list -> the set this mode occupies (for spot_device checks).
     # Each entry must be a defined device (§5.5); an undefined one is caught here
@@ -276,22 +334,51 @@ def _check_mode(node: YNode, base: str, devices: dict[str, set[str]], diags: Dia
     dur = shape.require(mmap, "duration", base, diags)
     if dur is not None:
         if not (isinstance(dur, YScalar) and dur.is_int):
-            diags.error(errors.WRONG_TYPE, "duration must be an integer", shape.join(base, "duration"), at=dur)
+            diags.error(
+                errors.WRONG_TYPE,
+                "duration must be an integer",
+                shape.join(base, "duration"),
+                at=dur,
+            )
         else:
             has_devices = bool(mode_devices)
             if dur.value < 0 or (dur.value == 0 and has_devices):
                 diags.error(
                     errors.NONPOSITIVE_DURATION,
-                    "processing duration must be positive (a device-less pure-data mode may be zero)",
+                    (
+                        "processing duration must be positive "
+                        "(a device-less pure-data mode may be zero)"
+                    ),
                     shape.join(base, "duration"),
                     at=dur,
                 )
 
-    _check_mode_spots(mmap.get("input_spots"), shape.join(base, "input_spots"), devices, mode_devices, errors.INPUT_SPOTS_SHARE_SPOT, diags)
-    _check_mode_spots(mmap.get("output_spots"), shape.join(base, "output_spots"), devices, mode_devices, errors.OUTPUT_SPOTS_SHARE_SPOT, diags)
+    _check_mode_spots(
+        mmap.get("input_spots"),
+        shape.join(base, "input_spots"),
+        devices,
+        mode_devices,
+        errors.INPUT_SPOTS_SHARE_SPOT,
+        diags,
+    )
+    _check_mode_spots(
+        mmap.get("output_spots"),
+        shape.join(base, "output_spots"),
+        devices,
+        mode_devices,
+        errors.OUTPUT_SPOTS_SHARE_SPOT,
+        diags,
+    )
 
 
-def _check_mode_spots(node: YNode | None, path: str, devices: dict[str, set[str]], mode_devices: set[str] | None, share_code: str, diags: Diagnostics) -> None:
+def _check_mode_spots(
+    node: YNode | None,
+    path: str,
+    devices: dict[str, set[str]],
+    mode_devices: set[str] | None,
+    share_code: str,
+    diags: Diagnostics,
+) -> None:
     smap = shape.as_map(node, path, diags)
     if smap is None:
         return
@@ -300,7 +387,12 @@ def _check_mode_spots(node: YNode | None, path: str, devices: dict[str, set[str]
         spot_node = entry.value
         port_path = shape.join(path, entry.key)
         if not (isinstance(spot_node, YScalar) and spot_node.is_str):
-            diags.error(errors.WRONG_TYPE, "spot must be a qualified spot string", port_path, at=spot_node)
+            diags.error(
+                errors.WRONG_TYPE,
+                "spot must be a qualified spot string",
+                port_path,
+                at=spot_node,
+            )
             continue
         values.append(spot_node.value)
         _resolve_spot(spot_node, port_path, devices, mode_devices, diags)
@@ -309,12 +401,20 @@ def _check_mode_spots(node: YNode | None, path: str, devices: dict[str, set[str]
         diags.error(share_code, "two ports in the mode use the same spot", path, at=smap)
 
 
-def _resolve_spot(node: YScalar, path: str, devices: dict[str, set[str]], mode_devices: set[str] | None, diags: Diagnostics) -> None:
+def _resolve_spot(
+    node: YScalar,
+    path: str,
+    devices: dict[str, set[str]],
+    mode_devices: set[str] | None,
+    diags: Diagnostics,
+) -> None:
     """Resolve one qualified spot against defined devices/spots and (optionally)
     the mode's own devices, emitting exactly the first applicable code."""
     parsed = parse_qualified_spot(node.value)
     if parsed is None:
-        diags.error(errors.MALFORMED_QUALIFIED_SPOT, f"malformed spot {node.value!r}", path, at=node)
+        diags.error(
+            errors.MALFORMED_QUALIFIED_SPOT, f"malformed spot {node.value!r}", path, at=node
+        )
         return
     device, spot = parsed
     if device not in devices:
@@ -324,7 +424,12 @@ def _resolve_spot(node: YScalar, path: str, devices: dict[str, set[str]], mode_d
         diags.error(errors.UNKNOWN_SPOT, f"unknown spot {spot!r} on {device!r}", path, at=node)
         return
     if mode_devices is not None and device not in mode_devices:
-        diags.error(errors.SPOT_DEVICE_NOT_IN_MODE, f"spot's device {device!r} is not one of the mode's devices", path, at=node)
+        diags.error(
+            errors.SPOT_DEVICE_NOT_IN_MODE,
+            f"spot's device {device!r} is not one of the mode's devices",
+            path,
+            at=node,
+        )
 
 
 def _check_objective(node: YNode | None, diags: Diagnostics) -> None:
@@ -334,10 +439,20 @@ def _check_objective(node: YNode | None, diags: Diagnostics) -> None:
     shape.unknown_keys(omap, OBJECTIVE_KEYS, "objective", diags)
     kind = omap.get("kind")
     if kind is None:
-        diags.error(errors.MISSING_REQUIRED_FIELD, "objective.kind is required", "objective.kind", at=omap)
+        diags.error(
+            errors.MISSING_REQUIRED_FIELD,
+            "objective.kind is required",
+            "objective.kind",
+            at=omap,
+        )
         return
     if not (isinstance(kind, YScalar) and kind.is_str and kind.value == "makespan"):
-        diags.error(errors.UNKNOWN_OBJECTIVE_KIND, "objective.kind must be makespan", "objective.kind", at=kind)
+        diags.error(
+            errors.UNKNOWN_OBJECTIVE_KIND,
+            "objective.kind must be makespan",
+            "objective.kind",
+            at=kind,
+        )
 
 
 def _scalar(node: YNode | None):

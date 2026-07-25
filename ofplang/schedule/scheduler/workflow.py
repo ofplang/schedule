@@ -115,8 +115,14 @@ def parse_workflow(source) -> tuple[Workflow | None, Diagnostics]:
             )
     # The entry composite's declared ports, tagged Object-bearing (for classifying
     # `interface` bindings). Values are `{type, phase}` specs like an atomic's.
-    in_ports = {n: _object_bearing((s or {}).get("type", ""), domains) for n, s in (entry_proc.get("inputs") or {}).items()}
-    out_ports = {n: _object_bearing((s or {}).get("type", ""), domains) for n, s in (entry_proc.get("outputs") or {}).items()}
+    in_ports = {
+        n: _object_bearing((s or {}).get("type", ""), domains)
+        for n, s in (entry_proc.get("inputs") or {}).items()
+    }
+    out_ports = {
+        n: _object_bearing((s or {}).get("type", ""), domains)
+        for n, s in (entry_proc.get("outputs") or {}).items()
+    }
     return (
         Workflow(
             tuple(activities), tuple(arcs), tuple(precedence), used,
@@ -274,7 +280,9 @@ class _Expander:
         # `()` is omitted (the runner checks it via its whole-workflow handles, D33).
         self.composites: dict[NodePath, CompositeIO] = {}
 
-    def expand(self, comp: dict, prefix: NodePath, inputs_env: dict, stack: tuple[str, ...]) -> None:
+    def expand(
+        self, comp: dict, prefix: NodePath, inputs_env: dict, stack: tuple[str, ...]
+    ) -> None:
         """Expand one composite `comp` whose body node paths are prefixed by
         `prefix`. `inputs_env` maps this composite's input ports to their producer
         (resolved in the enclosing scope); `stack` is the chain of composite process
@@ -283,19 +291,28 @@ class _Expander:
         for node in siblings.values():
             self._expand_node(node, prefix, inputs_env, siblings, stack)
 
-    def _expand_node(self, node: dict, prefix: NodePath, inputs_env: dict, siblings: dict, stack: tuple[str, ...]) -> None:
-        node_id = node.get("id")
+    def _expand_node(
+        self, node: dict, prefix: NodePath, inputs_env: dict, siblings: dict, stack: tuple[str, ...]
+    ) -> None:
+        node_id: str = node["id"]  # every body node has an id (see _body_nodes)
         path = prefix + (node_id,)
         kind = node.get("kind")
         # Structured nodes stay out of scope (D6): they reshape dataflow in ways the
         # flat scheduler graph cannot represent.
         if kind in _STRUCTURED_KINDS:
-            self.diags.error(errors.UNSUPPORTED_FEATURE, f"structured node {node_id!r} (kind {kind!r}) is out of scope")
+            self.diags.error(
+                errors.UNSUPPORTED_FEATURE,
+                f"structured node {node_id!r} (kind {kind!r}) is out of scope",
+            )
             return
         pname = node.get("process")
         if pname not in self.procs:
-            self.diags.error(errors.PROCESS_NOT_DEFINED, f"node {node_id!r} invokes undefined process {pname!r}")
+            self.diags.error(
+                errors.PROCESS_NOT_DEFINED,
+                f"node {node_id!r} invokes undefined process {pname!r}",
+            )
             return
+        assert isinstance(pname, str)  # a key of the str-keyed self.procs
 
         child_kind = self.procs[pname].get("kind")
         if child_kind == "atomic":
@@ -305,7 +322,9 @@ class _Expander:
             self.used[pname] = self.atomic[pname]
             for section in ("state", "bind"):
                 for port, binding in (node.get(section) or {}).items():
-                    producer = self._resolve(_parse_ref(binding), prefix, inputs_env, siblings, stack)
+                    producer = self._resolve(
+                        _parse_ref(binding), prefix, inputs_env, siblings, stack
+                    )
                     if producer is None:
                         continue  # an unconnected workflow input
                     if isinstance(producer, _Literal):
@@ -330,17 +349,24 @@ class _Expander:
                         continue
                     self.precedence.append((producer.path, path))
                     if section == "state":
-                        self.arcs.append(Arc(Endpoint(producer.path, producer.port), Endpoint(path, port)))
+                        self.arcs.append(
+                            Arc(Endpoint(producer.path, producer.port), Endpoint(path, port))
+                        )
                     else:
                         # A `bind` is Pure Data: a precedence edge for the solver (added
                         # above), plus the port-level arc for the runner's value routing
                         # (D26-0). The scheduler does not read `data_arcs`.
-                        self.data_arcs.append(Arc(Endpoint(producer.path, producer.port), Endpoint(path, port)))
+                        self.data_arcs.append(
+                            Arc(Endpoint(producer.path, producer.port), Endpoint(path, port))
+                        )
         elif child_kind == "composite":
             # A composite invocation is structural: resolve its input bindings here,
             # then expand its body one level deeper with those producers in scope.
             if pname in stack:
-                self.diags.error(errors.RECURSIVE_COMPOSITE, f"composite {pname!r} is recursively defined (via node {node_id!r})")
+                self.diags.error(
+                    errors.RECURSIVE_COMPOSITE,
+                    f"composite {pname!r} is recursively defined (via node {node_id!r})",
+                )
                 return
             child_env = self._resolve_inputs(node, prefix, inputs_env, siblings, stack)
             self.expand(self.procs[pname], path, child_env, stack + (pname,))
@@ -350,9 +376,14 @@ class _Expander:
             # independent metadata; the scheduler never reads it.
             self._record_composite(pname, path, child_env, stack)
         else:
-            self.diags.error(errors.UNSUPPORTED_FEATURE, f"node {node_id!r} invokes process {pname!r} of unsupported kind {child_kind!r}")
+            self.diags.error(
+                errors.UNSUPPORTED_FEATURE,
+                f"node {node_id!r} invokes process {pname!r} of unsupported kind {child_kind!r}",
+            )
 
-    def _resolve_inputs(self, node: dict, prefix: NodePath, inputs_env: dict, siblings: dict, stack: tuple[str, ...]) -> dict:
+    def _resolve_inputs(
+        self, node: dict, prefix: NodePath, inputs_env: dict, siblings: dict, stack: tuple[str, ...]
+    ) -> dict:
         """Resolve every input binding of a composite invocation to its producer, so
         the child body's `inputs.*` references can be resolved against it."""
         env: dict[str, _Producer | None] = {}
@@ -361,7 +392,9 @@ class _Expander:
                 env[port] = self._resolve(_parse_ref(binding), prefix, inputs_env, siblings, stack)
         return env
 
-    def _record_composite(self, pname: str, path: NodePath, child_env: dict, stack: tuple[str, ...]) -> None:
+    def _record_composite(
+        self, pname: str, path: NodePath, child_env: dict, stack: tuple[str, ...]
+    ) -> None:
         """Record a composite invocation's value-layer boundary (D34): each input port
         -> its source (from `child_env`), and each output port -> its source (its
         `returns` resolved to the producing atomic in the composite's own scope). A
@@ -374,7 +407,9 @@ class _Expander:
         outputs: dict[str, Endpoint] = {}
         output_literals: dict[str, object] = {}
         for out_port, source in _returns(cproc).items():
-            producer = self._resolve(_parse_ref(source), path, child_env, _body_nodes(cproc), stack + (pname,))
+            producer = self._resolve(
+                _parse_ref(source), path, child_env, _body_nodes(cproc), stack + (pname,)
+            )
             self._place_source(producer, out_port, outputs, output_literals)
         self.composites[path] = CompositeIO(
             process=pname,
@@ -397,7 +432,9 @@ class _Expander:
         elif isinstance(producer, _Literal):
             literals[port] = producer.value
 
-    def _resolve(self, ref, prefix: NodePath, inputs_env: dict, siblings: dict, stack: tuple[str, ...]):
+    def _resolve(
+        self, ref, prefix: NodePath, inputs_env: dict, siblings: dict, stack: tuple[str, ...]
+    ):
         """Resolve a body dataflow reference to the atomic that produces it (a
         `_Producer`), a boundary marker (`_EntryInput` / `_Literal`), or None for an
         unconnected source."""
@@ -424,13 +461,22 @@ class _Expander:
             return _Producer(prefix + (left,), right)
         if cproc.get("kind") == "composite":
             if pname in stack:
-                self.diags.error(errors.RECURSIVE_COMPOSITE, f"composite {pname!r} is recursively defined (via node {left!r})")
+                self.diags.error(
+                    errors.RECURSIVE_COMPOSITE,
+                    f"composite {pname!r} is recursively defined (via node {left!r})",
+                )
                 return None
             # Follow the child composite's `returns[Y]` to the real producer, resolved
             # in the child's own scope (its inputs resolved here, body prefixed by Node).
             child_env = self._resolve_inputs(child, prefix, inputs_env, siblings, stack)
             returns = _returns(cproc)
-            return self._resolve(_parse_ref(returns.get(right)), prefix + (left,), child_env, _body_nodes(cproc), stack + (pname,))
+            return self._resolve(
+                _parse_ref(returns.get(right)),
+                prefix + (left,),
+                child_env,
+                _body_nodes(cproc),
+                stack + (pname,),
+            )
         return None  # a structured or unknown child output cannot be a scheduler source
 
 

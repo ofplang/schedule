@@ -19,7 +19,9 @@ _STAGES = ["peal", "dispense", "seal", "thermal_cycle", "rotate"]
 
 
 def _generator():
-    spec = importlib.util.spec_from_file_location("gen_plate_batch", EXAMPLES / "gen_plate_batch.py")
+    spec = importlib.util.spec_from_file_location(
+        "gen_plate_batch", EXAMPLES / "gen_plate_batch.py"
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -87,7 +89,9 @@ def test_thermal_cycler_pool_is_configurable(tmp_path):
     (tmp_path / "wf.yaml").write_text(yaml.safe_dump(wf), encoding="utf-8")
     for pool in (1, 3):
         env_path = tmp_path / f"env{pool}.yaml"
-        env_path.write_text(yaml.safe_dump(gen.build_env(2, thermal_cycler_pool=pool)), encoding="utf-8")
+        env_path.write_text(
+            yaml.safe_dump(gen.build_env(2, thermal_cycler_pool=pool)), encoding="utf-8"
+        )
         assert schedule(tmp_path / "wf.yaml", env_path).outcome == "optimal"
 
 

@@ -8,7 +8,7 @@ callers can short-circuit and avoid cascading errors.
 
 from __future__ import annotations
 
-from ofplang.schedule.core.yamlnode import YMap, YScalar, YSeq, YNode
+from ofplang.schedule.core.yamlnode import YMap, YNode, YScalar, YSeq
 from ofplang.schedule.validation import errors
 
 
@@ -49,7 +49,12 @@ def unknown_keys(ymap: YMap, allowed: set[str], path: str, diags) -> None:
     """Report every key outside `allowed` (strict; SPECIFICATIONS.md §9)."""
     for entry in ymap.entries:
         if entry.key not in allowed:
-            diags.error(errors.UNKNOWN_KEY, f"unknown key {entry.key!r}", join(path, entry.key), at=entry)
+            diags.error(
+                errors.UNKNOWN_KEY,
+                f"unknown key {entry.key!r}",
+                join(path, entry.key),
+                at=entry,
+            )
 
 
 def nonneg_int(node: YNode | None, path: str, diags) -> None:

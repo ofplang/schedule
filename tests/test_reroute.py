@@ -21,7 +21,8 @@ _COMMITTED = """
 time: {unit: second}
 now: 5
 activities:
-- { kind: processing, status: completed, start: 0, end: 2, process: source, mode: '0', node: [SampleSource], output_spots: { source_out: station_0.core } }
+- { kind: processing, status: completed, start: 0, end: 2, process: source, \
+mode: '0', node: [SampleSource], output_spots: { source_out: station_0.core } }
 - kind: transport
   status: completed
   start: 2
@@ -30,7 +31,8 @@ activities:
   from_spot: station_0.core
   to_spot: station_1.core
   transporter: transport
-  arc: { from: { node: [SampleSource], port: source_out }, to: { node: [SampleTarget], port: target_in } }
+  arc: { from: { node: [SampleSource], port: source_out }, \
+to: { node: [SampleTarget], port: target_in } }
 """
 
 
@@ -43,7 +45,8 @@ def _write(tmp_path, name, text):
 def _env(devices_spots, transports, target_device, target_spot):
     devs = "\n".join(f"  - {{ id: {d}, spots: [{s}] }}" for d, s in devices_spots)
     trs = "\n".join(
-        f"  - {{ transporter: transport, from: {f}, to: {t}, duration: {d} }}" for f, t, d in transports
+        f"  - {{ transporter: transport, from: {f}, to: {t}, duration: {d} }}"
+        for f, t, d in transports
     )
     return f"""time: {{ unit: second }}
 devices:
@@ -52,8 +55,10 @@ transporters: [ {{ id: transport }} ]
 transports:
 {trs}
 processes:
-  source: {{ modes: [ {{ devices: [station_0], duration: 2, output_spots: {{ source_out: station_0.core }} }} ] }}
-  target: {{ modes: [ {{ devices: [{target_device}], duration: 2, input_spots: {{ target_in: {target_spot} }} }} ] }}
+  source: {{ modes: [ {{ devices: [station_0], duration: 2, \
+output_spots: {{ source_out: station_0.core }} }} ] }}
+  target: {{ modes: [ {{ devices: [{target_device}], duration: 2, \
+input_spots: {{ target_in: {target_spot} }} }} ] }}
 """
 
 
@@ -80,7 +85,9 @@ def test_reroute_via_relay_and_retransport(tmp_path):
     assert target["input_spots"] == {"target_in": "station_2.core"}  # re-routed
     # A real re-transport station_1.core -> station_2.core carries the Object.
     legs = _kinds(report.plan, "transport")
-    assert any(t["from_spot"] == "station_1.core" and t["to_spot"] == "station_2.core" for t in legs)
+    assert any(
+        t["from_spot"] == "station_1.core" and t["to_spot"] == "station_2.core" for t in legs
+    )
 
 
 def test_reroute_round_trips(tmp_path):
@@ -112,7 +119,12 @@ def test_chained_reroute(tmp_path):
     # Two committed legs (station_0->station_1->station_2); target now on
     # station_3, reached by a third (pending) leg. Relays chain.
     env = _write(tmp_path, "env.yaml", _env(
-        [("station_0", "core"), ("station_1", "core"), ("station_2", "core"), ("station_3", "core")],
+        [
+            ("station_0", "core"),
+            ("station_1", "core"),
+            ("station_2", "core"),
+            ("station_3", "core"),
+        ],
         [
             ("station_0.core", "station_1.core", 1),
             ("station_1.core", "station_2.core", 4),
@@ -124,9 +136,16 @@ def test_chained_reroute(tmp_path):
 time: {unit: second}
 now: 10
 activities:
-- { kind: processing, status: completed, start: 0, end: 2, process: source, mode: '0', node: [SampleSource], output_spots: { source_out: station_0.core } }
-- { kind: transport, status: completed, start: 2, end: 3, seq: 0, from_spot: station_0.core, to_spot: station_1.core, transporter: transport, arc: { from: { node: [SampleSource], port: source_out }, to: { node: [SampleTarget], port: target_in } } }
-- { kind: transport, status: completed, start: 5, end: 9, seq: 2, from_spot: station_1.core, to_spot: station_2.core, transporter: transport, arc: { from: { node: [SampleSource], port: source_out }, to: { node: [SampleTarget], port: target_in } } }
+- { kind: processing, status: completed, start: 0, end: 2, process: source, \
+mode: '0', node: [SampleSource], output_spots: { source_out: station_0.core } }
+- { kind: transport, status: completed, start: 2, end: 3, seq: 0, \
+from_spot: station_0.core, to_spot: station_1.core, \
+transporter: transport, arc: { from: { node: [SampleSource], port: source_out }, \
+to: { node: [SampleTarget], port: target_in } } }
+- { kind: transport, status: completed, start: 5, end: 9, seq: 2, \
+from_spot: station_1.core, to_spot: station_2.core, \
+transporter: transport, arc: { from: { node: [SampleSource], port: source_out }, \
+to: { node: [SampleTarget], port: target_in } } }
 """
     report = schedule(WORKFLOW, env, document_path=_write(tmp_path, "s.yaml", status))
     assert report.ok, [d.code for d in report.diagnostics]
@@ -138,7 +157,9 @@ activities:
 
 def test_committed_reroute_example(tmp_path):
     # Golden anchor for the tracked reroute example (examples/reroute.*).
-    report = schedule(WORKFLOW, EXAMPLES / "reroute.env.yaml", document_path=EXAMPLES / "reroute.status.yaml")
+    report = schedule(
+        WORKFLOW, EXAMPLES / "reroute.env.yaml", document_path=EXAMPLES / "reroute.status.yaml"
+    )
     assert report.outcome == "optimal" and report.makespan == 11
     assert [r["spot"] for r in _kinds(report.plan, "relay")] == ["station_1.core"]
     assert _kinds(report.plan, "processing")[-1]["input_spots"] == {"target_in": "station_2.core"}
@@ -154,7 +175,11 @@ def test_committed_reroute_stay_example():
     # examples/reroute_stay.*: the target still consumes where the sample landed,
     # so the re-transport is a zero-distance no-op — it and its relay are folded
     # (§6.4.1), leaving the committed leg to deliver straight to the target.
-    report = schedule(WORKFLOW, EXAMPLES / "reroute_stay.env.yaml", document_path=EXAMPLES / "reroute_stay.status.yaml")
+    report = schedule(
+        WORKFLOW,
+        EXAMPLES / "reroute_stay.env.yaml",
+        document_path=EXAMPLES / "reroute_stay.status.yaml",
+    )
     assert report.outcome == "optimal" and report.makespan == 5
     assert not _kinds(report.plan, "relay")  # folded away
     legs = _kinds(report.plan, "transport")
@@ -167,7 +192,11 @@ def test_committed_reroute_chain_example():
     # examples/reroute_chain.*: two committed real legs carry the sample to
     # station_2, then a third real leg re-routes it to station_3. Both arrival
     # relays chain and are kept (every leg is a real move, so nothing is folded).
-    report = schedule(WORKFLOW, EXAMPLES / "reroute_chain.env.yaml", document_path=EXAMPLES / "reroute_chain.status.yaml")
+    report = schedule(
+        WORKFLOW,
+        EXAMPLES / "reroute_chain.env.yaml",
+        document_path=EXAMPLES / "reroute_chain.status.yaml",
+    )
     assert report.outcome == "optimal" and report.makespan == 14
     assert {r["spot"] for r in _kinds(report.plan, "relay")} == {"station_1.core", "station_2.core"}
     assert _kinds(report.plan, "processing")[-1]["input_spots"] == {"target_in": "station_3.core"}
@@ -182,7 +211,12 @@ def test_bounce_revisits_a_spot_distinguished_by_seq(tmp_path):
     # two relays at station_1.core, told apart by seq. (A relay whose departing leg
     # is a zero-distance no-op would instead be folded; see the stay-put tests.)
     env = _write(tmp_path, "env.yaml", _env(
-        [("station_0", "core"), ("station_1", "core"), ("station_2", "core"), ("station_3", "core")],
+        [
+            ("station_0", "core"),
+            ("station_1", "core"),
+            ("station_2", "core"),
+            ("station_3", "core"),
+        ],
         [
             ("station_0.core", "station_1.core", 1),
             ("station_1.core", "station_2.core", 4),
@@ -195,10 +229,20 @@ def test_bounce_revisits_a_spot_distinguished_by_seq(tmp_path):
 time: {unit: second}
 now: 20
 activities:
-- { kind: processing, status: completed, start: 0, end: 2, process: source, mode: '0', node: [SampleSource], output_spots: { source_out: station_0.core } }
-- { kind: transport, status: completed, start: 2, end: 3, seq: 0, from_spot: station_0.core, to_spot: station_1.core, transporter: transport, arc: { from: { node: [SampleSource], port: source_out }, to: { node: [SampleTarget], port: target_in } } }
-- { kind: transport, status: completed, start: 5, end: 9, seq: 2, from_spot: station_1.core, to_spot: station_2.core, transporter: transport, arc: { from: { node: [SampleSource], port: source_out }, to: { node: [SampleTarget], port: target_in } } }
-- { kind: transport, status: completed, start: 10, end: 14, seq: 4, from_spot: station_2.core, to_spot: station_1.core, transporter: transport, arc: { from: { node: [SampleSource], port: source_out }, to: { node: [SampleTarget], port: target_in } } }
+- { kind: processing, status: completed, start: 0, end: 2, process: source, \
+mode: '0', node: [SampleSource], output_spots: { source_out: station_0.core } }
+- { kind: transport, status: completed, start: 2, end: 3, seq: 0, \
+from_spot: station_0.core, to_spot: station_1.core, \
+transporter: transport, arc: { from: { node: [SampleSource], port: source_out }, \
+to: { node: [SampleTarget], port: target_in } } }
+- { kind: transport, status: completed, start: 5, end: 9, seq: 2, \
+from_spot: station_1.core, to_spot: station_2.core, \
+transporter: transport, arc: { from: { node: [SampleSource], port: source_out }, \
+to: { node: [SampleTarget], port: target_in } } }
+- { kind: transport, status: completed, start: 10, end: 14, seq: 4, \
+from_spot: station_2.core, to_spot: station_1.core, \
+transporter: transport, arc: { from: { node: [SampleSource], port: source_out }, \
+to: { node: [SampleTarget], port: target_in } } }
 """
     report = schedule(WORKFLOW, env, document_path=_write(tmp_path, "s.yaml", status))
     assert report.ok, [d.code for d in report.diagnostics]

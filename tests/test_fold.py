@@ -24,7 +24,14 @@ _ARC = {"from": {"node": ["A"], "port": "o"}, "to": {"node": ["B"], "port": "i"}
 
 
 def _leg(from_spot, to_spot, *, seq=None, start=0, end=0):
-    e = {"kind": "transport", "start": start, "end": end, "from_spot": from_spot, "to_spot": to_spot, "arc": _ARC}
+    e = {
+        "kind": "transport",
+        "start": start,
+        "end": end,
+        "from_spot": from_spot,
+        "to_spot": to_spot,
+        "arc": _ARC,
+    }
     if seq is not None:
         e["seq"] = seq
     return e
@@ -116,22 +123,28 @@ def test_reformatter_keeps_same_spot_hops_without_a_transporter():
     assert all("transporter" not in a and "seq" not in a for a in same_spot)
 
 
-_SAME_SPOT_ENV = """time: {unit: second}
-devices:
-  - { id: station_0, spots: [core] }
-transporters: [ { id: transport } ]
-transports: []
-processes:
-  source: { modes: [ { devices: [station_0], duration: 2, output_spots: { source_out: station_0.core } } ] }
-  target: { modes: [ { devices: [station_0], duration: 2, input_spots: { target_in: station_0.core } } ] }
-"""
+_SAME_SPOT_ENV = (
+    "time: {unit: second}\n"
+    "devices:\n"
+    "  - { id: station_0, spots: [core] }\n"
+    "transporters: [ { id: transport } ]\n"
+    "transports: []\n"
+    "processes:\n"
+    "  source: { modes: [ { devices: [station_0], duration: 2, "
+    "output_spots: { source_out: station_0.core } } ] }\n"
+    "  target: { modes: [ { devices: [station_0], duration: 2, "
+    "input_spots: { target_in: station_0.core } } ] }\n"
+)
 
 # Source done; the same-spot hop to the target has not started. `now` = 2.
-_SAME_SPOT_STATUS = """time: {unit: second}
-now: 2
-activities:
-- { kind: processing, status: completed, start: 0, end: 2, process: source, mode: '0', node: [SampleSource], devices: [station_0], output_spots: { source_out: station_0.core } }
-"""
+_SAME_SPOT_STATUS = (
+    "time: {unit: second}\n"
+    "now: 2\n"
+    "activities:\n"
+    "- { kind: processing, status: completed, start: 0, end: 2, process: source, "
+    "mode: '0', node: [SampleSource], devices: [station_0], "
+    "output_spots: { source_out: station_0.core } }\n"
+)
 
 
 def test_same_spot_replan_keeps_hop_without_transporter_and_round_trips(tmp_path):

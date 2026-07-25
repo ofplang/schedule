@@ -38,18 +38,21 @@ def test_unreachable_mode_is_not_chosen(tmp_path):
 
 def test_faster_transporter_is_chosen(tmp_path):
     # Two transporters serve station_0.core -> station_1.core; the faster wins.
-    env = """time: {unit: second}
-devices:
-  - { id: station_0, spots: [core] }
-  - { id: station_1, spots: [core] }
-transporters: [ { id: slow_arm }, { id: fast_arm } ]
-transports:
-  - { transporter: slow_arm, from: station_0.core, to: station_1.core, duration: 10 }
-  - { transporter: fast_arm, from: station_0.core, to: station_1.core, duration: 3 }
-processes:
-  source: { modes: [ { devices: [station_0], duration: 2, output_spots: { source_out: station_0.core } } ] }
-  target: { modes: [ { devices: [station_1], duration: 2, input_spots: { target_in: station_1.core } } ] }
-"""
+    env = (
+        "time: {unit: second}\n"
+        "devices:\n"
+        "  - { id: station_0, spots: [core] }\n"
+        "  - { id: station_1, spots: [core] }\n"
+        "transporters: [ { id: slow_arm }, { id: fast_arm } ]\n"
+        "transports:\n"
+        "  - { transporter: slow_arm, from: station_0.core, to: station_1.core, duration: 10 }\n"
+        "  - { transporter: fast_arm, from: station_0.core, to: station_1.core, duration: 3 }\n"
+        "processes:\n"
+        "  source: { modes: [ { devices: [station_0], duration: 2, "
+        "output_spots: { source_out: station_0.core } } ] }\n"
+        "  target: { modes: [ { devices: [station_1], duration: 2, "
+        "input_spots: { target_in: station_1.core } } ] }\n"
+    )
     report = schedule(SIMPLE_WF, write(tmp_path, "env.yaml", env))
     assert report.outcome == "optimal" and report.makespan == 7  # 2 + 3 + 2
     assert kinds(report.plan, "transport")[0]["transporter"] == "fast_arm"

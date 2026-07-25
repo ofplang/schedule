@@ -11,6 +11,8 @@ showing the fixed history — and round-trips as the next replan input. The
 
 from __future__ import annotations
 
+from typing import Any
+
 import yaml
 
 from ofplang.schedule.scheduler.cpsat import Solution
@@ -39,10 +41,18 @@ def render_plan(
         if p.relay is not None:
             # A relay junction (§6.4.1): identity is its arc + seq + spot, not a
             # workflow node.
-            entry = {"kind": "relay"}
+            entry: dict[str, Any] = {"kind": "relay"}
             if p.status is not None:
                 entry["status"] = p.status
-            entry.update({"start": p.start, "end": p.end, "seq": p.relay.seq, "spot": p.relay.spot, "arc": _arc(p.relay.arc)})
+            entry.update(
+                {
+                    "start": p.start,
+                    "end": p.end,
+                    "seq": p.relay.seq,
+                    "spot": p.relay.spot,
+                    "arc": _arc(p.relay.arc),
+                }
+            )
             activities.append(entry)
             continue
 

@@ -30,20 +30,23 @@ activities:
     node: [SampleSource]
 """
 
-_UNNORMALIZED = """
-time: { unit: second }
-now: 3
-activities:
-  - { kind: processing, status: completed, start: 0, end: 2, process: source, mode: '0', node: [SampleSource] }
-  - kind: transport
-    status: running
-    start: 2
-    end: 3
-    from_spot: station_0.core
-    to_spot: station_1.core
-    transporter: transport
-    arc: { from: { node: [SampleSource], port: source_out }, to: { node: [SampleTarget], port: target_in } }
-"""
+_UNNORMALIZED = (
+    "\n"
+    "time: { unit: second }\n"
+    "now: 3\n"
+    "activities:\n"
+    "  - { kind: processing, status: completed, start: 0, end: 2, process: source, "
+    "mode: '0', node: [SampleSource] }\n"
+    "  - kind: transport\n"
+    "    status: running\n"
+    "    start: 2\n"
+    "    end: 3\n"
+    "    from_spot: station_0.core\n"
+    "    to_spot: station_1.core\n"
+    "    transporter: transport\n"
+    "    arc: { from: { node: [SampleSource], port: source_out }, "
+    "to: { node: [SampleTarget], port: target_in } }\n"
+)
 
 
 _SOURCE_FAILED = """
@@ -157,7 +160,9 @@ def test_cli_replan_started_transport_to_pending_is_ok(tmp_path):
     # relay) instead of rejecting it.
     status = _status_file(tmp_path, _UNNORMALIZED)
     out = tmp_path / "plan.yaml"
-    code = cli.main(["schedule", str(WORKFLOW), "--env", str(ENV), "--document", str(status), "-o", str(out)])
+    code = cli.main(
+        ["schedule", str(WORKFLOW), "--env", str(ENV), "--document", str(status), "-o", str(out)]
+    )
     assert code == cli.EXIT_OK
     assert validate_document(out).ok
 

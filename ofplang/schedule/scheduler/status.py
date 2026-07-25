@@ -85,7 +85,12 @@ def _arc_key(node: YNode | None) -> _ArcKey | None:
     frm, to = node.get("from"), node.get("to")
     if not isinstance(frm, YMap) or not isinstance(to, YMap):
         return None
-    return (_node_path(frm.get("node")), _text(frm.get("port")), _node_path(to.get("node")), _text(to.get("port")))
+    return (
+        _node_path(frm.get("node")),
+        _text(frm.get("port")),
+        _node_path(to.get("node")),
+        _text(to.get("port")),
+    )
 
 
 def _to_plain(node: YNode | None):

@@ -39,70 +39,82 @@ def st_env(
     `target_modes` the target's modes as (device, input-spot) or
     (device, input-spot, duration) tuples (duration defaults to `target_dur`)."""
     devs = "\n".join(f"  - {{ id: {d}, spots: [{', '.join(s)}] }}" for d, s in devices)
-    trs = "\n".join(f"  - {{ transporter: transport, from: {f}, to: {t}, duration: {d} }}" for f, t, d in transports)
+    trs = "\n".join(
+        f"  - {{ transporter: transport, from: {f}, to: {t}, duration: {d} }}"
+        for f, t, d in transports
+    )
     tmodes = ", ".join(
-        f"{{ devices: [{m[0]}], duration: {m[2] if len(m) > 2 else target_dur}, input_spots: {{ target_in: {m[1]} }} }}"
+        f"{{ devices: [{m[0]}], duration: {m[2] if len(m) > 2 else target_dur}, "
+        f"input_spots: {{ target_in: {m[1]} }} }}"
         for m in target_modes
     )
-    return f"""time: {{ unit: second }}
-devices:
-{devs}
-transporters: [ {{ id: transport }} ]
-transports:
-{trs}
-processes:
-  source: {{ modes: [ {{ devices: [{source_dev}], duration: {source_dur}, output_spots: {{ source_out: {source_spot} }} }} ] }}
-  target: {{ modes: [ {tmodes} ] }}
-"""
+    return (
+        f"time: {{ unit: second }}\n"
+        f"devices:\n"
+        f"{devs}\n"
+        f"transporters: [ {{ id: transport }} ]\n"
+        f"transports:\n"
+        f"{trs}\n"
+        f"processes:\n"
+        f"  source: {{ modes: [ {{ devices: [{source_dev}], duration: {source_dur}, "
+        f"output_spots: {{ source_out: {source_spot} }} }} ] }}\n"
+        f"  target: {{ modes: [ {tmodes} ] }}\n"
+    )
 
 
 # A committed status for the `simple` workflow: source done, one transport leg
 # done delivering to `to_spot`, target still pending. `now` and the leg's arrival
 # spot are the knobs the replan/reroute tests turn.
 def committed_source_and_leg(now: int, to_spot: str = "station_1.core", leg_end: int = 3) -> str:
-    return f"""time: {{ unit: second }}
-now: {now}
-activities:
-- {{ kind: processing, status: completed, start: 0, end: 2, process: source, mode: '0', node: [SampleSource], output_spots: {{ source_out: station_0.core }} }}
-- kind: transport
-  status: completed
-  start: 2
-  end: {leg_end}
-  seq: 0
-  from_spot: station_0.core
-  to_spot: {to_spot}
-  transporter: transport
-  arc: {{ from: {{ node: [SampleSource], port: source_out }}, to: {{ node: [SampleTarget], port: target_in }} }}
-"""
+    return (
+        f"time: {{ unit: second }}\n"
+        f"now: {now}\n"
+        f"activities:\n"
+        f"- {{ kind: processing, status: completed, start: 0, end: 2, process: source, "
+        f"mode: '0', node: [SampleSource], output_spots: {{ source_out: station_0.core }} }}\n"
+        f"- kind: transport\n"
+        f"  status: completed\n"
+        f"  start: 2\n"
+        f"  end: {leg_end}\n"
+        f"  seq: 0\n"
+        f"  from_spot: station_0.core\n"
+        f"  to_spot: {to_spot}\n"
+        f"  transporter: transport\n"
+        f"  arc: {{ from: {{ node: [SampleSource], port: source_out }}, "
+        f"to: {{ node: [SampleTarget], port: target_in }} }}\n"
+    )
 
 
 # --- a two-input workflow (S1, S2 -> merge) for multi-input replan tests ------
 
-MULTI_INPUT_WF = """spec_version: "0.0"
-types:
-  Sample: { domain: object }
-processes:
-  source:  { kind: atomic, outputs: { o: { type: Sample, phase: data } }, objects: { create: [outputs.o] } }
-  source2: { kind: atomic, outputs: { o: { type: Sample, phase: data } }, objects: { create: [outputs.o] } }
-  merge:
-    kind: atomic
-    inputs:
-      i1: { type: Sample, phase: data }
-      i2: { type: Sample, phase: data }
-    objects: { consume: [inputs.i1, inputs.i2] }
-  main:
-    kind: composite
-    inputs: {}
-    outputs: {}
-    body:
-      nodes:
-        - { id: S1, process: source }
-        - { id: S2, process: source2 }
-        - id: M
-          process: merge
-          state:
-            i1: { from: S1.o }
-            i2: { from: S2.o }
-      returns: {}
-entry: main
-"""
+MULTI_INPUT_WF = (
+    "spec_version: \"0.0\"\n"
+    "types:\n"
+    "  Sample: { domain: object }\n"
+    "processes:\n"
+    "  source:  { kind: atomic, outputs: { o: { type: Sample, phase: data } }, "
+    "objects: { create: [outputs.o] } }\n"
+    "  source2: { kind: atomic, outputs: { o: { type: Sample, phase: data } }, "
+    "objects: { create: [outputs.o] } }\n"
+    "  merge:\n"
+    "    kind: atomic\n"
+    "    inputs:\n"
+    "      i1: { type: Sample, phase: data }\n"
+    "      i2: { type: Sample, phase: data }\n"
+    "    objects: { consume: [inputs.i1, inputs.i2] }\n"
+    "  main:\n"
+    "    kind: composite\n"
+    "    inputs: {}\n"
+    "    outputs: {}\n"
+    "    body:\n"
+    "      nodes:\n"
+    "        - { id: S1, process: source }\n"
+    "        - { id: S2, process: source2 }\n"
+    "        - id: M\n"
+    "          process: merge\n"
+    "          state:\n"
+    "            i1: { from: S1.o }\n"
+    "            i2: { from: S2.o }\n"
+    "      returns: {}\n"
+    "entry: main\n"
+)

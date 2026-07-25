@@ -18,7 +18,12 @@ from dataclasses import dataclass
 from ortools.sat.python import cp_model
 
 from ofplang.schedule.core.identifiers import parse_qualified_spot
-from ofplang.schedule.scheduler.instance import ArcInstance, BoundaryInfo, Instance, RelayInfo, TransportOption
+from ofplang.schedule.scheduler.instance import (
+    BoundaryInfo,
+    Instance,
+    RelayInfo,
+    TransportOption,
+)
 from ofplang.schedule.scheduler.model import Arc, Mode, NodePath
 from ofplang.schedule.scheduler.status import Fixation
 
@@ -108,7 +113,8 @@ def solve(
 
     # --- processing activities (including the synthetic boundary nodes) ---
     starts, ends, mode_lits = [], [], []
-    make_ends: list = []  # ends that define the makespan (the output node's own end IS c_max, so it is excluded)
+    # ends that define the makespan (the output node's own end IS c_max, so it is excluded)
+    make_ends: list = []
     for i, act in enumerate(instance.activities):
         s = model.NewIntVar(0, horizon, f"s{i}")
         e = model.NewIntVar(0, horizon, f"e{i}")
@@ -166,7 +172,7 @@ def solve(
     for r, arc in enumerate(instance.arcs):
         a = model.NewIntVar(0, horizon, f"a{r}")
         b = model.NewIntVar(0, horizon, f"b{r}")
-        s_src, e_src = starts[arc.src_activity], ends[arc.src_activity]
+        _s_src, e_src = starts[arc.src_activity], ends[arc.src_activity]
         s_dst = starts[arc.dst_activity]
         fr = fixation.arcs.get(r) if fixation is not None else None
 
@@ -182,8 +188,11 @@ def solve(
             # transport, free for a fixed one (times pinned below).
             body_size = opt.duration if fr is None else model.NewIntVar(0, horizon, f"tbsz{r}_{k}")
             body = model.NewOptionalIntervalVar(a, body_size, b, present, f"tb{r}_{k}")
-            src_device = parse_qualified_spot(opt.from_spot)[0]
-            dst_device = parse_qualified_spot(opt.to_spot)[0]
+            # from_spot/to_spot are validated qualified spots, so parsing succeeds.
+            src_parsed = parse_qualified_spot(opt.from_spot)
+            dst_parsed = parse_qualified_spot(opt.to_spot)
+            assert src_parsed is not None and dst_parsed is not None
+            src_device, dst_device = src_parsed[0], dst_parsed[0]
             add(device_iv, src_device, body)
             add(device_iv, dst_device, body)
             # A same-spot no-op route carries no transporter (opt.transporter is
@@ -192,9 +201,17 @@ def solve(
                 add(transporter_iv, opt.transporter, body)
             # Source spot held [e_src, b]; destination spot held [a, s_dst].
             src_size = model.NewIntVar(0, horizon, f"ss{r}_{k}")
-            add(spot_iv, opt.from_spot, model.NewOptionalIntervalVar(e_src, src_size, b, present, f"si{r}_{k}"))
+            add(
+                spot_iv,
+                opt.from_spot,
+                model.NewOptionalIntervalVar(e_src, src_size, b, present, f"si{r}_{k}"),
+            )
             dst_size = model.NewIntVar(0, horizon, f"ds{r}_{k}")
-            add(spot_iv, opt.to_spot, model.NewOptionalIntervalVar(a, dst_size, s_dst, present, f"di{r}_{k}"))
+            add(
+                spot_iv,
+                opt.to_spot,
+                model.NewOptionalIntervalVar(a, dst_size, s_dst, present, f"di{r}_{k}"),
+            )
         model.AddExactlyOne(lits)
         if fr is not None:
             # Completed/running transport: pin route and times (running end
@@ -305,15 +322,17 @@ def _selected(solver: cp_model.CpSolver, lits) -> int:
 
 def _horizon(instance: Instance, fixation: Fixation | None, margin: int) -> int:
     """A safe upper bound on any end time: the longest each activity/transport
-    could take, summed (a fully serial schedule). On a replan the fixed part may
-    already sit past that bound, so also clear `now`, every reported end, and the
-    running-clamp margin."""
+    could take, summed (a fully serial schedule). On a replan the fixed part
+    may already sit past that bound, so also clear `now`, every reported end,
+    and the running-clamp margin."""
     total = 0
     for act in instance.activities:
         total += max((m.duration for m in act.modes), default=0)
     for arc in instance.arcs:
         total += max((o.duration for o in arc.options), default=0)
     if fixation is not None:
-        fixed_ends = [f.end for f in fixation.activities.values()] + [f.end for f in fixation.arcs.values()]
+        fixed_ends = [f.end for f in fixation.activities.values()] + [
+            f.end for f in fixation.arcs.values()
+        ]
         total += fixation.now + max(fixed_ends, default=0) + margin
     return total + 1

@@ -75,7 +75,7 @@ class TransportOption:
 
     src_mode_index: int
     dst_mode_index: int
-    transporter: str
+    transporter: str | None  # None for a same-spot no-op route (§5.4/§6.4)
     from_spot: str
     to_spot: str
     duration: int
@@ -106,7 +106,11 @@ class Instance:
 
 
 def build_instance(
-    workflow: Workflow, env: Environment, *, interface: dict | None = None, check_reachability: bool = True
+    workflow: Workflow,
+    env: Environment,
+    *,
+    interface: dict | None = None,
+    check_reachability: bool = True,
 ) -> tuple[Instance | None, Diagnostics]:
     """Build the solver instance from the workflow and environment.
 
@@ -133,7 +137,10 @@ def build_instance(
     for act in workflow.activities:
         capability = env.processes.get(act.process)
         if capability is None or not capability.modes:
-            diags.error(errors.NO_CAPABILITY, f"process {act.process!r} has no capability/modes in the environment")
+            diags.error(
+                errors.NO_CAPABILITY,
+                f"process {act.process!r} has no capability/modes in the environment",
+            )
             activities.append(ActivityInstance(act.path, act.process, ()))
             continue
         _check_mode_ports(act.process, workflow, capability.modes, diags)
@@ -146,14 +153,18 @@ def build_instance(
         if si is None or di is None:
             diags.error(
                 errors.PROCESS_NOT_DEFINED,
-                f"arc references an unknown node: {format_endpoint(arc.src.node, arc.src.port)} -> {format_endpoint(arc.dst.node, arc.dst.port)}",
+                f"arc references an unknown node: {format_endpoint(arc.src.node, arc.src.port)}"
+                f" -> {format_endpoint(arc.dst.node, arc.dst.port)}",
             )
             continue
-        options = _transport_options(activities[si], arc.src.port, activities[di], arc.dst.port, env)
+        options = _transport_options(
+            activities[si], arc.src.port, activities[di], arc.dst.port, env
+        )
         if not options and check_reachability:
             diags.error(
                 errors.ARC_UNREACHABLE,
-                f"no transporter can serve the arc {format_endpoint(arc.src.node, arc.src.port)} -> {format_endpoint(arc.dst.node, arc.dst.port)}",
+                f"no transporter can serve the arc {format_endpoint(arc.src.node, arc.src.port)}"
+                f" -> {format_endpoint(arc.dst.node, arc.dst.port)}",
             )
         arcs.append(ArcInstance(arc, si, di, tuple(options)))
 
@@ -164,12 +175,19 @@ def build_instance(
     bound_inputs = set((interface or {}).get("inputs") or {})
     for name in workflow.entry_inputs:
         if name not in bound_inputs:
-            diags.error(errors.INTERFACE_INPUT_MISSING, f"entry input {name!r} is Object-bearing and must be bound in interface.inputs")
+            diags.error(
+                errors.INTERFACE_INPUT_MISSING,
+                f"entry input {name!r} is Object-bearing and must be bound in interface.inputs",
+            )
 
     # Boundary connections (SPEC §6.8): synthesize the input / output nodes and arcs.
     if interface:
-        _add_boundary_inputs(workflow, env, interface, activities, arcs, index_by_node, check_reachability, diags)
-        _add_boundary_outputs(workflow, env, interface, activities, arcs, index_by_node, check_reachability, diags)
+        _add_boundary_inputs(
+            workflow, env, interface, activities, arcs, index_by_node, check_reachability, diags
+        )
+        _add_boundary_outputs(
+            workflow, env, interface, activities, arcs, index_by_node, check_reachability, diags
+        )
 
     precedence = tuple(
         (index_by_node[s], index_by_node[d])
@@ -182,7 +200,7 @@ def build_instance(
     return Instance(env, env.time_unit, tuple(activities), tuple(arcs), precedence), diags
 
 
-def report_unreachable(instance: "Instance", fixed_arc_indices: set[int], diags: Diagnostics) -> None:
+def report_unreachable(instance: Instance, fixed_arc_indices: set[int], diags: Diagnostics) -> None:
     """Emit `arc_unreachable` for every **pending** leg (an arc not in
     `fixed_arc_indices`) that no transporter can serve. Committed (fixed) legs are
     facts and are not re-checked (SPEC §9.3). Used on the augmented instance after
@@ -194,7 +212,9 @@ def report_unreachable(instance: "Instance", fixed_arc_indices: set[int], diags:
         leg = f" (leg seq {arc.seq})" if arc.seq is not None else ""
         diags.error(
             errors.ARC_UNREACHABLE,
-            f"no transporter can serve the arc {format_endpoint(arc.arc.src.node, arc.arc.src.port)} -> {format_endpoint(arc.arc.dst.node, arc.arc.dst.port)}{leg}",
+            f"no transporter can serve the arc "
+            f"{format_endpoint(arc.arc.src.node, arc.arc.src.port)} -> "
+            f"{format_endpoint(arc.arc.dst.node, arc.arc.dst.port)}{leg}",
         )
 
 
@@ -223,17 +243,30 @@ def _add_boundary_inputs(
         if not _spot_exists(spot, env, name, diags):
             continue
         if spot in spot_owner:
-            diags.error(errors.INTERFACE_DUPLICATE_SPOT, f"interface inputs {name!r} and {spot_owner[spot]!r} both bind spot {spot!r}")
+            diags.error(
+                errors.INTERFACE_DUPLICATE_SPOT,
+                f"interface inputs {name!r} and {spot_owner[spot]!r} both bind spot {spot!r}",
+            )
             continue
         consumer = workflow.entry_inputs.get(name)
         if consumer is None:
             object_bearing = workflow.entry_input_ports.get(name)
             if object_bearing is None:
-                diags.error(errors.INTERFACE_UNKNOWN_PORT, f"interface input {name!r} is not an entry input of the workflow")
+                diags.error(
+                    errors.INTERFACE_UNKNOWN_PORT,
+                    f"interface input {name!r} is not an entry input of the workflow",
+                )
             elif not object_bearing:
-                diags.error(errors.INTERFACE_PURE_DATA_PORT, f"interface input {name!r} is a Pure Data port and occupies no spot")
+                diags.error(
+                    errors.INTERFACE_PURE_DATA_PORT,
+                    f"interface input {name!r} is a Pure Data port and occupies no spot",
+                )
             else:
-                diags.error(errors.INTERFACE_UNKNOWN_PORT, f"interface input {name!r} is a pass-through entry input with no consuming activity (out of scope)")
+                diags.error(
+                    errors.INTERFACE_UNKNOWN_PORT,
+                    f"interface input {name!r} is a pass-through entry input with no consuming"
+                    f" activity (out of scope)",
+                )
             continue
         spot_owner[spot] = name
         valid.append((name, spot, consumer))
@@ -243,19 +276,29 @@ def _add_boundary_inputs(
 
     # A single input node: one mode placing every bound entry input at its spot,
     # no device (it holds spots only), zero duration (pinned to time 0 by cpsat).
-    mode = Mode(id="interface_in", devices=(), duration=0, input_spots={}, output_spots={n: s for n, s, _ in valid})
+    mode = Mode(
+        id="interface_in",
+        devices=(),
+        duration=0,
+        input_spots={},
+        output_spots={n: s for n, s, _ in valid},
+    )
     node_index = len(activities)
     activities.append(ActivityInstance((), "", (mode,), boundary=BoundaryInfo("input")))
 
     for name, _spot, consumer in valid:
         di = index_by_node.get(consumer.node)
         if di is None:
-            continue  # a consumer that is not a scheduled activity; cannot happen for a valid workflow
-        options = _transport_options(activities[node_index], name, activities[di], consumer.port, env)
+            # a consumer that is not a scheduled activity; cannot happen for a valid workflow
+            continue
+        options = _transport_options(
+            activities[node_index], name, activities[di], consumer.port, env
+        )
         if not options and check_reachability:
             diags.error(
                 errors.ARC_UNREACHABLE,
-                f"no transporter can serve the boundary input {name!r} -> {format_endpoint(consumer.node, consumer.port)}",
+                f"no transporter can serve the boundary input {name!r} -> "
+                f"{format_endpoint(consumer.node, consumer.port)}",
             )
         arc = Arc(Endpoint((), name), Endpoint(consumer.node, consumer.port))
         arcs.append(ArcInstance(arc, node_index, di, tuple(options)))
@@ -285,17 +328,30 @@ def _add_boundary_outputs(
         if not _spot_exists(spot, env, name, diags):
             continue
         if spot in spot_owner:
-            diags.error(errors.INTERFACE_DUPLICATE_SPOT, f"interface outputs {name!r} and {spot_owner[spot]!r} both bind spot {spot!r}")
+            diags.error(
+                errors.INTERFACE_DUPLICATE_SPOT,
+                f"interface outputs {name!r} and {spot_owner[spot]!r} both bind spot {spot!r}",
+            )
             continue
         producer = workflow.exit_outputs.get(name)
         if producer is None:
             object_bearing = workflow.exit_output_ports.get(name)
             if object_bearing is None:
-                diags.error(errors.INTERFACE_UNKNOWN_PORT, f"interface output {name!r} is not a final output of the workflow")
+                diags.error(
+                    errors.INTERFACE_UNKNOWN_PORT,
+                    f"interface output {name!r} is not a final output of the workflow",
+                )
             elif not object_bearing:
-                diags.error(errors.INTERFACE_PURE_DATA_PORT, f"interface output {name!r} is a Pure Data port and occupies no spot")
+                diags.error(
+                    errors.INTERFACE_PURE_DATA_PORT,
+                    f"interface output {name!r} is a Pure Data port and occupies no spot",
+                )
             else:
-                diags.error(errors.INTERFACE_UNKNOWN_PORT, f"interface output {name!r} is a pass-through entry input returned directly (out of scope)")
+                diags.error(
+                    errors.INTERFACE_UNKNOWN_PORT,
+                    f"interface output {name!r} is a pass-through entry input returned"
+                    f" directly (out of scope)",
+                )
             continue
         spot_owner[spot] = name
         valid.append((name, spot, producer))
@@ -305,19 +361,29 @@ def _add_boundary_outputs(
 
     # A single output node: one mode placing every bound final output at its spot,
     # no device, its end pinned to the makespan by cpsat (holds the spots to the end).
-    mode = Mode(id="interface_out", devices=(), duration=0, input_spots={n: s for n, s, _ in valid}, output_spots={})
+    mode = Mode(
+        id="interface_out",
+        devices=(),
+        duration=0,
+        input_spots={n: s for n, s, _ in valid},
+        output_spots={},
+    )
     node_index = len(activities)
     activities.append(ActivityInstance((), "", (mode,), boundary=BoundaryInfo("output")))
 
     for name, _spot, producer in valid:
         si = index_by_node.get(producer.node)
         if si is None:
-            continue  # a producer that is not a scheduled activity; cannot happen for a valid workflow
-        options = _transport_options(activities[si], producer.port, activities[node_index], name, env)
+            # a producer that is not a scheduled activity; cannot happen for a valid workflow
+            continue
+        options = _transport_options(
+            activities[si], producer.port, activities[node_index], name, env
+        )
         if not options and check_reachability:
             diags.error(
                 errors.ARC_UNREACHABLE,
-                f"no transporter can serve the boundary output {format_endpoint(producer.node, producer.port)} -> {name!r}",
+                f"no transporter can serve the boundary output "
+                f"{format_endpoint(producer.node, producer.port)} -> {name!r}",
             )
         arc = Arc(Endpoint(producer.node, producer.port), Endpoint((), name))
         arcs.append(ArcInstance(arc, si, node_index, tuple(options)))
@@ -328,20 +394,31 @@ def _spot_exists(spot: str, env: Environment, name: str, diags: Diagnostics) -> 
     environment; diagnose `unknown_device` / `unknown_spot` otherwise (SPEC §9.3)."""
     parsed = parse_qualified_spot(spot)
     if parsed is None:
-        diags.error(errors.MALFORMED_QUALIFIED_SPOT, f"interface spot {spot!r} for {name!r} is not a qualified spot")
+        diags.error(
+            errors.MALFORMED_QUALIFIED_SPOT,
+            f"interface spot {spot!r} for {name!r} is not a qualified spot",
+        )
         return False
     device, spot_name = parsed
     dev = env.devices.get(device)
     if dev is None:
-        diags.error(errors.UNKNOWN_DEVICE, f"interface spot {spot!r} names an unknown device {device!r}")
+        diags.error(
+            errors.UNKNOWN_DEVICE,
+            f"interface spot {spot!r} names an unknown device {device!r}",
+        )
         return False
     if spot_name not in dev.spots:
-        diags.error(errors.UNKNOWN_SPOT, f"interface spot {spot!r} names an unknown spot on device {device!r}")
+        diags.error(
+            errors.UNKNOWN_SPOT,
+            f"interface spot {spot!r} names an unknown spot on device {device!r}",
+        )
         return False
     return True
 
 
-def _check_mode_ports(process: str, workflow: Workflow, modes: tuple[Mode, ...], diags: Diagnostics) -> None:
+def _check_mode_ports(
+    process: str, workflow: Workflow, modes: tuple[Mode, ...], diags: Diagnostics
+) -> None:
     """Validate each mode's spot mapping against the process's port signature
     (§9.3 "against the workflow" + coverage), reporting each kind of violation
     with its own code rather than one catch-all:
@@ -363,14 +440,33 @@ def _check_mode_ports(process: str, workflow: Workflow, modes: tuple[Mode, ...],
     obj_output = set(sig.object_output_names())
 
     for mode in modes:
-        _check_side(process, mode, "input_spots", mode.input_spots, input_names, output_names, obj_input, diags)
-        _check_side(process, mode, "output_spots", mode.output_spots, output_names, input_names, obj_output, diags)
+        _check_side(
+            process,
+            mode,
+            "input_spots",
+            mode.input_spots,
+            input_names,
+            output_names,
+            obj_input,
+            diags,
+        )
+        _check_side(
+            process,
+            mode,
+            "output_spots",
+            mode.output_spots,
+            output_names,
+            input_names,
+            obj_output,
+            diags,
+        )
         # Coverage: every Object-bearing port must receive a spot in this mode.
         missing = (obj_input - set(mode.input_spots)) | (obj_output - set(mode.output_spots))
         if missing:
             diags.error(
                 errors.MODE_PORTS_INCOMPLETE,
-                f"process {process!r} mode {mode.id!r} does not map Object-bearing port(s) {sorted(missing)}",
+                f"process {process!r} mode {mode.id!r} does not map Object-bearing"
+                f" port(s) {sorted(missing)}",
             )
 
 
@@ -393,13 +489,15 @@ def _check_side(
             if port not in object_names:
                 diags.error(
                     errors.PURE_DATA_PORT_MAPPED,
-                    f"process {process!r} mode {mode.id!r} maps Pure Data port {port!r} in {section}",
+                    f"process {process!r} mode {mode.id!r} maps Pure Data port {port!r}"
+                    f" in {section}",
                 )
         elif port in other_names:
             # The name exists on the process, but on the opposite side.
             diags.error(
                 errors.WRONG_PORT_DIRECTION,
-                f"process {process!r} mode {mode.id!r} maps port {port!r} in {section}, but it is on the other side",
+                f"process {process!r} mode {mode.id!r} maps port {port!r} in {section},"
+                f" but it is on the other side",
             )
         else:
             diags.error(

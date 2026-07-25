@@ -23,8 +23,7 @@ from ofplang.schedule.scheduler.instance import build_instance, report_unreachab
 from ofplang.schedule.scheduler.normalize import normalize
 from ofplang.schedule.scheduler.plan import render_plan
 from ofplang.schedule.scheduler.workflow import parse_workflow
-from ofplang.schedule.validation import errors
-from ofplang.schedule.validation import validate_document
+from ofplang.schedule.validation import errors, validate_document
 
 
 @dataclass(frozen=True)

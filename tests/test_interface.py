@@ -326,7 +326,10 @@ def test_interface_input_and_output_combined(tmp_path):
     # WORKFLOW's heat runs in-place at a single spot, so binding both sample and
     # result to slot_a is consistent (heat = at_a): an input and an output boundary
     # transport, both 0-distance.
-    doc = "interface:\n  inputs: { sample: rack.slot_a }\n  outputs: { result: rack.slot_a }\nactivities: []\n"
+    doc = (
+        "interface:\n  inputs: { sample: rack.slot_a }\n"
+        "  outputs: { result: rack.slot_a }\nactivities: []\n"
+    )
     wf, ev, docp = _write(tmp_path, document=doc)
     report = schedule(wf, ev, document_path=docp)
     assert report.ok
@@ -424,7 +427,9 @@ def test_output_holds_spot_to_makespan(tmp_path):
     # makespan (§6.8 / ②b). make can no longer sit before `after` (its result would
     # occupy slot_a across after's [20,25] window), so make is pushed after `after`
     # -> the makespan grows to 30. This increase is the observable effect of the hold.
-    wf, ev, doc = _write(tmp_path, workflow=WORKFLOW_HOLD, env=ENV_HOLD, document=_oface("dev_a.slot_a"))
+    wf, ev, doc = _write(
+        tmp_path, workflow=WORKFLOW_HOLD, env=ENV_HOLD, document=_oface("dev_a.slot_a")
+    )
     report = schedule(wf, ev, document_path=doc)
     assert report.ok and report.outcome == "optimal"
     assert report.makespan == 30
