@@ -186,7 +186,10 @@ def solve(
             dst_device = parse_qualified_spot(opt.to_spot)[0]
             add(device_iv, src_device, body)
             add(device_iv, dst_device, body)
-            add(transporter_iv, opt.transporter, body)
+            # A same-spot no-op route carries no transporter (opt.transporter is
+            # None), so it occupies no transporter resource.
+            if opt.transporter is not None:
+                add(transporter_iv, opt.transporter, body)
             # Source spot held [e_src, b]; destination spot held [a, s_dst].
             src_size = model.NewIntVar(0, horizon, f"ss{r}_{k}")
             add(spot_iv, opt.from_spot, model.NewOptionalIntervalVar(e_src, src_size, b, present, f"si{r}_{k}"))

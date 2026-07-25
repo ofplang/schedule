@@ -426,8 +426,17 @@ def _transport_options(
             to_spot = dst_mode.input_spots.get(dst_port)
             if to_spot is None:
                 continue
+            served = False
             for transporter in env.transporters:
                 duration = env.transport_duration(transporter, from_spot, to_spot)
                 if duration is not None:
                     options.append(TransportOption(m, n, transporter, from_spot, to_spot, duration))
+                    served = True
+            # A same-spot hand-off (§5.4) is a physical no-op that no transporter
+            # carries (§6.4). Ensure it is always schedulable -- even in an
+            # environment that defines no transporters (a purely in-place workflow)
+            # -- by synthesizing a transporter-less zero-duration route, matching the
+            # plan output which omits the transporter for a same-spot move.
+            if from_spot == to_spot and not served:
+                options.append(TransportOption(m, n, None, from_spot, to_spot, 0))
     return options
