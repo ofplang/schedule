@@ -137,6 +137,11 @@ def normalize(base: Instance, root: YNode | None, env) -> tuple[Instance | None,
             continue
         mode = _frozen_processing_mode(fp.entry, act.process, env, diags)
         if mode is None:
+            # `_frozen_processing_mode` only returns None after recording an error,
+            # and the loop returns below; still, append a placeholder so `activities`
+            # stays index-aligned with `base.activities` (and `base.precedence`)
+            # rather than silently shifting every later index.
+            activities.append(act)
             continue
         activities.append(ActivityInstance(act.node, act.process, (mode,)))
         act_fix[i] = ActivityFixation(fp.status, fp.start, fp.end, 0)
