@@ -67,6 +67,11 @@ PURE_DATA_PORT_MAPPED = "pure_data_port_mapped"
 MODE_PORTS_INCOMPLETE = "mode_ports_incomplete"
 ARC_UNREACHABLE = "arc_unreachable"
 INFEASIBLE = "infeasible"
+# Warning (not an error): a composite carries a `scheduling` section, but this
+# scheduler does not implement scheduling_policies (§23) / object policies (§24) --
+# best-effort preferences an implementation may ignore -- so the section is dropped
+# when the composite is flattened. Emitted so the ignored feature is visible.
+SCHEDULING_POLICIES_IGNORED = "scheduling_policies_ignored"
 
 # Interface / boundary conditions (§6.8, §9.3). An `interface` binding pins a
 # workflow boundary port (entry input / final output) to a spot.

@@ -437,3 +437,53 @@ def test_nested_composite_boundary_is_recorded(tmp_path):
     assert io.output_literals == {}
     # The recorded output endpoint is an actual activity path.
     assert ("W", "A") in {a.path for a in wf.activities}
+
+
+_SCHEDULING_WF = """\
+spec_version: "0.0"
+types:
+  Sample: { domain: object }
+processes:
+  src:
+    kind: atomic
+    inputs: {}
+    outputs: { o: { type: Sample, phase: data } }
+    objects: { create: [outputs.o] }
+  snk:
+    kind: atomic
+    inputs: { i: { type: Sample, phase: data } }
+    outputs: {}
+    objects: { consume: [inputs.i] }
+  main:
+    kind: composite
+    inputs: {}
+    outputs: {}
+    scheduling:
+      policies:
+        - during: { from: A.end, to: B.start }
+          prefer: { kind: max_gap, value: 10, unit: min }
+    body:
+      nodes:
+        - id: A
+          process: src
+        - id: B
+          process: snk
+          state: { i: { from: A.o } }
+      returns: {}
+entry: main
+"""
+
+
+def test_scheduling_section_warns_but_still_parses(tmp_path):
+    # A composite carrying a `scheduling` section parses fine (the section is
+    # dropped when flattened), but the scheduler warns that scheduling_policies
+    # are ignored -- a non-error diagnostic, so the workflow is still schedulable
+    # (review #4).
+    wf_path = tmp_path / "scheduling.workflow.yaml"
+    wf_path.write_text(_SCHEDULING_WF, encoding="utf-8")
+    wf, diags = parse_workflow(wf_path)
+    assert not _errors(diags)
+    assert wf is not None
+    codes = [d.code for d in diags.items]
+    assert "scheduling_policies_ignored" in codes
+    assert all(d.severity != ERROR for d in diags.items if d.code == "scheduling_policies_ignored")

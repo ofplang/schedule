@@ -95,6 +95,24 @@ def parse_workflow(source) -> tuple[Workflow | None, Diagnostics]:
         activities, arcs, precedence, used, entry_inputs, exit_outputs,
         data_arcs, data_entry_inputs, data_literals, composites,
     ) = _expand_body(entry, entry_proc, procs, atomic, diags)
+
+    # scheduling_policies (§23) / object policies (§24) are best-effort preferences
+    # this scheduler does not honor; a composite's `scheduling` section is dropped
+    # when the composite is flattened. Warn (not an error, §23) once per used
+    # composite that carries one, so the ignored feature is visible rather than
+    # silently discarded.
+    used_composites = {entry: entry_proc}
+    for io in composites.values():
+        cp = procs.get(io.process)
+        if cp is not None:
+            used_composites.setdefault(io.process, cp)
+    for cname, cproc in used_composites.items():
+        if (cproc or {}).get("scheduling") is not None:
+            diags.warning(
+                errors.SCHEDULING_POLICIES_IGNORED,
+                f"scheduling policies on composite {cname!r} are not supported and are ignored",
+                f"processes.{cname}.scheduling",
+            )
     # The entry composite's declared ports, tagged Object-bearing (for classifying
     # `interface` bindings). Values are `{type, phase}` specs like an atomic's.
     in_ports = {n: _object_bearing((s or {}).get("type", ""), domains) for n, s in (entry_proc.get("inputs") or {}).items()}
