@@ -204,7 +204,14 @@ def _cmd_validate(args) -> int:
             if kind is None:
                 print(f"ofp-schedule: cannot determine kind of {path!r}; pass --kind", file=sys.stderr)
                 return EXIT_USAGE
-        results.append(_validate_one(path, kind))
+        try:
+            results.append(_validate_one(path, kind))
+        except yaml.YAMLError as exc:
+            # A file that does not parse as YAML is an input error, not a schema
+            # validation result (auto-detect already handles this; an explicit
+            # --kind must not slip past it). Mirrors _cmd_visualize.
+            print(f"ofp-schedule: cannot parse {path!r}: {exc}", file=sys.stderr)
+            return EXIT_USAGE
 
     if args.format == "json":
         print(_render_json(results))
@@ -222,13 +229,18 @@ def _cmd_schedule(args) -> int:
             print(f"ofp-schedule: cannot open {p!r}: no such file", file=sys.stderr)
             return EXIT_USAGE
 
-    report = run_schedule(
-        args.workflow,
-        args.env,
-        document_path=doc,
-        running_task_margin=args.running_margin,
-        random_seed=args.seed,
-    )
+    try:
+        report = run_schedule(
+            args.workflow,
+            args.env,
+            document_path=doc,
+            running_task_margin=args.running_margin,
+            random_seed=args.seed,
+        )
+    except yaml.YAMLError as exc:
+        # Malformed workflow / environment / document YAML is an input error.
+        print(f"ofp-schedule: cannot parse input: {exc}", file=sys.stderr)
+        return EXIT_USAGE
     if not report.ok:
         # Surface every error diagnostic (missing location falls back to a path).
         for diag in report.diagnostics:

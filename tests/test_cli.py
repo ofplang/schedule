@@ -58,3 +58,24 @@ def test_schedule_stdout_yaml(capsys):
     out = capsys.readouterr().out
     assert "outcome: optimal" in out
     assert "makespan" in out
+
+
+_BROKEN_YAML = "a: [1, 2\nb: :::\n"
+
+
+def test_validate_malformed_yaml_is_usage_error(tmp_path, capsys):
+    # A file that does not parse as YAML is an input error (exit 2), even when
+    # --kind is explicit (which skips the auto-detect that also catches it).
+    bad = tmp_path / "broken.yaml"
+    bad.write_text(_BROKEN_YAML, encoding="utf-8")
+    assert cli.main(["validate", "--kind", "environment", str(bad)]) == cli.EXIT_USAGE
+    assert "cannot parse" in capsys.readouterr().err
+
+
+def test_schedule_malformed_workflow_is_usage_error(tmp_path, capsys):
+    # A malformed workflow (valid env) is an input error, not a Python traceback.
+    bad = tmp_path / "broken.workflow.yaml"
+    bad.write_text(_BROKEN_YAML, encoding="utf-8")
+    code = cli.main(["schedule", str(bad), "--env", str(EXAMPLES / "simple.env.yaml")])
+    assert code == cli.EXIT_USAGE
+    assert "cannot parse" in capsys.readouterr().err
