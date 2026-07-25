@@ -51,7 +51,7 @@ class _Arrow:
     lane2: int
 
 
-def render_svg(plan: dict, *, view: str = "station", theme: str = "light") -> str:
+def render_svg(plan: dict, *, view: str = "device", theme: str = "light") -> str:
     """Render `plan` as a standalone SVG document (opens directly in a browser).
 
     `theme` is "light" or "dark" (fixed colours written as inline presentation
@@ -61,7 +61,7 @@ def render_svg(plan: dict, *, view: str = "station", theme: str = "light") -> st
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + _svg_markup(plan, view, theme)
 
 
-def render_html(plan: dict, *, view: str = "station", theme: str = "light") -> str:
+def render_html(plan: dict, *, view: str = "device", theme: str = "light") -> str:
     """Render `plan` as an HTML page wrapping the same self-contained SVG."""
     svg = _svg_markup(plan, view, theme)
     return (

@@ -4,7 +4,7 @@ Thin presentation layer over the library. Subcommands:
 
     ofp-schedule validate [--kind ...] [--format ...] <file>...
     ofp-schedule schedule <workflow> --env <env> [--document <doc>] [-o <file>] [--format yaml|json]
-    ofp-schedule visualize <plan> [--view station|workflow] [-o <file>]
+    ofp-schedule visualize <plan> [--view device|workflow|lane] [-o <file>]
 
 `validate` runs the schema validators (SPECIFICATIONS.md §9); `schedule` produces
 an execution plan (§6) from a v0 workflow and an execution environment, and with

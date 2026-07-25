@@ -110,11 +110,14 @@ def build_instance(
 ) -> tuple[Instance | None, Diagnostics]:
     """Build the solver instance from the workflow and environment.
 
-    `interface` (SPEC §6.8), when given, pins the workflow's Object-bearing boundary
-    material to spots. Each binding adds a synthetic boundary node and an ordinary
-    arc (`input node → consumer` for an entry input), so the rest of the model is
-    unchanged. It is optional in the current phase: an unbound entry input leaves
-    its consumer's mode unconstrained (the pre-`interface` behaviour).
+    `interface` (SPEC §6.8) pins the workflow's Object-bearing boundary material to
+    spots. Each binding adds a synthetic boundary node and an ordinary arc
+    (`input node → consumer` for an entry input), so the rest of the model is
+    unchanged. It is required for Object-bearing entry inputs: every such input must
+    be bound in `interface.inputs`, otherwise its consumer's mode would be left
+    unconstrained, so an unbound one is rejected with `INTERFACE_INPUT_MISSING` (the
+    check below) even when no `interface` is given. Object-bearing outputs are
+    optional.
 
     `check_reachability` reports `arc_unreachable` for any workflow arc no
     transporter can serve — correct for an initial plan, where every arc is a
