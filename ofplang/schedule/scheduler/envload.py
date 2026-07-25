@@ -67,13 +67,12 @@ def _build(data: dict) -> Environment:
         )
         processes[name] = ProcessCapability(name, modes)
 
-    objective_kind = data.get("objective", {}).get("kind", "makespan")
-
+    # `objective.kind` is validated to be "makespan" (the only supported objective),
+    # so it carries no information the model uses -- it is not loaded here.
     return Environment(
         time_unit=time_unit,
         devices=devices,
         transporters=transporters,
         transports=transports,
         processes=processes,
-        objective_kind=objective_kind,
     )

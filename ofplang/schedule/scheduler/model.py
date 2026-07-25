@@ -61,7 +61,6 @@ class Environment:
     # (transporter, from_spot, to_spot) -> duration, both spots qualified.
     transports: dict[tuple[str, str, str], int]
     processes: dict[str, ProcessCapability]
-    objective_kind: str = "makespan"
 
     def transport_duration(self, transporter: str, frm: str, to: str) -> int | None:
         """Duration for one transporter to move `frm` -> `to`, or None if it
