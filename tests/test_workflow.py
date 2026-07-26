@@ -386,6 +386,54 @@ def test_structured_node_is_unsupported(tmp_path):
     assert "unsupported_feature" in codes
 
 
+def test_generic_process_is_unsupported(tmp_path):
+    # A generic process (type_params) is valid v0 but out of scope for the
+    # scheduler: reject it cleanly (spec 4.4) instead of misreading a generic
+    # Object port as Pure Data and dropping its transport arc.
+    doc = tmp_path / "wf.yaml"
+    doc.write_text(
+        "types: {Plate: {domain: object}}\n"
+        "processes:\n"
+        "  make: {kind: atomic, outputs: {plate: {type: Plate, phase: data}}, "
+        "objects: {create: [outputs.plate]}}\n"
+        "  wash:\n"
+        "    kind: atomic\n"
+        "    type_params: {O: {domain: object}}\n"
+        "    inputs: {item: {type: O, phase: data}}\n"
+        "    outputs: {item: {type: O, phase: data}}\n"
+        "    objects: {map: {outputs.item: inputs.item}}\n"
+        "  main:\n"
+        "    kind: composite\n"
+        "    body:\n"
+        "      nodes:\n"
+        "        - {id: mk, process: make}\n"
+        "        - {id: w, process: wash, state: {item: {from: mk.plate}}}\n"
+        "      returns: {}\n"
+        "entry: main\n",
+        encoding="utf-8",
+    )
+    wf, diags = parse_workflow(doc)
+    assert wf is None  # not silently mis-scheduled
+    assert "unsupported_feature" in {d.code for d in _errors(diags)}
+
+
+def test_import_is_unsupported(tmp_path):
+    # An unexpanded `$import` is valid v0 (resolved before feature derivation),
+    # but the scheduler does not resolve imports: reject rather than silently
+    # ignore the key and mis-read the graph.
+    doc = tmp_path / "wf.yaml"
+    doc.write_text(
+        "processes:\n"
+        "  $import: shared.yaml\n"
+        "  main: {kind: composite, body: {nodes: [], returns: {}}}\n"
+        "entry: main\n",
+        encoding="utf-8",
+    )
+    wf, diags = parse_workflow(doc)
+    assert wf is None
+    assert "unsupported_feature" in {d.code for d in _errors(diags)}
+
+
 # A nested composite invocation's value-layer boundary is recorded in `composites`
 # for the runner's composite contract checks (D34). It maps each of the composite's
 # own input / output ports to the value-store key that supplies it -- a producing

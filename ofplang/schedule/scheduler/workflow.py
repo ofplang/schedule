@@ -7,7 +7,9 @@ atomic, each port's Object-bearing-ness (§5), and the expanded node graph
 Composite invocations — including nested ones — are flattened by splicing
 dataflow across the composite boundary (see `_Expander`). The workflow is assumed
 to be valid v0; this reader only diagnoses the parts the scheduler cannot handle
-(structured nodes, recursive composite definitions, a missing entry).
+(a capability gate): generic processes (`generic_processes`), an unexpanded
+`$import`, structured nodes, recursive composite definitions, and a missing
+entry.
 
 Binding semantics follow §11: a `state` binding carries an Object-bearing linear
 input (so it is a transport arc), while a `bind` binding is Pure Data (a
@@ -40,6 +42,19 @@ _PRIMITIVES = {"Bool", "Int", "Float", "String"}
 _STRUCTURED_KINDS = {"map", "fold", "do_while", "branch"}
 
 
+def _contains_import_key(obj) -> bool:
+    """True if a `$import` key appears anywhere in the document (spec 3).
+
+    The scheduler does not resolve imports; a workflow must already be expanded.
+    An unexpanded `$import` would otherwise be silently ignored, dropping the
+    imported processes and mis-reading the graph."""
+    if isinstance(obj, dict):
+        return "$import" in obj or any(_contains_import_key(v) for v in obj.values())
+    if isinstance(obj, list):
+        return any(_contains_import_key(v) for v in obj)
+    return False
+
+
 def parse_workflow(source) -> tuple[Workflow | None, Diagnostics]:
     """Parse the v0 workflow at `source` into a schedulable `Workflow`.
 
@@ -50,6 +65,32 @@ def parse_workflow(source) -> tuple[Workflow | None, Diagnostics]:
     data = yaml.safe_load(Path(source).read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         diags.error(errors.WRONG_TYPE, "workflow must be a mapping")
+        return None, diags
+
+    # Capability gate: the scheduler handles a subset of valid v0. Features it
+    # cannot schedule are rejected here with a clear unsupported-feature
+    # diagnostic rather than silently mis-read — e.g. a generic Object port
+    # would be mistaken for Pure Data and its transport arc dropped (spec 4.4).
+    # This runs regardless of any front-door validation: the library is the real
+    # boundary, and the runner calls this per replan tick.
+    has_import = _contains_import_key(data)
+    generic = [
+        name
+        for name, proc in (data.get("processes") or {}).items()
+        if isinstance(proc, dict) and proc.get("type_params") is not None
+    ]
+    if has_import:
+        diags.error(
+            errors.UNSUPPORTED_FEATURE,
+            "workflow contains a $import; it must be expanded before scheduling",
+        )
+    for name in generic:
+        diags.error(
+            errors.UNSUPPORTED_FEATURE,
+            f"process {name!r} uses generic type parameters (generic_processes), "
+            "which the scheduler does not support",
+        )
+    if has_import or generic:
         return None, diags
 
     # Type domains drive Object-bearing detection; `processes` holds the defs.

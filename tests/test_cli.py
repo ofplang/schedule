@@ -123,3 +123,64 @@ def test_schedule_no_validate_skips_front_door(tmp_path):
         ["schedule", str(wf), "--env", str(EXAMPLES / "simple.env.yaml"), "--no-validate"]
     )
     assert code == cli.EXIT_OK
+
+
+_GENERIC_WORKFLOW = """\
+spec_version: "0.0"
+types:
+  Plate:
+    domain: object
+processes:
+  make_plate:
+    kind: atomic
+    inputs: {}
+    outputs:
+      plate: {type: Plate, phase: data}
+    objects:
+      create: [outputs.plate]
+  wash:
+    kind: atomic
+    type_params:
+      O: {domain: object}
+    inputs:
+      item: {type: O, phase: data}
+    outputs:
+      item: {type: O, phase: data}
+    objects:
+      map: {outputs.item: inputs.item}
+  main:
+    kind: composite
+    inputs: {}
+    body:
+      nodes:
+        - {id: mk, process: make_plate}
+        - {id: w, process: wash, state: {item: {from: mk.plate}}}
+      returns:
+        plate: {from: w.item}
+    outputs:
+      plate: {type: Plate, phase: data}
+entry: main
+"""
+
+
+def test_schedule_generic_workflow_is_unsupported(tmp_path, capsys):
+    # Generics are valid v0, so the front door passes; the capability gate then
+    # rejects them (the scheduler does not support generic_processes) rather than
+    # silently misreading the generic Object port and dropping its transport arc.
+    wf = tmp_path / "generic.workflow.yaml"
+    wf.write_text(_GENERIC_WORKFLOW, encoding="utf-8")
+    code = cli.main(["schedule", str(wf), "--env", str(EXAMPLES / "simple.env.yaml")])
+    assert code == cli.EXIT_INVALID
+    assert "unsupported_feature" in capsys.readouterr().err
+
+
+def test_schedule_no_validate_still_gates_generics(tmp_path, capsys):
+    # The capability gate is independent of the front door: even with
+    # --no-validate, a generic workflow is rejected (it can't be scheduled).
+    wf = tmp_path / "generic.workflow.yaml"
+    wf.write_text(_GENERIC_WORKFLOW, encoding="utf-8")
+    code = cli.main(
+        ["schedule", str(wf), "--env", str(EXAMPLES / "simple.env.yaml"), "--no-validate"]
+    )
+    assert code == cli.EXIT_INVALID
+    assert "unsupported_feature" in capsys.readouterr().err
