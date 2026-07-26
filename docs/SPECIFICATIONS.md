@@ -775,8 +775,8 @@ given a valid v0 workflow.
 - Intra-mode spot rules: within a mode, input ports do not share a spot, output
   ports do not share a spot, and every referenced spot's device is one of the
   mode's `devices`.
-- **Unknown or extra keys are errors** (strict only; there is no
-  extension-tolerant mode).
+- **Unknown or extra keys are errors**, except keys using the reserved `x-`
+  extension prefix (§9.4), which are ignored.
 
 ### 9.2 Schema validator — the execution document (shape only)
 
@@ -785,7 +785,8 @@ or a status. Cross-document checks (that a `node` / `arc` / `process` exists in 
 workflow, or that a spot exists in the environment) are execution-layer (§9.3).
 
 - Top level: `activities` is required; `time` / `now` / `outcome` / `objective` /
-  `interface` / `meta` are optional. Unknown or extra keys are errors.
+  `interface` / `meta` are optional. Unknown or extra keys are errors, except
+  reserved `x-` extension keys (§9.4), which are ignored.
 - `now` (if present) is a non-negative integer; `outcome` (if present) is one of
   `optimal` / `feasible` / `infeasible` / `unknown`; `objective` (if present) has
   `kind: makespan` and a non-negative integer `value`.
@@ -796,7 +797,8 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
   execution-layer, §9.3.)
 - Each activity: `kind` is required and is `processing`, `transport`, or `relay`;
   `status` (if present) is `pending` / `running` / `completed`; `start` and `end`
-  are required non-negative integers with `end >= start`. Unknown keys are errors.
+  are required non-negative integers with `end >= start`. Unknown keys are errors
+  (reserved `x-` extension keys excepted, §9.4).
   - processing: `process`, `mode`, and `node` (a non-empty list of identifiers) are
     required; `devices`, `input_spots`, `output_spots` are optional.
   - transport: `from_spot`, `to_spot` (qualified spots) and `arc` (`from` / `to`,
@@ -883,6 +885,25 @@ leg is pinned like any committed leg; a pending one is re-derived).
 - **Chain consistency**: a committed transport leg's source processing is
   completed, and each leg departs from the spot the previous leg arrived at
   (`broken_transport_chain` otherwise).
+
+### 9.4 Implementation extension keys (`x-`)
+
+A key using the reserved `x-` prefix is an **implementation extension point**: an
+implementation may attach vendor- or deployment-specific data under such a key
+without it being an unknown-key error. Extension keys are **ignored** by this
+specification — their presence, shape, and semantics are not defined here, their
+values are never validated (no type, reference, or null checks apply inside an
+`x-` subtree), and a document is not required to carry any.
+
+Extension keys are admitted only at **closed mapping positions** — the same
+positions where the schema otherwise enforces a fixed key set: the environment
+top level and its `time` / device / transporter / transport / process / mode /
+`objective` mappings (§9.1); and the execution-document top level and its `time` /
+`objective` / `interface` / activity mappings (§9.2). They are **not** interpreted
+inside the open name/port maps whose keys are user-chosen — `processes`,
+`input_spots` / `output_spots`, and `interface.inputs` / `outputs` — where an
+`x-`-prefixed key is an ordinary (badly named) entry, not an extension. (Mirrors
+the workflow `x-` convention, ofplang-spec §26.)
 
 ## 10. Error codes
 

@@ -1,0 +1,22 @@
+time: {unit: second, x-labcode: {clock: ntp}}
+devices:
+- id: reader_0
+  spots: [stage]
+  x-labcode: {vendor: acme}
+transporters:
+- {id: arm, x-labcode: {reach: 5}}
+transports:
+- {transporter: arm, from: reader_0.stage, to: reader_0.stage, duration: 3, x-labcode: hi}
+processes:
+  measure_od:
+    x-labcode: note
+    modes:
+    - devices: [reader_0]
+      duration: 45
+      input_spots: {plate: reader_0.stage}
+      output_spots: {plate: reader_0.stage}
+      x-labcode: {calib: 3}
+objective:
+  kind: makespan
+  x-labcode: {}
+x-labcode: {version: 1}

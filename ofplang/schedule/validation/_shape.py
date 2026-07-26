@@ -46,8 +46,19 @@ def require(ymap: YMap, key: str, path: str, diags) -> YNode | None:
 
 
 def unknown_keys(ymap: YMap, allowed: set[str], path: str, diags) -> None:
-    """Report every key outside `allowed` (strict; SPECIFICATIONS.md §9)."""
+    """Report every key outside `allowed` (strict; SPECIFICATIONS.md §9).
+
+    Keys using the reserved `x-` extension prefix are tolerated and ignored:
+    they are implementation extension points, never validated, and carry no
+    portable v0 meaning (mirrors the workflow `x-` convention, ofplang-spec §26).
+    Because this helper is only ever called at *closed* mapping positions, this
+    admits `x-` keys exactly there and nowhere in the open name/port maps
+    (`processes`, `input_spots`/`output_spots`, `interface.inputs`/`outputs`),
+    whose keys are user-chosen and indistinguishable from an extension.
+    """
     for entry in ymap.entries:
+        if entry.key.startswith("x-"):
+            continue
         if entry.key not in allowed:
             diags.error(
                 errors.UNKNOWN_KEY,

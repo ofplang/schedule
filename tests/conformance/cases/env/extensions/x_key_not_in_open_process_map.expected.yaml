@@ -1,0 +1,10 @@
+outcome: invalid
+match: exact
+errors:
+- {code: missing_required_field}
+notes: >
+  `processes` is an open, user-named map, so an `x-`-prefixed key there is an
+  ordinary process (named `x-thing`), not an extension — it is still required to
+  carry `modes`. Extensions are admitted only at closed mapping positions
+  (spec §9.4); a per-process extension goes as `x-...` inside the process map,
+  alongside `modes`.

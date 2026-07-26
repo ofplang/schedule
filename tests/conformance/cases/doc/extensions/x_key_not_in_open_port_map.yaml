@@ -1,0 +1,3 @@
+interface:
+  inputs: {x-foo: reader_0.stage}
+activities: []

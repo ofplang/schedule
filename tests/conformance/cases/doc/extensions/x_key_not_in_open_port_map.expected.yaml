@@ -1,0 +1,8 @@
+outcome: invalid
+match: exact
+errors:
+- {code: invalid_identifier}
+notes: >
+  `interface.inputs` is an open, user-named port map, so `x-foo` is an ordinary
+  port name (and an invalid identifier for containing `-`), not an extension.
+  Extensions are admitted only at closed mapping positions (spec §9.4).

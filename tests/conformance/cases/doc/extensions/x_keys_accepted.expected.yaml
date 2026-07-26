@@ -1,0 +1,5 @@
+outcome: valid
+notes: >
+  Reserved `x-` extension keys are ignored at every closed mapping position of an
+  execution document (top level, time, objective, interface, activity); spec §9.4.
+  Their values are not validated.

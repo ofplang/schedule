@@ -1,0 +1,14 @@
+time: {unit: second, x-labcode: 1}
+objective: {kind: makespan, value: 60, x-labcode: {}}
+interface:
+  inputs: {plate: reader_0.stage}
+  x-labcode: skip
+activities:
+- kind: processing
+  start: 0
+  end: 60
+  process: measure_od
+  mode: fast
+  node: [assay]
+  x-labcode: {trace: 3}
+x-labcode: {version: 1}
