@@ -12,6 +12,11 @@ an execution plan (§6) from a v0 workflow and an execution environment, and wit
 (§7); `visualize` renders a plan as a self-contained HTML/SVG Gantt chart. All
 logic lives in the library so the CLI cannot drift from it.
 
+`schedule` first runs the workflow through `ofplang-validate` as a one-shot front
+door (extension-tolerant) so a malformed workflow fails with clear diagnostics
+rather than being silently mis-scheduled; the scheduler library itself trusts its
+input. Pass `--no-validate` to skip this (e.g. when already validated upstream).
+
 Exit codes:
     0  success (valid, or a plan was produced)
     1  validation errors, or no feasible schedule
@@ -27,6 +32,8 @@ import sys
 from pathlib import Path
 
 import yaml
+from ofplang.validate import EXTENSION_TOLERANT
+from ofplang.validate import validate as validate_workflow
 
 from ofplang.schedule import schedule as run_schedule
 from ofplang.schedule import validate_document, validate_environment
@@ -92,6 +99,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     s.add_argument("-o", "--out", metavar="FILE", help="write the plan here (default: stdout)")
     s.add_argument("--format", choices=["yaml", "json"], default="yaml", help="plan output format")
+    s.add_argument(
+        "--no-validate",
+        action="store_true",
+        help="skip the one-shot ofplang-validate front-door check of the workflow "
+        "(use when it was already validated upstream, e.g. by the `ofp` umbrella CLI)",
+    )
 
     z = sub.add_parser("visualize", help="render an execution plan as an HTML/SVG Gantt chart")
     z.add_argument("plan", metavar="PLAN", help="execution plan/document YAML")
@@ -238,6 +251,30 @@ def _cmd_validate(args) -> int:
     return EXIT_OK if all(r.ok for _, r in results) else EXIT_INVALID
 
 
+def _front_door_validate(workflow_path: str) -> bool:
+    """Validate a workflow as portable v0 before scheduling (spec §2/§3, etc.).
+
+    The scheduler library trusts its input; this CLI front door runs the full
+    ofplang-validate pass once so a malformed workflow fails with clear
+    diagnostics instead of being silently mis-scheduled. Returns True if the
+    workflow is valid; otherwise prints each error and returns False. Uses
+    extension-tolerant mode so `x-` extension keys — which the scheduler itself
+    tolerates — are not rejected at the door.
+    """
+    result = validate_workflow(workflow_path, mode=EXTENSION_TOLERANT)
+    if result.ok:
+        return True
+    for diag in result.diagnostics:
+        if diag.file and diag.line:
+            locator = f"{diag.file}:{diag.line}:{diag.col}"
+        else:
+            locator = diag.path or "<root>"
+        detail = f"  {diag.path}" if diag.file and diag.path else ""
+        message = f"  {diag.message}" if diag.message else ""
+        print(f"{locator}: error {diag.code}{detail}{message}", file=sys.stderr)
+    return False
+
+
 def _cmd_schedule(args) -> int:
     doc = args.document
     inputs = [args.workflow, args.env] + ([doc] if doc else [])
@@ -245,6 +282,12 @@ def _cmd_schedule(args) -> int:
         if not Path(p).is_file():
             print(f"ofp-schedule: cannot open {p!r}: no such file", file=sys.stderr)
             return EXIT_USAGE
+
+    # Front door: validate the workflow as portable v0 once, unless suppressed.
+    # A validation failure is an invalid document (EXIT_INVALID), mirroring the
+    # `validate` subcommand; the scheduler library is not invoked in that case.
+    if not args.no_validate and not _front_door_validate(args.workflow):
+        return EXIT_INVALID
 
     try:
         report = run_schedule(

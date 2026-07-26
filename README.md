@@ -31,7 +31,16 @@ pip install -e ".[test]"
 ```
 
 Requires Python 3.10+. Runtime dependencies are PyYAML and OR-Tools (the CP-SAT
-solver used by the scheduler).
+solver used by the scheduler). The CLI's front-door check also uses the sibling
+[`ofplang-validate`](https://github.com/ofplang/validate) (not on PyPI); install
+it editable alongside this repo:
+
+```sh
+pip install -e ../ofplang-validate
+```
+
+The scheduler *library* never imports it, so embedders that only call
+`ofplang.schedule` take no validation dependency or overhead.
 
 ## Command line
 
