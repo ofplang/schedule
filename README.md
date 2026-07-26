@@ -1,6 +1,7 @@
 # ofplang schedule
 
 [![CI](https://github.com/ofplang/schedule/actions/workflows/ci.yml/badge.svg)](https://github.com/ofplang/schedule/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/ofplang-schedule.svg)](https://pypi.org/project/ofplang-schedule/)
 
 A scheduler for **Object-flow Programming Language v0** — a YAML-based dataflow
 workflow IR with linear Object tracking. The language is defined in the
@@ -27,20 +28,21 @@ for ideas but not a dependency.
 ## Install
 
 ```sh
-pip install -e ".[test]"
+pip install ofplang-schedule
 ```
 
-Requires Python 3.10+. Runtime dependencies are PyYAML and OR-Tools (the CP-SAT
-solver used by the scheduler). The CLI's front-door check also uses the sibling
-[`ofplang-validate`](https://github.com/ofplang/validate) (not on PyPI); install
-it editable alongside this repo:
+Requires Python 3.10+. Runtime dependencies are PyYAML, OR-Tools (the CP-SAT
+solver used by the scheduler), and the sibling
+[`ofplang-validate`](https://pypi.org/project/ofplang-validate/) (pulled in
+automatically), which the CLI's front-door check uses. The scheduler *library*
+never imports validate, so embedders that only call `ofplang.schedule` take no
+validation overhead.
+
+For development, install editable with the test extra from a clone:
 
 ```sh
-pip install -e ../ofplang-validate
+pip install -e ".[test]"
 ```
-
-The scheduler *library* never imports it, so embedders that only call
-`ofplang.schedule` take no validation dependency or overhead.
 
 ## Command line
 
