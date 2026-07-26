@@ -26,9 +26,8 @@ classifiers = [
 ]
 # `ofplang-validate` is imported only by the CLI front door (cli.py) to validate a
 # workflow once before scheduling; the scheduler library never calls it, so
-# library users take no validation overhead. Until validate is on PyPI, CI
-# installs it from git; a version floor is added when CI switches to PyPI.
-dependencies = ["PyYAML>=6.0", "ortools>=9.10", "ofplang-validate"]
+# library users take no validation overhead.
+dependencies = ["PyYAML>=6.0", "ortools>=9.10", "ofplang-validate>=0.1.0"]
 
 [project.urls]
 Homepage = "https://github.com/ofplang/schedule"

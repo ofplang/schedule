@@ -19,9 +19,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      # `ofplang-validate` is a sibling repo, not on PyPI. The CLI front door
-      # imports it, so install it from git before resolving this project.
-      - run: pip install "ofplang-validate @ git+https://github.com/ofplang/validate.git@main"
+      # `ofplang-validate` (a sibling, used by the CLI front door) is resolved from
+      # PyPI by the `.[test]` install below — no separate git step needed.
       - run: pip install -e ".[test]"
       - run: pytest
 
@@ -46,8 +45,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      # mypy resolves `ofplang.validate` (imported by the CLI), so install the
-      # sibling repo from git before this project.
-      - run: pip install "ofplang-validate @ git+https://github.com/ofplang/validate.git@main"
+      # mypy resolves `ofplang.validate` (imported by the CLI); the `.[dev]` install
+      # pulls it from PyPI.
       - run: pip install -e ".[dev]"
       - run: mypy
