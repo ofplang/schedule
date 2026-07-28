@@ -28,7 +28,7 @@ classifiers = [
 # workflow once before scheduling; the scheduler library never calls it, so
 # library users take no validation overhead. The `>=0.1.2` floor ensures that
 # front door recognizes optional `description` metadata (spec 2.7).
-dependencies = ["PyYAML>=6.0", "ortools>=9.10", "ofplang-validate>=0.1.2"]
+dependencies = ["PyYAML>=6.0", "ortools>=9.10", "ofplang-validate>=0.1.3"]
 
 [project.urls]
 Homepage = "https://github.com/ofplang/schedule"

@@ -15,7 +15,10 @@ logic lives in the library so the CLI cannot drift from it.
 `schedule` first runs the workflow through `ofplang-validate` as a one-shot front
 door (extension-tolerant) so a malformed workflow fails with clear diagnostics
 rather than being silently mis-scheduled; the scheduler library itself trusts its
-input. Pass `--no-validate` to skip this (e.g. when already validated upstream).
+input. The front door also resolves `$import` (spec §3) and hands the scheduler
+the expanded document, so what was validated is exactly what is scheduled. Pass
+`--no-validate` to skip validation (e.g. when already validated upstream);
+`$import` is still expanded, as that is structural, not a validation check.
 
 Exit codes:
     0  success (valid, or a plan was produced)
@@ -32,8 +35,9 @@ import sys
 from pathlib import Path
 
 import yaml
-from ofplang.validate import EXTENSION_TOLERANT
+from ofplang.validate import EXTENSION_TOLERANT, expand
 from ofplang.validate import validate as validate_workflow
+from ofplang.validate.yamlnode import YamlError
 
 from ofplang.schedule import schedule as run_schedule
 from ofplang.schedule import validate_document, validate_environment
@@ -251,19 +255,22 @@ def _cmd_validate(args) -> int:
     return EXIT_OK if all(r.ok for _, r in results) else EXIT_INVALID
 
 
-def _front_door_validate(workflow_path: str) -> bool:
-    """Validate a workflow as portable v0 before scheduling (spec §2/§3, etc.).
+def _front_door_validate(workflow_path: str) -> dict | None:
+    """Validate a workflow as portable v0 before scheduling (spec §2/§3, etc.) and
+    return its import-expanded document.
 
     The scheduler library trusts its input; this CLI front door runs the full
     ofplang-validate pass once so a malformed workflow fails with clear
-    diagnostics instead of being silently mis-scheduled. Returns True if the
-    workflow is valid; otherwise prints each error and returns False. Uses
-    extension-tolerant mode so `x-` extension keys — which the scheduler itself
-    tolerates — are not rejected at the door.
+    diagnostics instead of being silently mis-scheduled. Returns the expanded
+    document (plain dict) when the workflow is valid, so exactly what was
+    validated is what gets scheduled (`$import` is resolved here, not re-read
+    unexpanded by the library); otherwise prints each error and returns None.
+    Uses extension-tolerant mode so `x-` extension keys — which the scheduler
+    itself tolerates — are not rejected at the door.
     """
-    result = validate_workflow(workflow_path, mode=EXTENSION_TOLERANT)
+    result = validate_workflow(workflow_path, mode=EXTENSION_TOLERANT, expand=True)
     if result.ok:
-        return True
+        return result.document
     for diag in result.diagnostics:
         if diag.file and diag.line:
             locator = f"{diag.file}:{diag.line}:{diag.col}"
@@ -272,7 +279,7 @@ def _front_door_validate(workflow_path: str) -> bool:
         detail = f"  {diag.path}" if diag.file and diag.path else ""
         message = f"  {diag.message}" if diag.message else ""
         print(f"{locator}: error {diag.code}{detail}{message}", file=sys.stderr)
-    return False
+    return None
 
 
 def _cmd_schedule(args) -> int:
@@ -283,19 +290,32 @@ def _cmd_schedule(args) -> int:
             print(f"ofp-schedule: cannot open {p!r}: no such file", file=sys.stderr)
             return EXIT_USAGE
 
-    # Front door: validate the workflow as portable v0 once, unless suppressed.
-    # A validation failure is an invalid document (EXIT_INVALID), mirroring the
-    # `validate` subcommand; the scheduler library is not invoked in that case.
-    if not args.no_validate and not _front_door_validate(args.workflow):
-        return EXIT_INVALID
+    # Front door: validate the workflow as portable v0 once, unless suppressed,
+    # and resolve `$import` so the scheduler runs exactly the document that was
+    # validated (not a re-read, unexpanded file). A validation failure is an
+    # invalid document (EXIT_INVALID), mirroring the `validate` subcommand; the
+    # scheduler library is not invoked in that case. `$import` expansion is a
+    # structural step independent of validation, so it still runs under
+    # `--no-validate`; a structural failure there is an input error (EXIT_USAGE).
+    if args.no_validate:
+        try:
+            workflow_doc = expand(args.workflow)
+        except YamlError as exc:
+            print(f"ofp-schedule: cannot expand {args.workflow!r}: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+    else:
+        workflow_doc = _front_door_validate(args.workflow)
+        if workflow_doc is None:
+            return EXIT_INVALID
 
     try:
         report = run_schedule(
-            args.workflow,
+            workflow_doc,
             args.env,
             document_path=doc,
             running_task_margin=args.running_margin,
             random_seed=args.seed,
+            workflow_source=args.workflow,
         )
     except yaml.YAMLError as exc:
         # Malformed workflow / environment / document YAML is an input error.

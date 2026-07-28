@@ -86,15 +86,16 @@ def test_schedule_malformed_workflow_is_caught_by_front_door(tmp_path, capsys):
 
 
 def test_schedule_no_validate_bypasses_front_door_on_malformed(tmp_path, capsys):
-    # With --no-validate the front door is skipped, so a malformed workflow now
-    # falls through to the scheduler's own YAML guard: still an input error.
+    # --no-validate skips the validation pass, but `$import` expansion is a
+    # structural step (spec 2.2 step 1) that still runs, so a malformed workflow
+    # fails there instead: still an input error (EXIT_USAGE).
     bad = tmp_path / "broken.workflow.yaml"
     bad.write_text(_BROKEN_YAML, encoding="utf-8")
     code = cli.main(
         ["schedule", str(bad), "--env", str(EXAMPLES / "simple.env.yaml"), "--no-validate"]
     )
     assert code == cli.EXIT_USAGE
-    assert "cannot parse" in capsys.readouterr().err
+    assert "cannot expand" in capsys.readouterr().err
 
 
 def _workflow_with_bogus_key(tmp_path) -> Path:
@@ -184,3 +185,39 @@ def test_schedule_no_validate_still_gates_generics(tmp_path, capsys):
     )
     assert code == cli.EXIT_INVALID
     assert "unsupported_feature" in capsys.readouterr().err
+
+
+def _import_workflow(tmp_path: Path) -> Path:
+    """A copy of the `simple` workflow whose `types` come from a `$import`
+    fragment — valid v0 that the front door must expand before scheduling."""
+    src = (EXAMPLES / "simple.workflow.yaml").read_text(encoding="utf-8")
+    # Replace the inline `types:` block with a mapping-position import of it.
+    body = src[src.index("processes:") :]
+    (tmp_path / "types_frag.yaml").write_text("Sample:\n  domain: object\n", encoding="utf-8")
+    wf = tmp_path / "main.workflow.yaml"
+    wf.write_text(
+        'spec_version: "0.0"\ntypes:\n  $import: ./types_frag.yaml\n' + body,
+        encoding="utf-8",
+    )
+    return wf
+
+
+def test_schedule_expands_import_and_schedules(tmp_path, capsys):
+    # A `$import` workflow is no longer rejected: the front door resolves it and
+    # schedules the expanded document (the Sample transport arc is recovered from
+    # the imported type). `meta.workflow` still names the original file.
+    wf = _import_workflow(tmp_path)
+    code = cli.main(["schedule", str(wf), "--env", str(EXAMPLES / "simple.env.yaml")])
+    out = capsys.readouterr().out
+    assert code == cli.EXIT_OK
+    assert str(wf) in out  # meta.workflow is the source path, not "<in-memory>"
+
+
+def test_schedule_no_validate_expands_import(tmp_path):
+    # Expansion is structural, so it runs under --no-validate too: the same
+    # `$import` workflow schedules rather than tripping the library import guard.
+    wf = _import_workflow(tmp_path)
+    code = cli.main(
+        ["schedule", str(wf), "--env", str(EXAMPLES / "simple.env.yaml"), "--no-validate"]
+    )
+    assert code == cli.EXIT_OK

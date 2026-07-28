@@ -53,7 +53,13 @@ def schedule(
     running_task_margin: int = 0,
     max_time_seconds: float | None = None,
     random_seed: int | None = None,
+    workflow_source: str | None = None,
 ) -> ScheduleReport:
+    """`workflow_path` is a path to a workflow file or an already-loaded (e.g.
+    import-expanded) workflow document. `workflow_source` is an optional display
+    path recorded as the plan's `meta.workflow` provenance: a caller that passes
+    an in-memory document (so the workflow is not read from disk here) can still
+    name the original file, instead of the plan showing `<in-memory>`."""
     diagnostics: list[Diagnostic] = []
 
     # 1. Environment: schema-validate, then load into the model.
@@ -123,7 +129,11 @@ def schedule(
     plan = render_plan(
         instance,
         solution,
-        workflow="<in-memory>" if isinstance(workflow_path, dict) else str(workflow_path),
+        workflow=(
+            workflow_source
+            if workflow_source is not None
+            else ("<in-memory>" if isinstance(workflow_path, dict) else str(workflow_path))
+        ),
         environment=str(environment_path),
         status=str(doc_path) if root is not None else None,
         now=fixation.now if had_now else None,
