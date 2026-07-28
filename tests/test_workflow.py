@@ -34,6 +34,21 @@ def test_parse_simple():
     assert wf.processes["target"].object_input_names() == ("target_in",)
 
 
+def test_parse_accepts_an_in_memory_document():
+    # `parse_workflow` accepts an already-loaded document (a mapping), not only a path,
+    # so a caller holding the workflow in memory need not round-trip it through a file.
+    import yaml
+
+    doc = yaml.safe_load((EXAMPLES / "simple.workflow.yaml").read_text(encoding="utf-8"))
+    wf, diags = parse_workflow(doc)
+    assert not _errors(diags)
+    assert wf is not None
+    # Same result as parsing the file.
+    from_path, _ = parse_workflow(EXAMPLES / "simple.workflow.yaml")
+    assert {a.path for a in wf.activities} == {a.path for a in from_path.activities}
+    assert wf.arcs == from_path.arcs
+
+
 def test_parse_reformatter():
     wf, diags = parse_workflow(EXAMPLES / "reformatter.workflow.yaml")
     assert not _errors(diags)

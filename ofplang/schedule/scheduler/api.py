@@ -123,7 +123,7 @@ def schedule(
     plan = render_plan(
         instance,
         solution,
-        workflow=str(workflow_path),
+        workflow="<in-memory>" if isinstance(workflow_path, dict) else str(workflow_path),
         environment=str(environment_path),
         status=str(doc_path) if root is not None else None,
         now=fixation.now if had_now else None,

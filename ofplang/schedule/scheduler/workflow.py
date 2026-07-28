@@ -56,13 +56,20 @@ def _contains_import_key(obj) -> bool:
 
 
 def parse_workflow(source) -> tuple[Workflow | None, Diagnostics]:
-    """Parse the v0 workflow at `source` into a schedulable `Workflow`.
+    """Parse the v0 workflow into a schedulable `Workflow`.
+
+    `source` is either a path to a workflow YAML file, or an already-loaded workflow
+    document (a mapping) -- so a caller holding the document in memory (e.g. the runner
+    after an in-process rewrite) need not round-trip it through a temp file.
 
     Returns `(workflow, diagnostics)`; the workflow is None when a blocking
     diagnostic (unparseable document or no entry) is raised.
     """
     diags = Diagnostics()
-    data = yaml.safe_load(Path(source).read_text(encoding="utf-8"))
+    if isinstance(source, dict):
+        data = source
+    else:
+        data = yaml.safe_load(Path(source).read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         diags.error(errors.WRONG_TYPE, "workflow must be a mapping")
         return None, diags
