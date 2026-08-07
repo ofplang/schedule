@@ -297,6 +297,7 @@ def _cmd_schedule(args) -> int:
     # scheduler library is not invoked in that case. `$import` expansion is a
     # structural step independent of validation, so it still runs under
     # `--no-validate`; a structural failure there is an input error (EXIT_USAGE).
+    workflow_doc: dict
     if args.no_validate:
         try:
             workflow_doc = expand(args.workflow)
@@ -304,9 +305,10 @@ def _cmd_schedule(args) -> int:
             print(f"ofp-schedule: cannot expand {args.workflow!r}: {exc}", file=sys.stderr)
             return EXIT_USAGE
     else:
-        workflow_doc = _front_door_validate(args.workflow)
-        if workflow_doc is None:
+        validated = _front_door_validate(args.workflow)
+        if validated is None:
             return EXIT_INVALID
+        workflow_doc = validated
 
     try:
         report = run_schedule(
