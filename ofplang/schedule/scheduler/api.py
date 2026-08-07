@@ -2,8 +2,8 @@
 
 Orchestrates the pipeline (validate/load environment -> parse workflow -> build
 instance -> solve -> render plan) and collects diagnostics from every stage into
-one report. Given a `status_path`, the same pipeline replans: the execution
-status is shape-validated, matched against the instance to build the fixation
+one report. Given a `document_path` that sets `now`, the same pipeline replans: the
+execution status is shape-validated, matched against the instance to build the fixation
 (completed/running activities pinned, pending re-optimised at/after `now`), and
 the fixed history plus `now` and the `interface` constraint are carried into the output.
 """
