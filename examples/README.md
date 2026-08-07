@@ -83,7 +83,7 @@ end-to-end case, for bringing the scheduler up before the larger `reformatter`.
 
 ```sh
 ofp-schedule schedule examples/simple.workflow.yaml --env examples/simple.env.yaml \
-    --status examples/simple.status.yaml
+    --document examples/simple.status.yaml
 ```
 
 The scheduler fixes `SampleSource` to its reported times and mode, and
@@ -104,7 +104,7 @@ fixed `source` to its left and the re-optimised work to its right.
 
 ```sh
 ofp-schedule schedule examples/simple.workflow.yaml --env examples/reroute.env.yaml \
-    --status examples/reroute.status.yaml
+    --document examples/reroute.status.yaml
 ```
 
 Because the sample has already landed on the now-unusable `station_1`, the

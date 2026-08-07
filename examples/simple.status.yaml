@@ -5,7 +5,7 @@
 # else has: we replan the remaining transport and `target` at now = 3.
 #
 #   ofp-schedule schedule simple.workflow.yaml --env simple.env.yaml \
-#       --status simple.status.yaml
+#       --document simple.status.yaml
 #
 # The scheduler fixes `SampleSource` to its reported [0, 2] and re-optimises the
 # transport and `SampleTarget` at or after now (they slip from [2..5] to [3..6],
