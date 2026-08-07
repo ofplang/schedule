@@ -974,11 +974,12 @@ present, its `unit` is validated as in the environment (§5.1): absent →
 ### 10.4 Execution layer (§9.3)
 
 Emitted by the scheduler (not a schema validator) while reading the workflow and
-building the solver instance. All are error severity.
+building the solver instance. Severity is `error` unless marked *warning*.
 
 | code | meaning |
 | --- | --- |
 | `unsupported_feature` | a workflow feature outside the scheduler's v0 subset (a structured node) |
+| `scheduling_policies_ignored` | a composite carries a `scheduling` section; the policies are best-effort preferences this scheduler does not implement (§2), so the section is dropped when the composite is flattened (*warning*) |
 | `no_entry_process` | the workflow has no resolvable entry process |
 | `process_not_defined` | a node invokes, or an arc references, a process/node not defined in the workflow |
 | `recursive_composite` | a composite is (transitively) defined in terms of itself; v0 forbids recursion |
