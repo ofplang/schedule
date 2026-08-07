@@ -28,7 +28,7 @@ single `plate` port passes through).
 Usage:
     python examples/gen_plate_batch.py --branches 2 --repeats 2 --out-dir examples/outputs
     python examples/gen_plate_batch.py --branches 3 --repeats 2   # both docs to stdout
-"""
+"""  # noqa: E501  -- the flow diagram above reads better unwrapped
 
 from __future__ import annotations
 
@@ -116,7 +116,13 @@ def build_workflow(branches: int, repeats: int) -> dict:
     # main: source fans a branch per port; the sink gathers each branch's output.
     main_nodes: list[dict] = [{"id": "source", "process": "source"}]
     for b in range(1, branches + 1):
-        main_nodes.append({"id": f"b{b}", "process": "branch", "state": {"plate": {"from": f"source.plate_{b}"}}})
+        main_nodes.append(
+            {
+                "id": f"b{b}",
+                "process": "branch",
+                "state": {"plate": {"from": f"source.plate_{b}"}},
+            }
+        )
     sink_state = {f"plate_{b}": {"from": f"b{b}.plate"} for b in range(1, branches + 1)}
     main_nodes.append({"id": "sink", "process": "sink", "state": sink_state})
     processes["main"] = {
@@ -199,7 +205,10 @@ def build_env(branches: int, thermal_cycler_pool: int = _DEFAULT_THERMAL_CYCLER_
     for stage in ("peal", "dispense", "seal", "rotate"):
         processes[stage] = {"modes": [stage_mode(_STAGE_DEVICE[stage], _STAGE_DURATION[stage])]}
     processes["thermal_cycle"] = {
-        "modes": [stage_mode(f"thermal_cycle_{k}", _STAGE_DURATION["thermal_cycle"]) for k in range(1, thermal_cycler_pool + 1)]
+        "modes": [
+            stage_mode(f"thermal_cycle_{k}", _STAGE_DURATION["thermal_cycle"])
+            for k in range(1, thermal_cycler_pool + 1)
+        ]
     }
 
     return {
@@ -217,12 +226,25 @@ def _dump(doc: dict) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Generate a basic-workflow v0 YAML and its environment.")
+    parser = argparse.ArgumentParser(
+        description="Generate a basic-workflow v0 YAML and its environment."
+    )
     parser.add_argument("--branches", type=int, default=2, help="number of parallel branches")
     parser.add_argument("--repeats", type=int, default=2, help="stage-chain repeats per branch")
-    parser.add_argument("--thermal-cycler-pool", type=int, default=_DEFAULT_THERMAL_CYCLER_POOL, help="thermal_cycle device count (environment only)")
-    parser.add_argument("--out-dir", metavar="DIR", help="write <name>.workflow.yaml and <name>.env.yaml here (default: stdout)")
-    parser.add_argument("--name", default="plate_batch", help="base file name when --out-dir is given")
+    parser.add_argument(
+        "--thermal-cycler-pool",
+        type=int,
+        default=_DEFAULT_THERMAL_CYCLER_POOL,
+        help="thermal_cycle device count (environment only)",
+    )
+    parser.add_argument(
+        "--out-dir",
+        metavar="DIR",
+        help="write <name>.workflow.yaml and <name>.env.yaml here (default: stdout)",
+    )
+    parser.add_argument(
+        "--name", default="plate_batch", help="base file name when --out-dir is given"
+    )
     args = parser.parse_args(argv)
 
     workflow = build_workflow(args.branches, args.repeats)
