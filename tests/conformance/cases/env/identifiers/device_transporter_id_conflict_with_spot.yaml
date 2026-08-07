@@ -1,0 +1,13 @@
+time: {unit: second}
+devices:
+- id: arm
+  spots: [arm]
+processes:
+  measure_od:
+    modes:
+    - devices: [arm]
+      duration: 45
+      input_spots: {plate: arm.arm}
+      output_spots: {plate: arm.arm}
+transporters:
+- {id: arm}

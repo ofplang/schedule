@@ -128,8 +128,11 @@ def _check_spots(node: YNode | None, base: str, diags: Diagnostics) -> set[str]:
     return spots
 
 
-def _check_transporters(node: YNode | None, diags: Diagnostics) -> set[str]:
-    transporters: set[str] = set()
+def _check_transporters(node: YNode | None, diags: Diagnostics) -> dict[str, tuple[str, YNode]]:
+    """Return {transporter_id: (path, id node)} for the well-formed transporters
+    found. The position is kept so the cross-kind check can point at the id.
+    """
+    transporters: dict[str, tuple[str, YNode]] = {}
     seq = shape.as_seq(node, "transporters", diags)
     if seq is None:
         return transporters
@@ -142,15 +145,17 @@ def _check_transporters(node: YNode | None, diags: Diagnostics) -> set[str]:
         tid = _check_id(tmap, base, "transporter", errors.INVALID_IDENTIFIER, diags)
         if tid is None:
             continue
+        path = shape.join(base, "id")
         if tid in transporters:
             diags.error(
                 errors.DUPLICATE_TRANSPORTER_ID,
                 f"duplicate transporter id {tid!r}",
-                shape.join(base, "id"),
+                path,
                 at=tmap.get("id"),
             )
         else:
-            transporters.add(tid)
+            id_node = tmap.get("id")
+            transporters[tid] = (path, id_node if id_node is not None else tmap)
     return transporters
 
 
@@ -172,13 +177,34 @@ def _check_id(
 
 
 def _check_cross_kind(
-    devices: dict[str, set[str]], transporters: set[str], root: YNode, diags: Diagnostics
+    devices: dict[str, set[str]],
+    transporters: dict[str, tuple[str, YNode]],
+    root: YNode,
+    diags: Diagnostics,
 ) -> None:
-    """Warn (never error) when one string is used as more than one kind of id."""
+    """Check the ids that are used as more than one kind (§8.2).
+
+    A device and a transporter sharing an id is an **error**: both are machines,
+    and a machine is taken out of service by id alone at execution time, so the
+    two would be indistinguishable there. Every other coincidence is only a
+    readability **warning** -- a spot is always referenced in its qualified form
+    `<device>.<spot>`, so it is never mistaken for a machine. Each colliding
+    string yields exactly one diagnostic.
+    """
+    conflicts = set(devices) & set(transporters)
+    for value in sorted(conflicts):
+        path, node = transporters[value]
+        diags.error(
+            errors.DEVICE_TRANSPORTER_ID_CONFLICT,
+            f"id {value!r} names both a device and a transporter",
+            path,
+            at=node,
+        )
+
     spot_names: set[str] = set()
     for names in devices.values():
         spot_names |= names
-    kinds = {"device": set(devices.keys()), "transporter": transporters, "spot": spot_names}
+    kinds = {"device": set(devices.keys()), "transporter": set(transporters), "spot": spot_names}
     owner: dict[str, str] = {}
     coincident: set[str] = set()
     for kind, ids in kinds.items():
@@ -187,7 +213,7 @@ def _check_cross_kind(
                 coincident.add(value)
             else:
                 owner[value] = kind
-    for value in sorted(coincident):
+    for value in sorted(coincident - conflicts):
         diags.warning(
             errors.CROSS_KIND_ID_COINCIDENCE,
             f"id {value!r} is used across device/spot/transporter",
@@ -199,7 +225,7 @@ def _check_cross_kind(
 def _check_transports(
     node: YNode | None,
     devices: dict[str, set[str]],
-    transporters: set[str],
+    transporters: dict[str, tuple[str, YNode]],
     diags: Diagnostics,
 ) -> None:
     seq = shape.as_seq(node, "transports", diags)

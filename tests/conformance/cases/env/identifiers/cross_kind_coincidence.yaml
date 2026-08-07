@@ -1,13 +1,11 @@
 time: {unit: second}
 devices:
 - id: reader_0
-  spots: [stage]
+  spots: [reader_0]
 processes:
   measure_od:
     modes:
     - devices: [reader_0]
       duration: 45
-      input_spots: {plate: reader_0.stage}
-      output_spots: {plate: reader_0.stage}
-transporters:
-- {id: reader_0}
+      input_spots: {plate: reader_0.reader_0}
+      output_spots: {plate: reader_0.reader_0}

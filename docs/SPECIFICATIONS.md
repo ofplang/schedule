@@ -725,10 +725,16 @@ follow the v0 rules for those positions.
   is the qualified form `<device>.<spot>`. Both `modes` and `transports` reference
   spots by the qualified form (a mode may name several devices, so a bare local
   name would be ambiguous).
-- **Cross-kind coincidence is allowed**: a device, a spot name, and a transporter
-  may share the same string, and a port name may coincide with any of them (port
-  names live in a per-process, per-direction namespace — v0 §2.4). Coincidence
-  across the device / spot / transporter kinds is permitted but **should raise a
+- **A device and a transporter must not share an id** — this is an **error**. Both
+  are machines, and at execution time a machine is taken out of service by id
+  alone: the set of unavailable machines names ids, not kinds. A shared string
+  makes the two indistinguishable there, so downing one would silently down the
+  other.
+- **Any other cross-kind coincidence is allowed**: a spot name may coincide with a
+  device id or a transporter id, and a port name may coincide with any of them
+  (port names live in a per-process, per-direction namespace — v0 §2.4). A spot is
+  only ever referenced in its qualified form `<device>.<spot>`, so it is never
+  mistaken for a machine. Such a coincidence is permitted but **should raise a
   warning** for readability.
 
 ## 9. Validation
@@ -757,8 +763,9 @@ given a valid v0 workflow.
 
 ### 9.1 Schema validator — the environment definition (shape only)
 
-- Identifier syntax (§8.1) and per-kind uniqueness (§8.2); cross-kind coincidence
-  raises a warning.
+- Identifier syntax (§8.1) and per-kind uniqueness (§8.2); a device and a
+  transporter sharing an id is an error, any other cross-kind coincidence raises a
+  warning.
 - Required sections present (`time`, `devices`, `processes`); `devices` non-empty;
   each process has at least one mode.
 - Value constraints: a processing `duration` is a positive YAML integer, a
@@ -770,8 +777,8 @@ given a valid v0 workflow.
   `<device>.<spot>` (exactly one `.`) naming a defined device and a spot defined on
   it.
 - Duplicate detection: duplicate ids within a kind (two devices, two transporters,
-  or two spots on one device sharing an id); duplicate `transports` entries for the
-  same `(transporter, from, to)`.
+  or two spots on one device sharing an id); a device and a transporter sharing an
+  id (§8.2); duplicate `transports` entries for the same `(transporter, from, to)`.
 - Intra-mode spot rules: within a mode, input ports do not share a spot, output
   ports do not share a spot, and every referenced spot's device is one of the
   mode's `devices`.
@@ -933,7 +940,8 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `duplicate_device_id` | a device id repeats |
 | `duplicate_transporter_id` | a transporter id repeats |
 | `duplicate_spot_id` | a spot name repeats within a device |
-| `cross_kind_id_coincidence` | a device / spot / transporter share an id (*warning*) |
+| `device_transporter_id_conflict` | a device and a transporter share an id |
+| `cross_kind_id_coincidence` | a spot name shares an id with a device or a transporter (*warning*) |
 | `nonpositive_duration` | a device-occupying processing mode `duration` is not positive, or any mode `duration` is negative (a device-less pure-data mode may be zero) |
 | `empty_time_unit` | `time.unit` is empty or not a string |
 | `unknown_transporter` | `transports.transporter` is not a defined transporter |

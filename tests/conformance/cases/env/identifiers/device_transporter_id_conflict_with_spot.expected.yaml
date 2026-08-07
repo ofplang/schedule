@@ -1,0 +1,8 @@
+outcome: invalid
+match: exact
+errors:
+- {code: device_transporter_id_conflict}
+notes: >-
+  `arm` is a device, a transporter and a spot at once; spec §8.2. One colliding
+  string yields one diagnostic, so the machine conflict is reported and the spot
+  coincidence is not warned about on top of it.
