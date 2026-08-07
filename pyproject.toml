@@ -77,7 +77,10 @@ ignore = ["SIM118"]
 
 [tool.mypy]
 python_version = "3.10"
-files = ["ofplang"]
+# `examples/` is checked too: the generator script is the documented way to build a
+# workflow/environment pair, so a type error there is a claim about the API that no
+# longer holds.
+files = ["ofplang", "examples"]
 # `ofplang` is a PEP 420 namespace package (no __init__.py), so tell mypy how to
 # root it rather than letting it guess module names.
 namespace_packages = true
