@@ -803,7 +803,8 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
   port, and input-completeness / spot uniqueness / spot existence, are
   execution-layer, §9.3.)
 - Each activity: `kind` is required and is `processing`, `transport`, or `relay`;
-  `status` (if present) is `pending` / `running` / `completed`; `start` and `end`
+  `status` (if present) is `pending` / `running` / `completed` / `failed` /
+  `cancelled` (the last two are terminal, §6.2); `start` and `end`
   are required non-negative integers with `end >= start`. Unknown keys are errors
   (reserved `x-` extension keys excepted, §9.4).
   - processing: `process`, `mode`, and `node` (a non-empty list of identifiers) are
