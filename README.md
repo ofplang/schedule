@@ -48,7 +48,7 @@ pip install -e ".[test]"
 
 ```sh
 ofp-schedule validate <file>...                 # validate an environment or a plan/status
-ofp-schedule schedule <workflow> --env <env> [--document doc.yaml] [--running-margin N] [--seed N] [-o plan.yaml] [--format yaml|json]
+ofp-schedule schedule <workflow> --env <env> [--document doc.yaml] [--running-margin N] [--seed N] [--no-validate] [-o plan.yaml] [--format yaml|json]
 ofp-schedule visualize <plan> [--view device|workflow|lane] [--theme light|dark|auto] [-o out.svg]
 ```
 
@@ -62,7 +62,11 @@ emitting the full timeline (fixed history + re-optimised future) that round-trip
 as the next status input. By default the solve is non-deterministic
 (a multi-worker search that may return a different equally-optimal schedule each
 run); `--seed N` makes it reproducible by fixing the CP-SAT seed and using a
-single worker. `visualize` renders a plan as a self-contained Gantt
+single worker. `--no-validate` skips the one-shot `ofplang-validate` front-door
+check of the workflow — use it when the workflow was already validated upstream
+(e.g. by the `ofp` umbrella CLI); `$import` is still resolved, since that is
+structural rather than a validation check. `visualize` renders a plan as a
+self-contained Gantt
 chart — SVG by default (fixed colours, transparent background, PowerPoint-safe)
 or HTML. Exit codes: `0` success, `1` validation errors or no feasible schedule,
 `2` usage/input error.
