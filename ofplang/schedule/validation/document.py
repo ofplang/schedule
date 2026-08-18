@@ -55,8 +55,11 @@ ARC_ENDPOINT_KEYS = {"node", "port"}
 
 
 def validate_document(source) -> ValidationResult:
-    """Validate the execution document at `source` (a file path)."""
-    root = yamlnode.load_file(source)
+    """Validate the execution document `source`: a path to a file, or an
+    already-loaded document (a mapping), so a caller holding it in memory need not
+    round-trip it through a file. An in-memory document has no source positions, so
+    its diagnostics carry no `location` and locate by `path` alone."""
+    root = yamlnode.load_source(source)
     diags = Diagnostics()
     _check(root, diags)
     return ValidationResult(diags.items)

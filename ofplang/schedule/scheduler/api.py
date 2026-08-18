@@ -6,10 +6,17 @@ one report. Given a `document_path` that sets `now`, the same pipeline replans: 
 execution status is shape-validated, matched against the instance to build the fixation
 (completed/running activities pinned, pending re-optimised at/after `now`), and
 the fixed history plus `now` and the `interface` constraint are carried into the output.
+
+Every input -- workflow, environment, execution document -- is accepted either as a
+path or as an already-loaded document (a mapping), so an embedder that holds them in
+memory (the rolling-horizon runner replanning each tick) does not round-trip them
+through files. An in-memory document is read as it stands and never written to; the
+`interface` echoed into the plan is copied, so the plan shares no structure with it.
 """
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -45,6 +52,15 @@ def _has_error(diagnostics) -> bool:
     return any(d.severity == ERROR for d in diagnostics)
 
 
+def _provenance(value, source: str | None) -> str:
+    """What the plan's `meta` records for one input: the display name the caller
+    gave, else the path it was read from -- or `<in-memory>` for a document that
+    was handed over already loaded and so has no path to name."""
+    if source is not None:
+        return source
+    return "<in-memory>" if isinstance(value, dict) else str(value)
+
+
 def schedule(
     workflow_path,
     environment_path,
@@ -54,12 +70,19 @@ def schedule(
     max_time_seconds: float | None = None,
     random_seed: int | None = None,
     workflow_source: str | None = None,
+    environment_source: str | None = None,
+    document_source: str | None = None,
 ) -> ScheduleReport:
-    """`workflow_path` is a path to a workflow file or an already-loaded (e.g.
-    import-expanded) workflow document. `workflow_source` is an optional display
-    path recorded as the plan's `meta.workflow` provenance: a caller that passes
-    an in-memory document (so the workflow is not read from disk here) can still
-    name the original file, instead of the plan showing `<in-memory>`."""
+    """Each of `workflow_path`, `environment_path` and `document_path` is a path to
+    a file or an already-loaded document (a mapping) -- e.g. an import-expanded
+    workflow, or the status a runner just rendered from its own history.
+
+    `workflow_source` / `environment_source` / `document_source` are optional
+    display paths recorded as the plan's `meta` provenance: a caller that passes an
+    in-memory document (so nothing is read from disk here) can still name the
+    original file, instead of the plan showing `<in-memory>`.
+
+    In-memory documents are read, never written to."""
     diagnostics: list[Diagnostic] = []
 
     # 1. Environment: schema-validate, then load into the model.
@@ -88,11 +111,18 @@ def schedule(
         diagnostics += doc_result.diagnostics
         if not doc_result.ok:
             return ScheduleReport(None, None, None, diagnostics)
-        raw = yaml.safe_load(Path(doc_path).read_text(encoding="utf-8"))
+        raw = (
+            doc_path
+            if isinstance(doc_path, dict)
+            else yaml.safe_load(Path(doc_path).read_text(encoding="utf-8"))
+        )
         if isinstance(raw, dict):
-            interface = raw.get("interface")
+            # Copied, not referenced: the `interface` is echoed verbatim into the
+            # plan (below), and an in-memory document would otherwise leave the
+            # returned plan sharing a subtree with the caller's input.
+            interface = copy.deepcopy(raw.get("interface"))
             had_now = "now" in raw
-        root = yamlnode.load_file(doc_path)
+        root = yamlnode.load_source(doc_path)
 
     # 3. Build the instance (boundary nodes/arcs from interface always re-created,
     # like relays) and normalize the document into the augmented instance +
@@ -129,13 +159,9 @@ def schedule(
     plan = render_plan(
         instance,
         solution,
-        workflow=(
-            workflow_source
-            if workflow_source is not None
-            else ("<in-memory>" if isinstance(workflow_path, dict) else str(workflow_path))
-        ),
-        environment=str(environment_path),
-        status=str(doc_path) if root is not None else None,
+        workflow=_provenance(workflow_path, workflow_source),
+        environment=_provenance(environment_path, environment_source),
+        status=_provenance(doc_path, document_source) if root is not None else None,
         now=fixation.now if had_now else None,
         interface=interface,
     )

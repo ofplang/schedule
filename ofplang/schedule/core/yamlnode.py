@@ -8,6 +8,11 @@ lightweight nodes that carry the originating file and a 1-based line/column.
 Only what the validators need is exposed: mapping/sequence/scalar nodes with
 positions, ordered access, and scalar type predicates. This is deliberately not a
 general YAML data model.
+
+A document that is already loaded in memory (a caller that holds plain dicts, e.g.
+the rolling-horizon runner rendering its history each replan) is wrapped by
+`from_object` instead of being round-tripped through a file: the same node types,
+but without source positions. `load_source` picks the right one for either form.
 """
 
 from __future__ import annotations
@@ -154,3 +159,56 @@ def load_file(path) -> YNode | None:
     """Wrap the YAML document at `path`, recording the path as the source file."""
     p = Path(path)
     return loads(p.read_text(encoding="utf-8"), str(path))
+
+
+# The resolved tag of an in-memory scalar, looked up by *exact* Python type -- which
+# is what keeps `bool` and `int` apart here (`bool` is a subclass of `int`, the same
+# distinction `is_int` makes). Anything else -- a type YAML's safe dumper would not
+# emit -- carries no tag rather than a made-up one; the validators read a scalar's
+# value and its predicates, never its tag.
+_SCALAR_TAGS = {
+    bool: "tag:yaml.org,2002:bool",
+    int: "tag:yaml.org,2002:int",
+    float: "tag:yaml.org,2002:float",
+    str: "tag:yaml.org,2002:str",
+    type(None): "tag:yaml.org,2002:null",
+}
+
+
+def from_object(data, file: str | None = None) -> YNode:
+    """Wrap an already-loaded document (plain dicts / sequences / scalars).
+
+    The result carries no source position (`file` defaults to None, so a
+    diagnostic raised at one of these nodes has no `location` and locates by its
+    `path` alone). Normalizes what a YAML round-trip would have normalized, so an
+    in-memory document is read exactly like the file it would have been written
+    to: a tuple becomes a sequence and every mapping key becomes a string
+    (first occurrence wins for keyed access, as in `_wrap`).
+    """
+    if isinstance(data, dict):
+        entries: list[YEntry] = []
+        by_key: dict[str, YNode] = {}
+        for key, value in data.items():
+            name = str(key)
+            child = from_object(value, file)
+            entries.append(YEntry(name, file, 0, 0, child))
+            by_key.setdefault(name, child)
+        return YMap(entries, by_key, file, 0, 0)
+
+    if isinstance(data, (list, tuple)):
+        return YSeq([from_object(item, file) for item in data], file, 0, 0)
+
+    return YScalar(data, _SCALAR_TAGS.get(type(data), ""), file, 0, 0)
+
+
+def load_source(source) -> YNode | None:
+    """Wrap `source`: a path to a YAML file, or an already-loaded document.
+
+    The single place the two input forms are told apart (`isinstance(source, dict)`,
+    as the workflow parser does), so every caller -- both validators, the
+    environment loader and the scheduling entry point -- agrees on what counts as
+    an in-memory document.
+    """
+    if isinstance(source, dict):
+        return from_object(source)
+    return load_file(source)

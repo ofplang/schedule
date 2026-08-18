@@ -74,6 +74,23 @@ or HTML. Exit codes: `0` success, `1` validation errors or no feasible schedule,
 This tool is also intended to be exposed as the `schedule` subcommand of the
 umbrella `ofp` CLI (a separate repository in the `ofplang` organization).
 
+## Library
+
+```python
+from ofplang.schedule import schedule
+
+report = schedule(workflow, environment, document_path=status)  # -> ScheduleReport
+```
+
+Each input is either a path or an already-loaded document (a mapping), so an
+embedder that holds them in memory — a rolling-horizon runner rendering a fresh
+status every replan — passes them straight in, with no temporary files and nothing
+re-parsed. An in-memory document is read, never written to, and the plan it
+produces shares no structure with it. Because such a document has no file to point
+at, its diagnostics carry no `file:line:col` and locate by their `path` instead,
+and the plan's `meta` provenance reads `<in-memory>` unless the caller names the
+original file (`workflow_source` / `environment_source` / `document_source`).
+
 The package lives under the `ofplang` PEP 420 namespace (`ofplang.schedule`),
 shared across the organization's tools.
 

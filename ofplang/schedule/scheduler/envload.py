@@ -4,6 +4,11 @@ The document is first run through the existing schema validator
 (`validate_environment`, §9.1); only a shape-valid document is turned into a
 model. Because that pass has already guaranteed the structure, the build here
 reads with a plain YAML load and does not re-check shapes.
+
+`source` is either a path or an already-loaded environment document (a mapping) --
+the latter is read as it stands, so nothing is parsed and nothing is written to a
+file. The document is treated as read-only: the model copies every collection it
+keeps, so it never aliases the caller's dict.
 """
 
 from __future__ import annotations
@@ -23,7 +28,7 @@ from ofplang.schedule.validation import validate_environment
 
 
 def load_environment(source) -> tuple[Environment | None, ValidationResult]:
-    """Validate then load the environment at `source`.
+    """Validate then load the environment `source` (a path, or the document itself).
 
     Returns `(environment, result)`. On any error the environment is None and the
     result carries the diagnostics; warnings alone still yield a model.
@@ -31,7 +36,11 @@ def load_environment(source) -> tuple[Environment | None, ValidationResult]:
     result = validate_environment(source)
     if not result.ok:
         return None, result
-    data = yaml.safe_load(Path(source).read_text(encoding="utf-8"))
+    data = (
+        source
+        if isinstance(source, dict)
+        else yaml.safe_load(Path(source).read_text(encoding="utf-8"))
+    )
     return _build(data), result
 
 
