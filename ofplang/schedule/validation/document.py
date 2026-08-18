@@ -59,7 +59,16 @@ def validate_document(source) -> ValidationResult:
     already-loaded document (a mapping), so a caller holding it in memory need not
     round-trip it through a file. An in-memory document has no source positions, so
     its diagnostics carry no `location` and locate by `path` alone."""
-    root = yamlnode.load_source(source)
+    return validate_document_node(yamlnode.load_source(source))
+
+
+def validate_document_node(root: YNode | None) -> ValidationResult:
+    """Validate an execution document that is already wrapped (`yamlnode`).
+
+    The entry point for a caller that needs the node tree for something else too --
+    the loader that builds a model from the same document, the CLI that guesses the
+    document kind -- so the file is parsed once instead of once per pass. `root` is
+    None for an empty document, which is itself reported."""
     diags = Diagnostics()
     _check(root, diags)
     return ValidationResult(diags.items)

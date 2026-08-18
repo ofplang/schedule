@@ -13,6 +13,10 @@ A document that is already loaded in memory (a caller that holds plain dicts, e.
 the rolling-horizon runner rendering its history each replan) is wrapped by
 `from_object` instead of being round-tripped through a file: the same node types,
 but without source positions. `load_source` picks the right one for either form.
+
+`to_plain` goes the other way, so a caller that needs both the tree (to validate,
+with positions) and the ordinary value (to build a model from) parses the file
+once and derives the value from the tree, rather than reading it a second time.
 """
 
 from __future__ import annotations
@@ -212,3 +216,31 @@ def load_source(source) -> YNode | None:
     if isinstance(source, dict):
         return from_object(source)
     return load_file(source)
+
+
+def to_plain(node: YNode | None) -> object:
+    """The plain Python value `yaml.safe_load` would produce for the same source.
+
+    The wrapped tree keeps positions and every duplicate mapping entry so the
+    validators can inspect them; a consumer that only wants the value -- the
+    environment loader building its model, the scheduling entry point reading a
+    document's `interface` -- reconstructs it here instead of parsing the file
+    again. None (an empty document) maps to None.
+
+    Fidelity with `safe_load` is exact: a scalar's `value` was constructed by
+    PyYAML's own SafeConstructor from the original node (so `!!timestamp` is a
+    datetime, a quoted "123" stays a string), and **duplicate mapping keys collapse
+    last-wins**, which is what a dict comprehension over the entries gives and what
+    `safe_load` does. Note the asymmetry that follows: keyed *node* access is
+    first-wins (`YMap.get`, see `_wrap`), so on a document with duplicate keys the
+    validators inspect the first entry while a model built from this value uses the
+    last. That predates this function -- it is what reading the file twice already
+    did -- and is tracked as its own finding rather than silently changed here.
+    """
+    if isinstance(node, YScalar):
+        return node.value
+    if isinstance(node, YSeq):
+        return [to_plain(item) for item in node.items]
+    if isinstance(node, YMap):
+        return {entry.key: to_plain(entry.value) for entry in node.entries}
+    return None

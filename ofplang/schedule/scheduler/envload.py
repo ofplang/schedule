@@ -1,22 +1,20 @@
 """Load an execution environment definition into the typed `Environment` model.
 
-The document is first run through the existing schema validator
-(`validate_environment`, §9.1); only a shape-valid document is turned into a
-model. Because that pass has already guaranteed the structure, the build here
-reads with a plain YAML load and does not re-check shapes.
+The document is first run through the existing schema validator (§9.1); only a
+shape-valid document is turned into a model. Because that pass has already
+guaranteed the structure, the build here does not re-check shapes.
 
-`source` is either a path or an already-loaded environment document (a mapping) --
-the latter is read as it stands, so nothing is parsed and nothing is written to a
-file. The document is treated as read-only: the model copies every collection it
-keeps, so it never aliases the caller's dict.
+A file is parsed exactly once: the wrapped tree goes to the validator (which needs
+its positions) and the plain value the model is built from is derived from that same
+tree (`yamlnode.to_plain`). `source` may also be an already-loaded environment
+document (a mapping), which is read as it stands -- nothing parsed, nothing written
+to a file. Either way the document is treated as read-only: the model copies every
+collection it keeps, so it never aliases the caller's dict.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-
-import yaml
-
+from ofplang.schedule.core import yamlnode
 from ofplang.schedule.core.diagnostics import ValidationResult
 from ofplang.schedule.scheduler.model import (
     Device,
@@ -24,7 +22,7 @@ from ofplang.schedule.scheduler.model import (
     Mode,
     ProcessCapability,
 )
-from ofplang.schedule.validation import validate_environment
+from ofplang.schedule.validation.environment import validate_environment_node
 
 
 def load_environment(source) -> tuple[Environment | None, ValidationResult]:
@@ -33,14 +31,15 @@ def load_environment(source) -> tuple[Environment | None, ValidationResult]:
     Returns `(environment, result)`. On any error the environment is None and the
     result carries the diagnostics; warnings alone still yield a model.
     """
-    result = validate_environment(source)
+    root = yamlnode.load_source(source)
+    result = validate_environment_node(root)
     if not result.ok:
         return None, result
-    data = (
-        source
-        if isinstance(source, dict)
-        else yaml.safe_load(Path(source).read_text(encoding="utf-8"))
-    )
+    # An in-memory document is already the value; a file's value comes off the tree
+    # just parsed, not from a second read. A shape-valid environment is a mapping --
+    # the validator reports anything else and we returned above.
+    data = source if isinstance(source, dict) else yamlnode.to_plain(root)
+    assert isinstance(data, dict)
     return _build(data), result
 
 

@@ -12,25 +12,27 @@ path or as an already-loaded document (a mapping), so an embedder that holds the
 memory (the rolling-horizon runner replanning each tick) does not round-trip them
 through files. An in-memory document is read as it stands and never written to; the
 `interface` echoed into the plan is copied, so the plan shares no structure with it.
+A document read from a file is parsed once here: the same wrapped tree is what the
+schema validator checks, what `interface` / `now` are read off, and what the
+normalizer matches against the instance.
 """
 
 from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
-from pathlib import Path
-
-import yaml
 
 from ofplang.schedule.core import yamlnode
 from ofplang.schedule.core.diagnostics import ERROR, Diagnostic, Diagnostics
+from ofplang.schedule.core.yamlnode import YMap
 from ofplang.schedule.scheduler.cpsat import solve
 from ofplang.schedule.scheduler.envload import load_environment
 from ofplang.schedule.scheduler.instance import build_instance, report_unreachable
 from ofplang.schedule.scheduler.normalize import normalize
 from ofplang.schedule.scheduler.plan import render_plan
 from ofplang.schedule.scheduler.workflow import parse_workflow
-from ofplang.schedule.validation import errors, validate_document
+from ofplang.schedule.validation import errors
+from ofplang.schedule.validation.document import validate_document_node
 
 
 @dataclass(frozen=True)
@@ -107,22 +109,21 @@ def schedule(
     had_now = False
     root = None
     if doc_path is not None:
-        doc_result = validate_document(doc_path)
+        root = yamlnode.load_source(doc_path)
+        doc_result = validate_document_node(root)
         diagnostics += doc_result.diagnostics
         if not doc_result.ok:
             return ScheduleReport(None, None, None, diagnostics)
-        raw = (
-            doc_path
-            if isinstance(doc_path, dict)
-            else yaml.safe_load(Path(doc_path).read_text(encoding="utf-8"))
-        )
-        if isinstance(raw, dict):
-            # Copied, not referenced: the `interface` is echoed verbatim into the
-            # plan (below), and an in-memory document would otherwise leave the
-            # returned plan sharing a subtree with the caller's input.
-            interface = copy.deepcopy(raw.get("interface"))
-            had_now = "now" in raw
-        root = yamlnode.load_source(doc_path)
+        # Read the two fields the pipeline needs off what was already parsed. From a
+        # file, `to_plain` builds fresh objects, so the plan cannot end up sharing a
+        # subtree with anything; an in-memory document is the caller's own, so its
+        # `interface` is copied before being echoed into the plan (below).
+        if isinstance(doc_path, dict):
+            interface = copy.deepcopy(doc_path.get("interface"))
+            had_now = "now" in doc_path
+        elif isinstance(root, YMap):
+            interface = yamlnode.to_plain(root.get("interface"))
+            had_now = "now" in root
 
     # 3. Build the instance (boundary nodes/arcs from interface always re-created,
     # like relays) and normalize the document into the augmented instance +
