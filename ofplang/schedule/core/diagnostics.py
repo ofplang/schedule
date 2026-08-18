@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ofplang.schedule.core.yamlnode import YNode
+from ofplang.schedule.core.yamlnode import YEntry, YNode
 
 ERROR = "error"
 WARNING = "warning"
@@ -46,23 +46,25 @@ class Diagnostics:
         message: str = "",
         path: str = "",
         *,
-        at: YNode | None = None,
+        at: YNode | YEntry | None = None,
         severity: str = ERROR,
     ) -> None:
         # A node `at` supplies the source position; without one the diagnostic is
-        # still recorded but carries no location.
+        # still recorded but carries no location. A `YEntry` is accepted too: it
+        # carries the position of a mapping *key*, which is where a key-level
+        # finding (an unknown key, a duplicate one) belongs.
         file = at.file if at is not None else None
         line = at.line if at is not None else None
         col = at.col if at is not None else None
         self._items.append(Diagnostic(code, message, path, file, line, col, severity))
 
     def error(
-        self, code: str, message: str = "", path: str = "", *, at: YNode | None = None
+        self, code: str, message: str = "", path: str = "", *, at: YNode | YEntry | None = None
     ) -> None:
         self.add(code, message, path, at=at, severity=ERROR)
 
     def warning(
-        self, code: str, message: str = "", path: str = "", *, at: YNode | None = None
+        self, code: str, message: str = "", path: str = "", *, at: YNode | YEntry | None = None
     ) -> None:
         self.add(code, message, path, at=at, severity=WARNING)
 

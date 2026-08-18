@@ -13,6 +13,10 @@ INVALID_IDENTIFIER = "invalid_identifier"
 MALFORMED_QUALIFIED_SPOT = "malformed_qualified_spot"
 UNKNOWN_OBJECTIVE_KIND = "unknown_objective_kind"
 NEGATIVE_VALUE = "negative_value"
+# A mapping key that appears more than once. YAML itself permits it and resolves
+# the entry last-wins, which makes it a silent way to write one document and get
+# another; it is never intentional in these schemas.
+DUPLICATE_KEY = "duplicate_key"
 
 # §10.2 Environment definition
 MISSING_REQUIRED_SECTION = "missing_required_section"
@@ -133,6 +137,7 @@ ERROR_CODES = frozenset(
         MALFORMED_QUALIFIED_SPOT,
         UNKNOWN_OBJECTIVE_KIND,
         NEGATIVE_VALUE,
+        DUPLICATE_KEY,
         MISSING_REQUIRED_SECTION,
         EMPTY_DEVICES,
         EMPTY_MODES,

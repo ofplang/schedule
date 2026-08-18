@@ -753,6 +753,15 @@ codes** with a `file:line:col` source position (§10). Each diagnostic has a
 do not make a document invalid. The codes are shared across `ofplang.schedule`'s
 own validators, but are a separate catalog from `ofplang.validate`'s.
 
+**A mapping key must not repeat.** YAML permits a repeated key and resolves it
+last-wins, so a document that repeats one is read as something other than what it
+appears to say. Both validators reject it (`duplicate_key`), wherever in the
+document it occurs, and report one diagnostic per repeated key positioned at its
+last entry. The one exception follows from §9.4: inside the payload of an `x-`
+extension key nothing is checked, so a repeat nested there is not reported —
+though a repeat *of* the extension key itself is, since that a key appears twice is
+a property of the document rather than an interpretation of the payload.
+
 **Execution-layer validation** (§9.3) covers everything that needs the workflow or
 depends on solvability. The execution layer reads the workflow itself with
 `ofplang.schedule`'s own minimal parser — extracting only what it needs (process
@@ -901,7 +910,9 @@ implementation may attach vendor- or deployment-specific data under such a key
 without it being an unknown-key error. Extension keys are **ignored** by this
 specification — their presence, shape, and semantics are not defined here, their
 values are never validated (no type, reference, or null checks apply inside an
-`x-` subtree), and a document is not required to carry any.
+`x-` subtree), and a document is not required to carry any. The single thing checked
+about an extension key is that the key itself does not repeat (§9) — a property of
+the document, not of the payload.
 
 Extension keys are admitted only at **closed mapping positions** — the same
 positions where the schema otherwise enforces a fixed key set: the environment
@@ -930,6 +941,7 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `malformed_qualified_spot` | a spot is not in `<device>.<spot>` form (exactly one `.`) |
 | `unknown_objective_kind` | `objective.kind` is not `makespan` |
 | `negative_value` | an integer that must be non-negative is negative |
+| `duplicate_key` | a mapping key repeats (§9; not reported inside an `x-` payload, §9.4) |
 
 ### 10.2 Environment definition (§9.1)
 

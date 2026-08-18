@@ -1,0 +1,15 @@
+# The extension key itself is written twice. That a key appears twice is a fact
+# about the document rather than an interpretation of the payload, so unlike the
+# case above this is reported (§9, §9.4).
+time: {unit: second}
+devices:
+- id: reader_0
+  spots: [stage]
+processes:
+  measure_od:
+    modes:
+    - devices: [reader_0]
+      duration: 45
+      input_spots: {plate: reader_0.stage}
+x-labcode: {version: 1}
+x-labcode: {version: 2}

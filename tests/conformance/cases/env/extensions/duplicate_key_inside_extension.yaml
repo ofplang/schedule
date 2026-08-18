@@ -1,0 +1,16 @@
+# A repeat *within* an `x-` payload. §9.4 states the values under an extension key
+# are never validated -- no check applies inside the subtree -- so this is not
+# reported here; the implementation that defines the extension is what can check it.
+time: {unit: second}
+devices:
+- id: reader_0
+  spots: [stage]
+processes:
+  measure_od:
+    modes:
+    - devices: [reader_0]
+      duration: 45
+      input_spots: {plate: reader_0.stage}
+x-labcode:
+  script: {language: python}
+  script: {language: python, code: pass}

@@ -1,0 +1,6 @@
+outcome: invalid
+match: exact
+errors:
+- {code: duplicate_key, path: now}
+notes: 'A mapping key repeats; spec §9. The same rule as for the environment -- the
+    validators share it.'

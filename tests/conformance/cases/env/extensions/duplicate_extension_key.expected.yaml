@@ -1,0 +1,6 @@
+outcome: invalid
+match: exact
+errors:
+- {code: duplicate_key, path: x-labcode}
+notes: 'A repeated `x-` key is reported even though its payload is never validated;
+    spec §9, §9.4.'

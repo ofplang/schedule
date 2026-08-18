@@ -1,0 +1,5 @@
+# `now` is written twice: the document plans from 7, not from 3, however it reads.
+time: {unit: second}
+now: 3
+now: 7
+activities: []

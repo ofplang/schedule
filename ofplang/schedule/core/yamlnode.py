@@ -84,7 +84,15 @@ class YEntry:
 
 
 class YMap(YNode):
-    """A mapping with ordered entries and first-wins keyed access."""
+    """A mapping with ordered entries and last-wins keyed access.
+
+    `entries` keeps every entry, including repeats, so the duplicate-key pass can
+    report them; keyed access resolves a repeated key to its **last** value, which
+    is what `yaml.safe_load` (and so `to_plain`, and so anything built from the
+    value) resolves it to. The two agreeing is the point: a validator that checked
+    the first value while the model used the last would validate one document and
+    run another.
+    """
 
     def __init__(self, entries: list[YEntry], by_key: dict[str, YNode], file, line, col):
         super().__init__(file, line, col)
@@ -92,6 +100,7 @@ class YMap(YNode):
         self._by_key = by_key
 
     def get(self, key: str) -> YNode | None:
+        """The value of `key` (its last entry if the key repeats); None if absent."""
         return self._by_key.get(key)
 
     def __contains__(self, key: str) -> bool:
@@ -135,7 +144,7 @@ def _wrap(node, loader: yaml.SafeLoader, file: str | None) -> YNode:
                     child,
                 )
             )
-            by_key.setdefault(key, child)
+            by_key[key] = child  # last-wins, as safe_load's dict assignment is
         return YMap(entries, by_key, file, line, col)
 
     if isinstance(node, yaml.SequenceNode):
@@ -186,8 +195,9 @@ def from_object(data, file: str | None = None) -> YNode:
     diagnostic raised at one of these nodes has no `location` and locates by its
     `path` alone). Normalizes what a YAML round-trip would have normalized, so an
     in-memory document is read exactly like the file it would have been written
-    to: a tuple becomes a sequence and every mapping key becomes a string
-    (first occurrence wins for keyed access, as in `_wrap`).
+    to: a tuple becomes a sequence and every mapping key becomes a string. A dict
+    cannot repeat a key, but two distinct keys can collide once stringified (`1`
+    and `"1"`), and such a collision resolves last-wins exactly as in `_wrap`.
     """
     if isinstance(data, dict):
         entries: list[YEntry] = []
@@ -196,7 +206,7 @@ def from_object(data, file: str | None = None) -> YNode:
             name = str(key)
             child = from_object(value, file)
             entries.append(YEntry(name, file, 0, 0, child))
-            by_key.setdefault(name, child)
+            by_key[name] = child  # last-wins, as in `_wrap`
         return YMap(entries, by_key, file, 0, 0)
 
     if isinstance(data, (list, tuple)):
@@ -230,12 +240,11 @@ def to_plain(node: YNode | None) -> object:
     Fidelity with `safe_load` is exact: a scalar's `value` was constructed by
     PyYAML's own SafeConstructor from the original node (so `!!timestamp` is a
     datetime, a quoted "123" stays a string), and **duplicate mapping keys collapse
-    last-wins**, which is what a dict comprehension over the entries gives and what
-    `safe_load` does. Note the asymmetry that follows: keyed *node* access is
-    first-wins (`YMap.get`, see `_wrap`), so on a document with duplicate keys the
-    validators inspect the first entry while a model built from this value uses the
-    last. That predates this function -- it is what reading the file twice already
-    did -- and is tracked as its own finding rather than silently changed here.
+    last-wins**, which is what a dict comprehension over the entries gives, what
+    `safe_load` does, and what `YMap.get` resolves them to -- so the value built
+    here and the value the validators inspected are the same one. (Duplicate keys
+    are themselves reported, `validation/duplicates.py`, so such a document does
+    not reach a model in the first place.)
     """
     if isinstance(node, YScalar):
         return node.value

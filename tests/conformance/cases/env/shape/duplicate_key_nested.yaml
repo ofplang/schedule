@@ -1,0 +1,13 @@
+# The repeat is inside a mode, in a sequence item: the pass walks the whole
+# document, not just its top level.
+time: {unit: second}
+devices:
+- id: reader_0
+  spots: [stage]
+processes:
+  measure_od:
+    modes:
+    - devices: [reader_0]
+      duration: 45
+      duration: 60
+      input_spots: {plate: reader_0.stage}

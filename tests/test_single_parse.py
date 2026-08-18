@@ -61,14 +61,17 @@ def test_to_plain_round_trips_an_in_memory_document():
     assert yamlnode.to_plain(yamlnode.from_object(data)) == data
 
 
-def test_to_plain_is_last_wins_while_keyed_node_access_is_first_wins():
-    """The documented asymmetry: `safe_load` (and so `to_plain`) keeps the last
-    duplicate entry, while `YMap.get` -- what the validators read -- keeps the first.
-    Pinned here so a change to either one is deliberate."""
+def test_a_duplicate_key_resolves_last_wins_at_both_layers():
+    """`safe_load`, `to_plain` and keyed node access all keep the last duplicate
+    entry, so the value a validator inspects is the value a model would be built
+    from. Such a document is separately reported invalid (see test_duplicates.py).
+    Pinned here so a change to either layer is deliberate."""
     text = "a: 1\na: 2\n"
     root = yamlnode.loads(text, "<text>")
     assert yamlnode.to_plain(root) == yaml.safe_load(text) == {"a": 2}
-    assert root.get("a").value == 1
+    assert root.get("a").value == 2
+    # Every entry survives in the tree: that is what the duplicate-key pass reads.
+    assert [e.key for e in root.entries] == ["a", "a"]
 
 
 def test_to_plain_of_an_empty_document_is_none():

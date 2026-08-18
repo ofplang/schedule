@@ -12,6 +12,7 @@ from ofplang.schedule.core.identifiers import is_identifier, parse_qualified_spo
 from ofplang.schedule.core.yamlnode import YMap, YNode, YScalar
 from ofplang.schedule.validation import _shape as shape
 from ofplang.schedule.validation import errors
+from ofplang.schedule.validation.duplicates import check_duplicate_keys
 
 # Allowed keys per structure (unknown keys are errors; §9.1, strict).
 ENV_TOP = {"time", "devices", "transporters", "transports", "processes", "objective"}
@@ -53,6 +54,12 @@ def _check(root: YNode | None, diags: Diagnostics) -> None:
         else:
             diags.error(errors.WRONG_TYPE, "environment document is empty", "")
         return
+
+    # Repeated keys anywhere in the document, before the schema itself: a repeat
+    # is read last-wins, so the document says something other than it appears to
+    # (§9, `duplicates`). Reported and then carried on with -- one document can
+    # have several independent problems.
+    check_duplicate_keys(root, diags)
 
     shape.unknown_keys(root, ENV_TOP, "", diags)
     for section in REQUIRED_SECTIONS:

@@ -1,0 +1,3 @@
+outcome: valid
+notes: 'Values under an `x-` key are never validated, so a duplicate nested in an
+    extension payload is not reported; spec §9.4.'

@@ -1,0 +1,6 @@
+outcome: invalid
+match: exact
+errors:
+- {code: duplicate_key, path: processes}
+notes: 'A mapping key repeats; spec §9. Reported at the last entry -- the one YAML
+    resolves the key to, and the one to delete.'

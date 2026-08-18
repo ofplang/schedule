@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: duplicate_key, path: "processes.measure_od.modes[0].duration"}
+notes: 'A mapping key repeats inside a sequence item; spec §9.'

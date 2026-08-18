@@ -70,20 +70,23 @@ Codes are compared as **sets** (order- and duplicate-insensitive).
 | Directory        | Covers |
 |------------------|--------|
 | `valid/`         | minimal / full / multi-device mode / Pure-Data process |
-| `shape/`         | unknown/missing/extra keys, wrong value kinds, empty devices/modes |
+| `shape/`         | unknown/missing/extra keys, wrong value kinds, empty devices/modes, duplicate mapping keys |
 | `identifiers/`   | id grammar, duplicates, device/transporter id conflict (error), other cross-kind coincidence (warning) |
 | `values/`        | durations, `time.unit`, `objective.kind` |
 | `spots/`         | qualified-spot form, unknown device/spot, intra-mode spot rules |
 | `transports/`    | unknown transporter, duplicate transport entry |
+| `extensions/`    | where `x-` keys are admitted (§9.4), and what is / is not checked inside a payload |
 
 `cases/doc/` (execution document — §9.2, §10.3):
 
 | Directory        | Covers |
 |------------------|--------|
 | `valid/`         | plan / status / minimal / Pure-Data + transport |
-| `shape/`         | unknown/missing keys, wrong value kinds |
+| `shape/`         | unknown/missing keys, wrong value kinds, duplicate mapping keys |
 | `activity/`      | kind, status, missing start, ordering, negative times |
 | `processing/`    | required fields, node-path shape |
 | `transport/`     | required fields, arc shape, qualified spots |
+| `relay/`         | required fields, `seq`, zero duration, a valid relayed chain |
+| `interface/`     | port names, qualified spots, section shape (§6.8) |
 | `toplevel/`      | outcome, objective, now |
-| `placements/`    | placement object shape, qualified spot |
+| `extensions/`    | where `x-` keys are admitted (§9.4), and what is / is not checked inside a payload |
