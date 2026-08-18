@@ -75,6 +75,15 @@ def test_validate_malformed_yaml_is_usage_error(tmp_path, capsys):
     assert "cannot parse" in capsys.readouterr().err
 
 
+def test_validate_malformed_yaml_under_auto_detect_is_usage_error(tmp_path, capsys):
+    # Without --kind there is nothing to detect a kind from, so the failure is
+    # reported as the undetermined kind rather than the parse error (both exit 2).
+    bad = tmp_path / "broken.yaml"
+    bad.write_text(_BROKEN_YAML, encoding="utf-8")
+    assert cli.main(["validate", str(bad)]) == cli.EXIT_USAGE
+    assert "cannot determine kind" in capsys.readouterr().err
+
+
 def test_schedule_malformed_workflow_is_caught_by_front_door(tmp_path, capsys):
     # A malformed workflow is rejected by the ofplang-validate front door as an
     # invalid document (EXIT_INVALID), reported with its validate error code.

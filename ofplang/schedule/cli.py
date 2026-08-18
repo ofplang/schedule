@@ -40,10 +40,13 @@ from ofplang.validate import validate as validate_workflow
 from ofplang.validate.yamlnode import YamlError
 
 from ofplang.schedule import schedule as run_schedule
-from ofplang.schedule import validate_document, validate_environment
+from ofplang.schedule.core import yamlnode
 from ofplang.schedule.core.diagnostics import ERROR, ValidationResult
+from ofplang.schedule.core.yamlnode import YMap, YNode
 from ofplang.schedule.scheduler.plan import to_yaml
 from ofplang.schedule.scheduler.visualize import render_html, render_svg
+from ofplang.schedule.validation.document import validate_document_node
+from ofplang.schedule.validation.environment import validate_environment_node
 
 EXIT_OK = 0
 EXIT_INVALID = 1
@@ -133,24 +136,25 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _detect_kind(path: str) -> str | None:
-    """Guess the document kind from its top-level keys; None if ambiguous."""
-    try:
-        data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-    except yaml.YAMLError:
+def _detect_kind(root: YNode | None) -> str | None:
+    """Guess the document kind from the top-level keys of an already-parsed
+    document; None if ambiguous (including a document that is not a mapping, or
+    absent because it did not parse)."""
+    if not isinstance(root, YMap):
         return None
-    if not isinstance(data, dict):
-        return None
-    if "activities" in data:
+    if "activities" in root:
         return "document"
-    if "devices" in data or "processes" in data:
+    if "devices" in root or "processes" in root:
         return "environment"
     return None
 
 
-def _validate_one(path: str, kind: str) -> tuple[str, ValidationResult]:
-    result = validate_environment(path) if kind == "environment" else validate_document(path)
-    return path, result
+def _validate_one(root: YNode | None, kind: str) -> ValidationResult:
+    return (
+        validate_environment_node(root)
+        if kind == "environment"
+        else validate_document_node(root)
+    )
 
 
 def _color_enabled(no_color: bool) -> bool:
@@ -230,22 +234,28 @@ def _cmd_validate(args) -> int:
     results: list[tuple[str, ValidationResult]] = []
     for path in args.paths:
         kind = args.kind
+        # Parsed once per file: the same tree tells us the kind and is what the
+        # validator checks (it used to be read once for each).
+        try:
+            root: YNode | None = yamlnode.load_source(path)
+        except yaml.YAMLError as exc:
+            # A file that does not parse as YAML is an input error, not a schema
+            # validation result. With an explicit --kind, name the parse error
+            # (mirrors _cmd_visualize); under auto-detect there is nothing to detect
+            # from, so it falls through to the report below, as it did before.
+            if kind != "auto":
+                print(f"ofp-schedule: cannot parse {path!r}: {exc}", file=sys.stderr)
+                return EXIT_USAGE
+            root = None
         if kind == "auto":
-            kind = _detect_kind(path)
+            kind = _detect_kind(root)
             if kind is None:
                 print(
                     f"ofp-schedule: cannot determine kind of {path!r}; pass --kind",
                     file=sys.stderr,
                 )
                 return EXIT_USAGE
-        try:
-            results.append(_validate_one(path, kind))
-        except yaml.YAMLError as exc:
-            # A file that does not parse as YAML is an input error, not a schema
-            # validation result (auto-detect already handles this; an explicit
-            # --kind must not slip past it). Mirrors _cmd_visualize.
-            print(f"ofp-schedule: cannot parse {path!r}: {exc}", file=sys.stderr)
-            return EXIT_USAGE
+        results.append((path, _validate_one(root, kind)))
 
     if args.format == "json":
         print(_render_json(results))

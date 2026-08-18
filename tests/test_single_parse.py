@@ -15,7 +15,7 @@ from pathlib import Path
 
 import yaml
 
-from ofplang.schedule import schedule, validate_document, validate_environment
+from ofplang.schedule import cli, schedule, validate_document, validate_environment
 from ofplang.schedule.core import yamlnode
 from ofplang.schedule.validation.document import validate_document_node
 from ofplang.schedule.validation.environment import validate_environment_node
@@ -140,3 +140,12 @@ def test_in_memory_inputs_are_not_parsed_at_all(monkeypatch):
     assert per_file == {}
     assert total["n"] == 0
 
+
+def test_cli_validate_parses_each_file_once(monkeypatch, capsys):
+    """The `validate` subcommand guesses each file's kind from the tree it validates,
+    rather than reading the file once to guess and once to check."""
+    per_file, total = _count_parses(monkeypatch)
+    assert cli.main(["validate", str(ENV), str(STATUS), "--quiet"]) == cli.EXIT_OK
+    capsys.readouterr()
+    assert per_file == {ENV.name: 1, STATUS.name: 1}
+    assert total["n"] == 2
