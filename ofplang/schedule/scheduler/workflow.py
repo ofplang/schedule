@@ -64,6 +64,13 @@ def parse_workflow(source) -> tuple[Workflow | None, Diagnostics]:
 
     Returns `(workflow, diagnostics)`; the workflow is None when a blocking
     diagnostic (unparseable document or no entry) is raised.
+
+    This reader assumes valid v0 -- validating a workflow is `ofplang-validate`'s job,
+    and both CLIs run it at their front door. What it does not assume is that it was
+    *given* valid v0: `--no-validate` says the caller already validated, and a caller
+    holding a document in memory may not have. Two guards keep that from turning into
+    something worse than a diagnostic (see `_check_readable` and the translation
+    below).
     """
     diags = Diagnostics()
     if isinstance(source, dict):
@@ -74,6 +81,100 @@ def parse_workflow(source) -> tuple[Workflow | None, Diagnostics]:
         diags.error(errors.WRONG_TYPE, "workflow must be a mapping")
         return None, diags
 
+    # First guard: the shapes this reader would otherwise read *partially*, which is
+    # worse than failing -- a workflow with fewer activities than the document says
+    # schedules successfully and hides the omission.
+    if not _check_readable(data, diags):
+        return None, diags
+
+    # Second guard: everything else. A shape this reader cannot use at all makes it
+    # raise, and an exception escaping a function whose contract is "returns
+    # diagnostics" reaches the CLI as a traceback (both CLIs catch only YAMLError).
+    # The exception's own type and text go into the message: a genuine bug in the
+    # reader must not be disguised as a malformed document.
+    try:
+        return _read_workflow(data, diags)
+    except (AttributeError, TypeError, KeyError) as exc:
+        diags.error(
+            errors.WRONG_TYPE,
+            f"workflow could not be read ({type(exc).__name__}: {exc}); it is not "
+            "shaped as v0 requires -- validate it first",
+        )
+        return None, diags
+
+
+def _check_readable(data: dict, diags: Diagnostics) -> bool:
+    """Report the shapes that would otherwise be read partially, and say whether the
+    document is worth reading at all.
+
+    Only those: a shape this reader *cannot* read raises, and the caller translates
+    that. What is caught here is where it would carry on with less than the document
+    holds -- a type whose domain it cannot see (so an Object silently counts as Pure
+    Data and its transport arc disappears), a body or a node list it cannot walk (so
+    the workflow comes out with no activities in it), a node without an id, a binding
+    or a return whose source it cannot read (so a connection silently is not one).
+
+    Every finding is collected in one pass: these are independent positions, not one
+    error and its consequences.
+    """
+    ok = True
+
+    def wrong(path: str, what: str) -> None:
+        nonlocal ok
+        diags.error(errors.WRONG_TYPE, f"{path} must be {what}", path)
+        ok = False
+
+    types = data.get("types")
+    if isinstance(types, dict):
+        for tname, spec in types.items():
+            if not isinstance(spec, dict):
+                wrong(f"types.{tname}", "a mapping (its domain decides Object-bearing)")
+
+    procs = data.get("processes")
+    if not isinstance(procs, dict):
+        return ok
+    for pname, proc in procs.items():
+        if not isinstance(proc, dict):
+            continue  # unreadable, not partially readable: the translation reports it
+        body = proc.get("body")
+        if body is None:
+            continue
+        base = f"processes.{pname}.body"
+        if not isinstance(body, dict):
+            wrong(base, "a mapping")
+            continue
+        nodes = body.get("nodes")
+        if nodes is not None and not isinstance(nodes, list):
+            wrong(f"{base}.nodes", "a sequence")
+        elif isinstance(nodes, list):
+            for i, node in enumerate(nodes):
+                npath = f"{base}.nodes[{i}]"
+                if not isinstance(node, dict):
+                    wrong(npath, "a mapping")
+                    continue
+                if not isinstance(node.get("id"), str):
+                    wrong(f"{npath}.id", "a string (a node is keyed by its id)")
+                for section in ("state", "bind"):
+                    entries = node.get(section)
+                    if not isinstance(entries, dict):
+                        continue  # unreadable: left to the translation
+                    for port, binding in entries.items():
+                        if not isinstance(binding, dict):
+                            wrong(f"{npath}.{section}.{port}", "a mapping")
+        returns = body.get("returns")
+        if isinstance(returns, dict):
+            for rname, ret in returns.items():
+                if not isinstance(ret, dict):
+                    wrong(f"{base}.returns.{rname}", "a mapping")
+    return ok
+
+
+def _read_workflow(data: dict, diags: Diagnostics) -> tuple[Workflow | None, Diagnostics]:
+    """Read a document this reader can use: the capability gate, then the flattening.
+
+    Split out so the guards in `parse_workflow` wrap the whole of it -- including the
+    capability gate, which walks `processes` and so needs the same protection.
+    """
     # Capability gate: the scheduler handles a subset of valid v0. Features it
     # cannot schedule are rejected here with a clear unsupported-feature
     # diagnostic rather than silently mis-read — e.g. a generic Object port
