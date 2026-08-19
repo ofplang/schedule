@@ -207,7 +207,7 @@ def _multi_base(tmp_path):
         ActivityInstance,
         ArcInstance,
         Instance,
-        _transport_options,
+        transport_options,
     )
     from ofplang.schedule.scheduler.model import Arc, Endpoint
 
@@ -221,13 +221,13 @@ def _multi_base(tmp_path):
         Arc(Endpoint(("S1",), "o"), Endpoint(("T",), "i1")),
         0,
         2,
-        tuple(_transport_options(s1, "o", tgt, "i1", env)),
+        tuple(transport_options(s1, "o", tgt, "i1", env)),
     )
     arc2 = ArcInstance(
         Arc(Endpoint(("S2",), "o"), Endpoint(("T",), "i2")),
         1,
         2,
-        tuple(_transport_options(s2, "o", tgt, "i2", env)),
+        tuple(transport_options(s2, "o", tgt, "i2", env)),
     )
     return Instance(env, "second", (s1, s2, tgt), (arc1, arc2), ((0, 2), (1, 2))), env
 

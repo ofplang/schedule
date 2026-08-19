@@ -157,7 +157,7 @@ def build_instance(
                 f" -> {format_endpoint(arc.dst.node, arc.dst.port)}",
             )
             continue
-        options = _transport_options(
+        options = transport_options(
             activities[si], arc.src.port, activities[di], arc.dst.port, env
         )
         if not options and check_reachability:
@@ -291,7 +291,7 @@ def _add_boundary_inputs(
         if di is None:
             # a consumer that is not a scheduled activity; cannot happen for a valid workflow
             continue
-        options = _transport_options(
+        options = transport_options(
             activities[node_index], name, activities[di], consumer.port, env
         )
         if not options and check_reachability:
@@ -376,7 +376,7 @@ def _add_boundary_outputs(
         if si is None:
             # a producer that is not a scheduled activity; cannot happen for a valid workflow
             continue
-        options = _transport_options(
+        options = transport_options(
             activities[si], producer.port, activities[node_index], name, env
         )
         if not options and check_reachability:
@@ -506,7 +506,7 @@ def _check_side(
             )
 
 
-def _transport_options(
+def transport_options(
     src: ActivityInstance,
     src_port: str,
     dst: ActivityInstance,
@@ -514,7 +514,11 @@ def _transport_options(
     env: Environment,
 ) -> list[TransportOption]:
     """Enumerate viable transport options over the endpoint mode pairs and the
-    transporters. A same-spot move is free (duration 0)."""
+    transporters. A same-spot move is free (duration 0).
+
+    Public because `normalize` enumerates the same options when it re-creates the
+    boundary and relay arcs of a replan: one definition of what routes are viable,
+    used by whoever needs it, rather than a private one reached across modules."""
     options: list[TransportOption] = []
     for m, src_mode in enumerate(src.modes):
         from_spot = src_mode.output_spots.get(src_port)

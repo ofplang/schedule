@@ -42,25 +42,24 @@ from dataclasses import dataclass
 
 from ofplang.schedule.core.diagnostics import Diagnostics
 from ofplang.schedule.core.identifiers import format_node_path
-from ofplang.schedule.core.yamlnode import YMap, YNode, YScalar, YSeq
+from ofplang.schedule.core.yamlnode import YMap, YNode, YScalar, YSeq, to_plain
 from ofplang.schedule.scheduler.instance import (
     ActivityInstance,
     ArcInstance,
     Instance,
     RelayInfo,
-    _transport_options,
+    transport_options,
 )
 from ofplang.schedule.scheduler.model import Arc, Mode, NodePath
 from ofplang.schedule.scheduler.status import (
     ActivityFixation,
     ArcFixation,
     Fixation,
-    _arc_key,
-    _node_path,
-    _status_of,
-    _text,
-    _times,
-    _to_plain,
+    arc_key,
+    node_path,
+    status_of,
+    text,
+    times,
 )
 from ofplang.schedule.validation import errors
 
@@ -179,7 +178,7 @@ def _has_started_activities(root: YMap) -> bool:
     activities = root.get("activities")
     if not isinstance(activities, YSeq):
         return False
-    return any(isinstance(item, YMap) and _status_of(item) in _STARTED for item in activities.items)
+    return any(isinstance(item, YMap) and status_of(item) in _STARTED for item in activities.items)
 
 
 def _has_terminal_status(root: YMap) -> bool:
@@ -189,7 +188,7 @@ def _has_terminal_status(root: YMap) -> bool:
     if not isinstance(activities, YSeq):
         return False
     return any(
-        isinstance(item, YMap) and _status_of(item) in _TERMINAL for item in activities.items
+        isinstance(item, YMap) and status_of(item) in _TERMINAL for item in activities.items
     )
 
 
@@ -218,14 +217,14 @@ def _read_status(root, node_index, arc_keys, now, diags):
     for i, item in enumerate(items):
         if not isinstance(item, YMap):
             continue
-        status = _status_of(item)
+        status = status_of(item)
         if status not in _STARTED:
             continue  # pending / relay / status-less: regenerated from committed legs
         base = f"activities[{i}]"
-        kind = _text(item.get("kind"))
-        start, end = _times(item)
+        kind = text(item.get("kind"))
+        start, end = times(item)
         if kind == "processing":
-            path = _node_path(item.get("node"))
+            path = node_path(item.get("node"))
             if path not in node_index:
                 diags.error(
                     errors.STATUS_NODE_UNKNOWN,
@@ -246,7 +245,7 @@ def _read_status(root, node_index, arc_keys, now, diags):
             _check_times(status, start, end, now, item, base, diags)
             fixed_proc[path] = _FixedProc(status, start, end, item)
         elif kind == "transport":
-            key = _arc_key(item.get("arc"))
+            key = arc_key(item.get("arc"))
             if key is None:
                 continue
             if key not in arc_keys:
@@ -274,9 +273,9 @@ def _read_status(root, node_index, arc_keys, now, diags):
                     status,
                     start,
                     end,
-                    _text(item.get("from_spot")),
-                    _text(item.get("to_spot")),
-                    _text(item.get("transporter")),
+                    text(item.get("from_spot")),
+                    text(item.get("to_spot")),
+                    text(item.get("transporter")),
                 )
             )
     return fixed_proc, legs_by_arc
@@ -300,7 +299,7 @@ def _build_chain(
         # No committed leg: a single pending transport, resolved against the
         # (possibly frozen) endpoints. Reachability of pending legs is checked
         # by the caller after normalization.
-        options = _transport_options(
+        options = transport_options(
             activities[src_i], logical.src.port, activities[dst_i], logical.dst.port, env
         )
         arcs.append(ArcInstance(logical, src_i, dst_i, tuple(options)))
@@ -374,7 +373,7 @@ def _build_chain(
     # After the committed legs: if the destination is still pending, add a
     # pending re-transport from the last committed spot to the successor.
     if not dst_fixed:
-        options = _transport_options(
+        options = transport_options(
             activities[prev_i], "out", activities[dst_i], logical.dst.port, env
         )
         arcs.append(ArcInstance(logical, prev_i, dst_i, tuple(options), seq=legs[-1].seq + 2))
@@ -412,12 +411,21 @@ def _frozen_processing_mode(entry: YMap, process: str, env, diags) -> Mode | Non
     """A fixed processing activity's occupancy comes from its reported echo
     (input_spots / output_spots / devices), falling back to the environment's
     mode of the reported id, and erroring only if neither resolves (SPEC §9.3)."""
-    mode_id = _text(entry.get("mode"))
-    inp = _to_plain(entry.get("input_spots"))
-    out = _to_plain(entry.get("output_spots"))
-    devs = _to_plain(entry.get("devices"))
+    mode_id = text(entry.get("mode"))
+    # The echo is schema-valid by this point (§9.2), so these are a mapping / mapping /
+    # sequence; narrowed rather than assumed because `to_plain` returns a plain value of
+    # whatever shape the document had.
+    inp = to_plain(entry.get("input_spots"))
+    out = to_plain(entry.get("output_spots"))
+    devs = to_plain(entry.get("devices"))
     if inp or out or devs:
-        return Mode(mode_id, tuple(devs or []), 0, dict(inp or {}), dict(out or {}))
+        return Mode(
+            mode_id,
+            tuple(devs) if isinstance(devs, list) else (),
+            0,
+            dict(inp) if isinstance(inp, dict) else {},
+            dict(out) if isinstance(out, dict) else {},
+        )
     capability = env.processes.get(process)
     if capability is not None:
         for mode in capability.modes:
