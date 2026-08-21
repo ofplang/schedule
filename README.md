@@ -79,6 +79,20 @@ This tool is also the `schedule` subcommand of the umbrella `ofp` CLI
 with this CLI's own subcommands intact: `ofp schedule schedule …`,
 `ofp schedule visualize …`, each with the same options and exit codes as above.
 
+## Feature support
+
+v0 defines seven optional features (spec §4.2), and a document requiring one an
+implementation does not have "is valid v0 but unsupported by that implementation"
+(§4.1). So `ofp-validate` accepting a workflow does not mean this scheduler can
+plan it:
+
+| v0 feature | `ofplang-schedule` |
+|---|---|
+| `python_script_processes` | Supported. A script process is scheduled like any atomic one; its mode `duration` is the estimate of the compute cost. Running the script is the runner's job. |
+| `scheduling_policies` | Accepted, then **ignored**: §23 makes these best-effort preferences, and a composite's `scheduling` section is dropped when the composite is flattened. The report's diagnostics carry a `scheduling_policies_ignored` warning. |
+| `node_map`, `node_fold`, `node_do_while`, `node_branch` | **Not supported.** A structured node reshapes dataflow in ways the flat scheduler graph cannot represent, so it is refused with `unsupported_feature`. |
+| `generic_processes` | **Not supported.** Refused with `unsupported_feature`. |
+
 ## Library
 
 ```python
