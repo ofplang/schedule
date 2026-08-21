@@ -71,8 +71,10 @@ chart — SVG by default (fixed colours, transparent background, PowerPoint-safe
 or HTML. Exit codes: `0` success, `1` validation errors or no feasible schedule,
 `2` usage/input error.
 
-This tool is also intended to be exposed as the `schedule` subcommand of the
-umbrella `ofp` CLI (a separate repository in the `ofplang` organization).
+This tool is also the `schedule` subcommand of the umbrella `ofp` CLI
+([`ofplang`](https://pypi.org/project/ofplang/)), which forwards to it in-process
+with this CLI's own subcommands intact: `ofp schedule schedule …`,
+`ofp schedule visualize …`, each with the same options and exit codes as above.
 
 ## Library
 
