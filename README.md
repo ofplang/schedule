@@ -49,7 +49,7 @@ pip install -e ".[test]"
 ```sh
 ofp-schedule validate <file>...                 # validate an environment or a plan/status
 ofp-schedule schedule <workflow> --env <env> [--document doc.yaml] [--running-margin N] [--seed N] [--no-validate] [-o plan.yaml] [--format yaml|json]
-ofp-schedule visualize <plan> [--view device|workflow|lane] [--theme light|dark|auto] [-o out.svg]
+ofp-schedule visualize <plan|status> [--view device|workflow|lane] [--theme light|dark|auto] [--format svg|html] [-o FILE]
 ```
 
 `validate` auto-detects whether the file is an environment definition or an
@@ -65,11 +65,14 @@ run); `--seed N` makes it reproducible by fixing the CP-SAT seed and using a
 single worker. `--no-validate` skips the one-shot `ofplang-validate` front-door
 check of the workflow — use it when the workflow was already validated upstream
 (e.g. by the `ofp` umbrella CLI); `$import` is still resolved, since that is
-structural rather than a validation check. `visualize` renders a plan as a
-self-contained Gantt
-chart — SVG by default (fixed colours, transparent background, PowerPoint-safe)
-or HTML. Exit codes: `0` success, `1` validation errors or no feasible schedule,
-`2` usage/input error.
+structural rather than a validation check. `visualize` renders any §6 execution
+document — a plan, or the status a finished run produced — as a self-contained
+Gantt chart, either SVG (fixed colours, transparent background, PowerPoint-safe)
+or HTML. `--format` chooses; without it the output is SVG, except that an `-o`
+path ending in `.html` or `.htm` is taken as asking for HTML, and an explicit
+`--format` always wins — `--format svg -o chart.html` writes SVG. Exit codes:
+`0` success, `1` validation errors or no feasible schedule, `2` usage/input
+error.
 
 This tool is also the `schedule` subcommand of the umbrella `ofp` CLI
 ([`ofplang`](https://pypi.org/project/ofplang/)), which forwards to it in-process
