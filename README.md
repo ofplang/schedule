@@ -96,6 +96,14 @@ original file (`workflow_source` / `environment_source` / `document_source`).
 The package lives under the `ofplang` PEP 420 namespace (`ofplang.schedule`),
 shared across the organization's tools.
 
+## Examples
+
+[`examples/`](examples/README.md) holds complete workflow + environment pairs used
+to drive and eyeball the scheduler: a minimal source → target, a workflow with
+boundary material pinned by an `interface`, two jobs on a two-transporter fleet, a
+plate-reformatting DAG, and a parametric generator that scales the instance up.
+Each comes with its solved plan and a rendered chart under `examples/outputs/`.
+
 ## Tests
 
 ```sh
