@@ -4,6 +4,11 @@
 > model, the execution environment schema (§5), the execution document schema that
 > serves as both plan and status (§6, §7), the identifiers (§8), the schema-
 > validator scope (§9), and the error-code catalog (§10) are settled.
+>
+> **Consumable resources and replenishment (§4.7, and the parts of §5, §6, §9 and
+> §10 they reach) are specified but not yet implemented.** They are written here
+> ahead of the code so the design can be reviewed as a whole; the implementation
+> lands in slices, starting with consumption alone.
 
 ## 1. Overview
 
@@ -57,12 +62,13 @@ In scope:
 | --- | --- | --- |
 | ofplang workflow YAML | The logical DAG (what to do; data / Object flow) | Logical, invariant |
 | Execution environment YAML (§5) | Where / how long (capabilities, durations, transport) | Physical, static, reusable |
-| Execution document YAML (§6) | Input carrying the `interface` boundary constraint and, on a replan, the prior status; also the output plan | Planning constraint / dynamic / result |
+| Execution document YAML (§6) | Input carrying the `interface` boundary constraint and the `inventories` starting levels and, on a replan, the prior status; also the output plan | Planning constraint / dynamic / result |
 
 An execution document (§6) is the shared shape used for both the scheduler's
-**input** (the `interface` boundary spots, plus the prior status on a replan) and
-its **output** (the plan). A document with `now` is a replanning input; without
-`now` it is an initial-plan input (typically carrying only `interface`).
+**input** (the `interface` boundary spots and the `inventories` starting levels,
+plus the prior status on a replan) and its **output** (the plan). A document with
+`now` is a replanning input; without `now` it is an initial-plan input (typically
+carrying only `interface` and `inventories`).
 
 Where the workflow's boundary Object-bearing material sits — the entry inputs'
 start positions and the final outputs' delivery positions — is a **planning
@@ -71,6 +77,12 @@ interior Object-bearing port is constrained by its arc's transport; a boundary
 port has no such arc, so `interface` supplies the equivalent). It is given in the
 `interface` section of the execution document (§6.8), supplied for the initial
 plan and carried through replans, not in the environment definition.
+
+The consumable resource levels a run **starts** with (§6.10) sit there for the same
+reason: how much stock is on hand is a property of the run, not of the machine, so
+the environment declares only each resource's `capacity` (§5.2). Levels at any later
+moment are derived from the history rather than supplied (§4.7.2), which is what
+keeps the environment definition free of anything that changes as a run proceeds.
 
 ## 4. Scheduling model
 
@@ -82,10 +94,16 @@ unit come from the environment definition (`time.unit`).
 ### 4.2 What is scheduled
 
 The scheduled units are **activities**, each with a start and an end. There are
-two kinds: a **processing** activity for each atomic process invocation (composite
-processes are structural and expand into their atomic invocations), and a
-**transport** activity for each Object-bearing arc (§4.5). Future versions may add
-further activity kinds (e.g. replenishment).
+three kinds: a **processing** activity for each atomic process invocation (composite
+processes are structural and expand into their atomic invocations), a **transport**
+activity for each Object-bearing arc (§4.5), and a **replenishment** activity
+refilling a device's consumable resources (§4.7.1). Transport activities may be
+joined by **relay** activities where a move is re-routed (§6.4.1).
+
+The first two come from the workflow — one per atomic node, one per Object-bearing
+arc — so how many there are is fixed before scheduling begins. Replenishments do
+not: the scheduler decides how many to run, which is why they alone are identified
+by an explicit `id` rather than by the node or arc they serve (§6.9).
 
 ### 4.3 Object-bearing values vs Pure Data
 
@@ -187,13 +205,121 @@ distinct ids, and each transport activity is assigned to one of them.
   modelled. Transport duration depends only on the chosen transporter and the
   source/destination spot pair.
 
-### 4.7 Objective
+### 4.7 Device-local consumable resources
 
-The only objective in the initial version is **makespan** minimisation. The
-objective may be supplied by the environment definition or overridden on the
-command line; only makespan is accepted for now.
+A device may hold **consumable resources** — reagent, pipette tips, buffer — as
+non-negative integer quantities. A resource is not Object-bearing material: it
+occupies no spot, is never transported, and carries no identity. It is a level
+that falls when work consumes it and rises when a replenishment refills it.
 
-### 4.8 Replanning
+- Resources are **device-local**. A resource name is scoped to its device and the
+  globally unique resource id is the qualified form `<device>.<resource>` (§8.2).
+  Two devices that each hold `reagent` hold two independent stocks; v0 defines no
+  resource shared across devices.
+- Each resource has a **capacity**, the largest level its device can hold (§5.2).
+- A processing mode declares what it **consumes** (§5.5). The whole amount is taken
+  at the activity's **start**; consumption spread over the activity is not modelled.
+  Transport, relay and replenishment activities consume nothing.
+- A **replenishment** activity refills one device; its effect lands in a single step
+  at the activity's **end**.
+- At every one of those points, each resource's level must stay within
+  `[0, capacity]`.
+
+Because a device is exclusive (§4.4) and every activity that touches a device's
+resources occupies that device, the events on one `<device>.<resource>` are totally
+ordered in time: no two of them can coincide except where one activity's end meets
+another's start. At such a point the replenishment is applied **before** the
+consumption, so a refill that ends exactly when the work it feeds begins does feed
+it.
+
+#### 4.7.1 Replenishment activities
+
+A replenishment activity occupies **two machines** for its whole interval: the
+device being refilled and the **replenisher** performing the refill (§5.6). This is
+an ordinary multi-device activity (§4.4.1) and no new exclusion rule applies. It
+occupies **no spot** and moves no Object, so material may rest in the device's spots
+while it is refilled.
+
+Replenishments are not derived from the workflow. The scheduler decides how many to
+run and when, so unlike a processing or transport activity there is no node or arc a
+replenishment corresponds to — which is why it is the one activity kind identified
+by an explicit `id` (§6.9). A replenishment may be scheduled well ahead of the work
+that needs it; refilling early is allowed.
+
+A **planned** replenishment fills every resource declared on its device to that
+resource's `capacity`. The amount added is therefore derived, not chosen: v0 does
+not select refill quantities, so a plan never depends on how much of a refill was
+"worth" doing. A replenishment that is already running or finished is different —
+its reported `amounts` are what actually went in, which need not reach capacity
+(§6.9).
+
+Filling to capacity is also what bounds the search: one refill per consuming
+activity then suffices for any schedule that is possible at all, so the scheduler
+considers at most one candidate replenishment per (consuming activity, device) pair.
+For that bound to hold, no single mode may consume more of a resource than its
+device's capacity — an environment that says otherwise describes work that cannot
+run however it is arranged, and is rejected (`consumption_exceeds_capacity`, §10.2).
+
+#### 4.7.2 Levels are derived from the initial levels and the history
+
+A resource's level at a given moment is **derived**, never supplied as a current
+reading. The execution document gives the levels the run *started* with
+(`inventories.initial`, §6.10) and the scheduler replays the history against them:
+every started processing activity has already taken its `consumption`, and every
+finished replenishment has already added its `amounts`. A replenishment that is
+still running has not landed yet — it is a fixed increase at its end.
+
+This is the rule of §6.5 applied to inventory: a value the activities already
+determine is not carried separately. It also forces one thing on the history. A
+replan may be triggered by removing from the environment the very mode a completed
+activity used, and §7 says such an activity is never re-read against the current
+environment — so a started activity must carry enough of its own assignment to be
+interpreted without it. A processing activity therefore echoes its `consumption`
+(§6.3), and a finished replenishment must report its `amounts` (§6.9).
+
+Two consequences follow. The history must be **complete**: a status that drops
+completed activities cannot reproduce the levels. And an inventory change that no
+activity accounts for — a manual top-up, a spill, an evaporated stock — **cannot be
+expressed**, because v0 has no way to state a measured level at a later time.
+
+#### 4.7.3 Disabling resources
+
+The whole resource model can be switched off. It is then treated the way v0
+features this scheduler does not implement are treated (§2): the declarations are
+still checked for shape, but nothing is applied — no consumption, no capacity, no
+replenishment activity, and the `replenishment_count` objective stage is dropped.
+The plan then has exactly the shape it would have had had resources never been
+declared, which is what lets a consumer that cannot execute replenishments still be
+driven from a resource-bearing environment.
+
+Switching resources off never makes a schedule harder to find: the disabled model is
+a relaxation of the enabled one. Started replenishment activities in a replanning
+input are still echoed, because they are historical fact (§7); they are simply not
+used to compute anything.
+
+### 4.8 Objective
+
+The objective is a sequence of **stages** minimised lexicographically: the first
+stage is minimised, then the second subject to the first's optimum, and so on. v0
+defines two stages.
+
+- `makespan` — the time at which the last activity ends. Every activity counts,
+  replenishments included, so a refill can never be parked after the work.
+- `replenishment_count` — how many replenishment activities the plan contains.
+
+`makespan` alone stays the common case and may be written as a bare scalar (§5.8).
+When the objective is omitted the default is `[makespan, replenishment_count]`;
+wherever replenishment is not in play `replenishment_count` is identically zero and
+that default is equivalent to `[makespan]`.
+
+Minimising the number of replenishments matters as soon as replenishment is enabled.
+A refill that delays nothing is otherwise free, so without this stage a plan may
+carry refills that serve no purpose.
+
+The objective may be supplied by the environment definition or overridden on the
+command line.
+
+### 4.9 Replanning
 
 Replanning takes the workflow, the environment, and an execution status, and
 produces an updated plan for the remaining work. Completed and running activities
@@ -205,8 +331,10 @@ revised estimates.
 
 The execution environment definition is a YAML document with the following
 top-level sections. `time`, `devices`, and `processes` are required; `transporters`,
-`transports`, and `objective` are optional (`transporters` / `transports` may be
-omitted when the workflow has no Object-bearing arcs). Durations are YAML integers.
+`transports`, `replenishers`, `replenishments`, and `objective` are optional
+(`transporters` / `transports` may be omitted when the workflow has no
+Object-bearing arcs; `replenishers` / `replenishments` when nothing is refilled).
+Durations are YAML integers.
 
 ### 5.1 `time`
 
@@ -225,6 +353,15 @@ spots.
   `devices`). A spot name is unique **within its device**; the globally unique
   spot id is the qualified form `<device>.<spot>` (see §8). Because neither part
   contains a `.`, the qualified form parses unambiguously.
+- `resources` (optional) — the consumable resources this device holds (§4.7), as a
+  mapping from resource name to its definition. A resource name is unique **within
+  its device**; the globally unique resource id is the qualified form
+  `<device>.<resource>` (§8.2). Omitting the section means the device holds no
+  consumable resource. Each definition is a mapping with one key:
+  - `capacity` — the largest level this device can hold of that resource, a
+    **positive** YAML integer. There is no `initial` here: what the device holds at
+    the start of a run is not a property of the device but of the run, and is given
+    in the execution document (`inventories.initial`, §6.10).
 
 ### 5.3 `transporters`
 
@@ -282,16 +419,66 @@ process:
   other and output ports must not share a spot with each other, but an input and
   an output port may share a spot.
 
+- `consumption` (optional) — what running this mode consumes (§4.7), as a mapping
+  from a **qualified** resource id `<device>.<resource>` (§8.2) to a **positive**
+  YAML integer. The qualified form is required for the same reason `input_spots`
+  requires it: a mode may name more than one device, so a bare resource name would
+  be ambiguous. Each named device must be one of the mode's `devices`, and each
+  named resource must be declared on it. A resource the mode does not name is not
+  consumed — a zero is written by leaving the entry out, not by writing `0`. No
+  entry may exceed its resource's `capacity` (§4.7.1).
+
 Pure Data ports are not listed in `input_spots` / `output_spots` (they occupy no
 spot).
 
-### 5.6 `objective` (optional)
+### 5.6 `replenishers`
 
-- `kind` — the objective. Only `makespan` is accepted in the initial version. May
-  be overridden on the command line. When `objective` is omitted, the default is
-  `makespan`.
+A list of replenishers (§4.7.1) — whatever performs a refill, be it a liquid
+handler, a dispensing station, or a human operator on a schedule. Each entry is an
+individual replenisher:
 
-### 5.7 Example
+- `id` — unique replenisher id.
+
+A replenisher is a **machine** in the sense of §8.2: like a device or a
+transporter, it is exclusive (the replenishments assigned to one may not overlap)
+and is taken out of service by id alone, so no two machines of any kind may share
+an id.
+
+Omitting the section is equivalent to an empty list, and an empty list is allowed.
+An environment with resources but no replenisher is a deliberate configuration, not
+an error: it describes stocks that are consumed and never refilled within the
+schedule — for instance because an operator tops them up outside it. Such a run is
+simply infeasible once a stock would go negative.
+
+### 5.7 `replenishments`
+
+The replenishment capability table, keyed by `(replenisher, device)`:
+
+- `replenisher` — a defined replenisher id.
+- `device` — a defined device id, which must declare `resources` (§5.2).
+- `duration` — a **positive** integer, in `time.unit`. A refill is real work, so
+  zero is not allowed — the same rule a device-occupying processing mode follows
+  (§5.5).
+
+Semantics:
+
+- A missing `(replenisher, device)` entry means that replenisher **cannot** refill
+  that device: reachability is expressed by presence in the table, exactly as for
+  `transports` (§5.4).
+- Unlike a transport, a refill is never *required*. A device no replenisher can
+  reach is not an error; it is a device whose stocks only fall.
+- The duration does not depend on which resources are refilled or by how much. One
+  visit refills the device.
+
+### 5.8 `objective` (optional)
+
+- `kind` — the objective (§4.8). Either a single stage name as a scalar, or a list
+  of stage names minimised lexicographically. The defined stage names are
+  `makespan` and `replenishment_count`. When `objective` is omitted, the default is
+  `[makespan, replenishment_count]`, which is equivalent to `makespan` wherever no
+  replenishment can occur. May be overridden on the command line.
+
+### 5.9 Example
 
 ```yaml
 time:
@@ -302,12 +489,20 @@ devices:                              # ids use [A-Za-z_][A-Za-z0-9_]* (no hyphe
     spots: [slot_0, slot_1]           # two plate positions on one device
   - id: reader_0
     spots: [stage]
+    resources:                        # consumable stock held by this device
+      dye: { capacity: 20 }           # capacity only; the starting level is §6.10
   - id: hotel_0                       # storage / buffer
     spots: [h0, h1]
 
 transporters:
   - id: arm_0
   - id: arm_1
+
+replenishers:
+  - id: dispenser_0
+
+replenishments:  # a missing (replenisher, device) pair means "cannot refill it"
+  - { replenisher: dispenser_0, device: reader_0, duration: 30 }
 
 transports:  # from/to are qualified <device>.<spot>
   - { transporter: arm_0, from: incubator_0.slot_0, to: reader_0.stage, duration: 20 }
@@ -329,13 +524,14 @@ processes:
         duration: 45
         input_spots:  { plate: reader_0.stage }
         output_spots: { plate: reader_0.stage }
+        consumption:  { reader_0.dye: 4 }   # qualified <device>.<resource>
   compute_mean:                       # Pure Data only -> duration only
     modes:
       - id: mean_v1
         duration: 5
 
 objective:
-  kind: makespan
+  kind: [makespan, replenishment_count]   # also the default when omitted
 ```
 
 ## 6. Execution document (plan and status)
@@ -378,20 +574,30 @@ environment.
   inputs and final outputs (a planning constraint, §3). **Required** for every
   Object-bearing entry input; optional per output. Supplied for the initial plan
   and carried through replans; echoed in the plan output.
+- `inventories` (§6.10) — the resource levels the run started with (a planning
+  constraint, §3, like `interface`). **Required** whenever the resource model is in
+  effect (§9.3, `missing_inventories`); forbidden nowhere, and ignored when
+  resources are disabled. Supplied for the initial plan and carried through replans
+  unchanged; echoed in the plan output.
 - `outcome` (optional) — the solver result: `optimal`, `feasible`, `infeasible`,
   or `unknown` (`unknown` = feasible but optimality unproven, e.g. on timeout).
   Present on a plan; absent on a status input.
-- `objective` (optional) — `kind` (`makespan`) and, optionally, `value`. A plan
-  output always carries `value` (the achieved makespan), but it is not required:
-  a document may give `kind` alone (e.g. to name the objective whose value is to
-  be computed), and there is no value to report when a solve is infeasible.
+- `objective` (optional) — `kind` (§5.8) and, optionally, `value`. `kind` may be a
+  scalar stage name or a list of them; `value` takes the same shape as the `kind` it
+  accompanies — a scalar for a scalar `kind`, a list of the achieved stage values in
+  the same order for a list. A plan output always carries `value`, but it is not
+  required: a document may give `kind` alone (e.g. to name the objective whose value
+  is to be computed), and there is no value to report when a solve is infeasible.
+  A plan written where no replenishment can occur reports the scalar form, so a plan
+  from a resource-free environment is shaped exactly as it always was.
 - `activities` (required).
 - `meta` (optional) — provenance, e.g. `workflow` and `environment` source
   references.
 
 ### 6.2 Activity — common fields
 
-- `kind` (required) — `processing`, `transport`, or `relay` (§6.4.1).
+- `kind` (required) — `processing`, `transport`, `relay` (§6.4.1), or
+  `replenishment` (§6.9).
 - `status` (optional) — `pending`, `running`, `completed`, `failed`, or
   `cancelled`; default `pending`. A plan leaves it out (all activities are
   pending). A status sets `completed` / `running` on the activities that have
@@ -425,6 +631,18 @@ environment.
   `[brew, heat]`); a single-level workflow yields a one-element list.
 - `devices`, `input_spots`, `output_spots` (optional) — derivable echo of the
   mode's devices and qualified spot mappings. A Pure-Data-only activity has none.
+- `consumption` (optional) — derivable echo of the mode's `consumption` (§5.5),
+  in the same qualified form. Absent where the mode consumes nothing.
+
+  This echo is what lets a started activity be read back **without** the
+  environment. A replan may remove from the environment the very mode a completed
+  activity used — that is how a re-route is triggered (§7) — and §7 forbids
+  re-reading a fixed activity against the current environment, so the amount it
+  consumed has to travel with it. A plan therefore always writes this echo where the
+  mode consumes something, and a started activity is read from the echo if it has
+  one and from the environment otherwise — the same fallback the `mode` itself uses
+  (§9.3). When neither yields an answer and the resource model is in effect, the
+  document cannot be replanned (`status_consumption_unknown`, §9.3).
 
 ### 6.4 Transport activity
 
@@ -500,7 +718,8 @@ activities. A `placements` key is now an unknown key (`unknown_key`, §9.2).
 
 A status is matched against the workflow (and any prior plan) by each activity's
 provenance: a processing activity by its `node`; a transport or relay activity by
-its `arc` **and `seq`**. A single-leg transport has one leg per arc, so its `arc`
+its `arc` **and `seq`**; a replenishment activity by its `id` (§6.9), since it has
+no workflow provenance to be matched by. A single-leg transport has one leg per arc, so its `arc`
 alone identifies it (`seq` omitted = position `0`). A multi-leg move (through
 relays, §6.4.1) has several legs and relays on the **same** `arc`, distinguished
 by `seq` — a per-arc chain ordinal. A **boundary** transport is matched the same
@@ -669,23 +888,108 @@ interface:
   outputs: { plate:  output_rack.slot_0 }   # optional; omit to leave the output where produced
 ```
 
+### 6.9 Replenishment activity
+
+- `kind: replenishment`; plus `status` / `start` / `end` (§6.2).
+- `id` (required) — this activity's identifier, in the §8.1 grammar. Unique among
+  the activities of one document.
+- `device` (required) — the device being refilled, which must declare `resources`.
+- `replenisher` (required) — the selected replenisher id (§5.6). The activity
+  occupies both machines over `[start, end]` (§4.7.1).
+- `amounts` (required) — how much each resource gained, as a mapping from a **bare**
+  resource name (the device is already named by `device`) to a positive integer.
+  Must not be empty: a refill that adds nothing would occupy two machines for no
+  reason.
+
+There is **no `node`**: a replenishment does not come from the workflow (§4.2).
+
+**On `amounts`.** For a planned (`pending`) replenishment this is derived, not
+chosen — every resource declared on the device is filled to its `capacity` (§4.7.1),
+so `amounts` is the resulting gain and entries that would be zero are left out. For
+a `running` or `completed` one it is a **report of what actually went in** and is
+not bound by that rule: a refill that only half filled a bottle is stated as such,
+and the schedule is replanned against it. This is the one channel through which a
+run's actual inventory can differ from what was planned (§4.7.2).
+
+**Why `id`.** Every other activity is identified by the workflow element it serves,
+but the scheduler decides how many replenishments to run, so there is no such
+element. The `id` is generated by the scheduler and is unique **within one
+document**; it is *not* stable across separate plans of the same inputs. That is
+sufficient because only started replenishments are ever matched by it, and a started
+one keeps the `id` it was given when it was planned, carried forward in the status.
+Pending replenishments are discarded and re-derived on every replan like any other
+pending work (§6.2), so their identifiers are not expected to survive.
+
+```yaml
+- kind: replenishment
+  id: replenishment_0
+  device: reader_0
+  replenisher: dispenser_0
+  amounts: { dye: 17 }
+  start: 300
+  end: 330
+  status: completed
+```
+
+### 6.10 Inventories (initial resource levels)
+
+`inventories` states the consumable resource levels the run **started** with. It is
+a planning constraint (§3), the inventory counterpart of `interface`: supplied for
+the initial plan, echoed in the plan output, and carried through replans unchanged.
+It is required whenever the resource model is in effect (§6.1).
+
+- `initial` (required) — a mapping from device id to a mapping from bare resource
+  name to a **non-negative** integer level.
+
+```yaml
+inventories:
+  initial:
+    reader_0: { dye: 20 }
+```
+
+Each device and resource named must be declared in the environment (§5.2). A
+declared resource that is *not* named is level `0`; an empty `initial` therefore
+means every stock starts empty, and is how a run that begins with nothing on hand is
+written. No level may exceed its resource's `capacity`.
+
+The levels at any later moment are **not** given here — they are derived by replaying
+the history against these (§4.7.2), which is why this section does not change from
+one replan to the next. The nesting under `initial` is deliberate: it leaves room for
+a future revision to state a level *measured* at a later time, which v0 cannot
+express.
+
 ## 7. Execution status
 
 The execution status is the replanning input. It is the **same document as the
 execution plan (§6)**, used with `now` set (the replan discriminator, required for
 a replanning input, §9.3), a `status` on each started activity, and the
-`interface` boundary constraint (§6.8) carried through unchanged; see §6, and the
-status example in §6.7. Entries that are `pending` or carry no `status` are ignored
-and re-derived from the workflow, so a prior plan can be fed back verbatim (§6.2).
+`interface` boundary constraint (§6.8) and `inventories` starting levels (§6.10)
+carried through unchanged; see §6, and the status example in §6.7. Entries that are
+`pending` or carry no `status` are ignored and re-derived from the workflow, so a
+prior plan can be fed back verbatim (§6.2).
 
 **Fixed parts are historical facts.** A `completed` / `running` activity or
 transport is pinned from its *reported* assignment — a processing's echo
-(`mode` / spots / `devices`), a transport's route (`from_spot` / `to_spot` /
-`transporter`) — and is **not** re-validated against the current environment.
+(`mode` / spots / `devices` / `consumption`), a transport's route (`from_spot` /
+`to_spot` / `transporter`), a replenishment's `device` / `replenisher` / `amounts` —
+and is **not** re-validated against the current environment.
 Only pending work is resolved and optimised against the current env. So a device
 can be removed from the environment between replans (its process mode dropped, its
 device / spot / transport routes kept) without invalidating the history that used
 it — which is exactly how a re-route is triggered (§9.3).
+
+This is why a started activity has to carry enough of its own assignment to be read
+without the environment. Resource levels are reconstructed by replaying the history
+(§4.7.2), and the mode a completed activity used may be exactly the one a replan has
+just removed — so what it consumed travels with it, in the `consumption` echo
+(§6.3). The same reasoning makes `amounts` required on a finished replenishment
+(§6.9): the environment says what a refill *would* have added, the history says what
+it did.
+
+**The history must be complete.** Because levels are replayed rather than reported,
+a status that omits completed activities does not describe the same inventory as the
+run it came from. A status is expected to carry every activity that has started
+since the run began.
 
 **Started transport into a pending successor is normalized, not rejected.** When a
 committed transport has delivered (or is delivering) an Object to a spot but its
@@ -703,7 +1007,8 @@ straight to the destination.
 
 ### 8.1 Syntax
 
-All ids defined by the environment (device, spot, transporter) use the v0
+All ids defined by the environment (device, spot, transporter, replenisher,
+resource) and the scheduler-generated replenishment activity `id` (§6.9) use the v0
 identifier grammar:
 
 ```text
@@ -721,21 +1026,30 @@ follow the v0 rules for those positions.
 
 - **device id** — unique among devices.
 - **transporter id** — unique among transporters.
+- **replenisher id** — unique among replenishers.
 - **spot** — a spot name is unique within its device. The globally unique spot id
   is the qualified form `<device>.<spot>`. Both `modes` and `transports` reference
   spots by the qualified form (a mode may name several devices, so a bare local
   name would be ambiguous).
-- **A device and a transporter must not share an id** — this is an **error**. Both
-  are machines, and at execution time a machine is taken out of service by id
-  alone: the set of unavailable machines names ids, not kinds. A shared string
-  makes the two indistinguishable there, so downing one would silently down the
-  other.
-- **Any other cross-kind coincidence is allowed**: a spot name may coincide with a
-  device id or a transporter id, and a port name may coincide with any of them
-  (port names live in a per-process, per-direction namespace — v0 §2.4). A spot is
-  only ever referenced in its qualified form `<device>.<spot>`, so it is never
-  mistaken for a machine. Such a coincidence is permitted but **should raise a
-  warning** for readability.
+- **resource** — a resource name is unique within its device. The globally unique
+  resource id is the qualified form `<device>.<resource>`, used by a mode's
+  `consumption` (§5.5) for the same reason spots are qualified there. Where the
+  device is already named by the surrounding structure — `inventories.initial`
+  (§6.10), a replenishment's `amounts` (§6.9) — the bare name is used.
+- **No two machines may share an id** — this is an **error**. Devices,
+  transporters and replenishers are all machines, and at execution time a machine
+  is taken out of service by id alone: the set of unavailable machines names ids,
+  not kinds. A shared string makes them indistinguishable there, so downing one
+  would silently down the other.
+- **Any other cross-kind coincidence is allowed**: a spot or resource name may
+  coincide with a machine id, a spot name may coincide with a resource name on the
+  same device, and a port name may coincide with any of them (port names live in a
+  per-process, per-direction namespace — v0 §2.4). A spot is only ever referenced in
+  its qualified form `<device>.<spot>` and a resource in `<device>.<resource>` or
+  under a key that names its device, so neither is mistaken for a machine — and the
+  two qualified forms are told apart by the section they appear in, not by their
+  shape. Such a coincidence is permitted but **should raise a warning** for
+  readability.
 
 ## 9. Validation
 
@@ -772,25 +1086,37 @@ given a valid v0 workflow.
 
 ### 9.1 Schema validator — the environment definition (shape only)
 
-- Identifier syntax (§8.1) and per-kind uniqueness (§8.2); a device and a
-  transporter sharing an id is an error, any other cross-kind coincidence raises a
-  warning.
+- Identifier syntax (§8.1) and per-kind uniqueness (§8.2); two machines (device,
+  transporter, replenisher) sharing an id is an error, any other cross-kind
+  coincidence raises a warning.
 - Required sections present (`time`, `devices`, `processes`); `devices` non-empty;
   each process has at least one mode.
 - Value constraints: a processing `duration` is a positive YAML integer, a
-  transport `duration` is a non-negative YAML integer; `time.unit` is a non-empty
-  string; if `objective` is present, its `kind` is `makespan`.
+  transport `duration` is a non-negative YAML integer, a replenishment `duration` is
+  a positive YAML integer; a resource `capacity` is a positive YAML integer and a
+  `consumption` amount a positive YAML integer; `time.unit` is a non-empty string;
+  if `objective` is present, its `kind` names only defined stages (§5.8), whether
+  given as a scalar or a list.
 - Env-internal references: each `transports.transporter` is a defined transporter;
-  every entry of a mode's `devices` is a defined device; every `from` / `to` and
-  every `input_spots` / `output_spots` value is a well-formed qualified spot
-  `<device>.<spot>` (exactly one `.`) naming a defined device and a spot defined on
-  it.
+  each `replenishments.replenisher` is a defined replenisher and its `device` is a
+  defined device that declares `resources`; every entry of a mode's `devices` is a
+  defined device; every `from` / `to` and every `input_spots` / `output_spots` value
+  is a well-formed qualified spot `<device>.<spot>` (exactly one `.`) naming a
+  defined device and a spot defined on it; every `consumption` key is a well-formed
+  qualified resource `<device>.<resource>` naming a defined device and a resource
+  declared on it.
 - Duplicate detection: duplicate ids within a kind (two devices, two transporters,
-  or two spots on one device sharing an id); a device and a transporter sharing an
-  id (§8.2); duplicate `transports` entries for the same `(transporter, from, to)`.
+  two replenishers, or two spots or two resources on one device sharing an id); two
+  machines sharing an id (§8.2); duplicate `transports` entries for the same
+  `(transporter, from, to)`; duplicate `replenishments` entries for the same
+  `(replenisher, device)`.
 - Intra-mode spot rules: within a mode, input ports do not share a spot, output
   ports do not share a spot, and every referenced spot's device is one of the
   mode's `devices`.
+- Intra-mode resource rules: every device named by a `consumption` key is one of the
+  mode's `devices`, and no amount exceeds that resource's `capacity` (§4.7.1). Both
+  are decidable from the environment alone, so they belong here rather than in the
+  execution layer.
 - **Unknown or extra keys are errors**, except keys using the reserved `x-`
   extension prefix (§9.4), which are ignored.
 
@@ -801,23 +1127,32 @@ or a status. Cross-document checks (that a `node` / `arc` / `process` exists in 
 workflow, or that a spot exists in the environment) are execution-layer (§9.3).
 
 - Top level: `activities` is required; `time` / `now` / `outcome` / `objective` /
-  `interface` / `meta` are optional. Unknown or extra keys are errors, except
-  reserved `x-` extension keys (§9.4), which are ignored.
+  `interface` / `inventories` / `meta` are optional. Unknown or extra keys are
+  errors, except reserved `x-` extension keys (§9.4), which are ignored. (That
+  `inventories` is *required* when the resource model is in effect depends on the
+  environment, so it is execution-layer, §9.3.)
 - `now` (if present) is a non-negative integer; `outcome` (if present) is one of
-  `optimal` / `feasible` / `infeasible` / `unknown`; `objective` (if present) has
-  `kind: makespan` and a non-negative integer `value`.
+  `optimal` / `feasible` / `infeasible` / `unknown`; `objective` (if present) has a
+  `kind` naming only defined stages (§5.8) as a scalar or a list, and a `value` of
+  the matching shape — a non-negative integer, or a list of them of the same length
+  as `kind`.
+- `inventories` (if present): `initial` is required and is a map of device id to a
+  map of resource name to a non-negative integer. (That the devices and resources
+  exist, and that no level exceeds its capacity, is execution-layer, §9.3.)
 - `interface` (if present): `inputs` / `outputs` (each optional) are maps of a port
   identifier to a qualified spot; a spot value is a well-formed qualified spot
   (`<device>.<spot>`, exactly one `.`). (That a port is an Object-bearing boundary
   port, and input-completeness / spot uniqueness / spot existence, are
   execution-layer, §9.3.)
-- Each activity: `kind` is required and is `processing`, `transport`, or `relay`;
+- Each activity: `kind` is required and is `processing`, `transport`, `relay`, or
+  `replenishment`;
   `status` (if present) is `pending` / `running` / `completed` / `failed` /
   `cancelled` (the last two are terminal, §6.2); `start` and `end`
   are required non-negative integers with `end >= start`. Unknown keys are errors
   (reserved `x-` extension keys excepted, §9.4).
   - processing: `process`, `mode`, and `node` (a non-empty list of identifiers) are
-    required; `devices`, `input_spots`, `output_spots` are optional.
+    required; `devices`, `input_spots`, `output_spots`, `consumption` are optional
+    (`consumption` is a map of qualified resource id to a positive integer).
   - transport: `from_spot`, `to_spot` (qualified spots) and `arc` (`from` / `to`,
     each `{ node: <list>, port: <id> }`) are required; `transporter` is required
     unless the move is same-spot (`from_spot == to_spot`), where it may be omitted
@@ -829,9 +1164,13 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
   - relay: `arc` (as above), `spot` (a qualified spot), and `seq` (a non-negative
     integer) are required; `end` must equal `start` (`relay_nonzero_duration`
     otherwise).
+  - replenishment: `id` (an identifier, unique among the document's activities),
+    `device` (an identifier), `replenisher` (an identifier) and `amounts` (a
+    **non-empty** map of resource name to a positive integer) are required; `node`
+    must not appear.
 - Form rules: identifiers match `[A-Za-z_][A-Za-z0-9_]*`; a qualified spot has
-  exactly one `.` with identifier parts; a node path is a non-empty list of
-  identifiers.
+  exactly one `.` with identifier parts, as does a qualified resource; a node path
+  is a non-empty list of identifiers.
 
 ### 9.3 Execution-layer validation (needs the workflow / solvability)
 
@@ -870,6 +1209,16 @@ environment for processes the workflow never invokes are not checked.
   No two bindings on the same side (two `inputs`, or two `outputs`) bind the same
   spot (`interface_duplicate_spot`). Every Object-bearing entry input must be bound
   (`interface_input_missing` otherwise); outputs are optional.
+- **Inventories** (§6.10): whether the resource model is in effect is an
+  environment question — it is, unless it has been disabled (§4.7.3), whenever any
+  invoked mode declares `consumption` or any device declares `resources`. When it
+  is, `inventories` is required (`missing_inventories` otherwise); an empty
+  `initial` is a valid answer meaning every stock starts empty. Each device and
+  resource named exists in the environment (`unknown_device` / `unknown_resource`)
+  and no level exceeds its `capacity` (`inventory_exceeds_capacity`). Device and
+  resource *declarations* survive a re-route — only modes and routes are withdrawn
+  from an environment (§7) — so these checks stay strict across replans, exactly as
+  the `interface` spot checks do.
 
 The execution document is always **normalized** against the instance (building the
 augmented instance the solver runs) after these checks, emitting the codes in
@@ -902,6 +1251,24 @@ leg is pinned like any committed leg; a pending one is re-derived).
 - **Chain consistency**: a committed transport leg's source processing is
   completed, and each leg departs from the spot the previous leg arrived at
   (`broken_transport_chain` otherwise).
+- **Replenishment history**: a started replenishment is matched by its `id`, and no
+  `id` repeats (`status_duplicate`). A `pending` replenishment is ignored and
+  regenerated like any other pending work, so it is not an error to carry one.
+  Started replenishments are pinned from their reported `device` / `replenisher` /
+  `amounts` and, like every fixed part, are not re-validated against the current
+  environment.
+- **Resource levels replay**: the level of each resource is `inventories.initial`
+  less what every started processing consumed, plus what every finished
+  replenishment added (§4.7.2). A started processing's consumption comes from its
+  `consumption` echo (§6.3), falling back to the current environment's mode of the
+  reported id, and errors only if neither resolves
+  (`status_consumption_unknown`) — the same fallback `status_mode_unknown` uses, for
+  the same reason. If replaying the history drives any level outside
+  `[0, capacity]`, the reported history and the environment disagree and the
+  document cannot be replanned (`status_inventory_inconsistent`). A `running`
+  replenishment has not landed: its `amounts` become a fixed increase at its end,
+  and it is this check that rejects an input whose completion alone would overflow
+  the resource.
 
 ### 9.4 Implementation extension keys (`x-`)
 
@@ -939,7 +1306,8 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `wrong_type` | a value has the wrong YAML type (mapping / list / integer / string) |
 | `invalid_identifier` | an id does not match `[A-Za-z_][A-Za-z0-9_]*` |
 | `malformed_qualified_spot` | a spot is not in `<device>.<spot>` form (exactly one `.`) |
-| `unknown_objective_kind` | `objective.kind` is not `makespan` |
+| `malformed_qualified_resource` | a resource is not in `<device>.<resource>` form (exactly one `.`) |
+| `unknown_objective_kind` | `objective.kind` names a stage v0 does not define (§5.8) |
 | `negative_value` | an integer that must be non-negative is negative |
 | `duplicate_key` | a mapping key repeats (§9; not reported inside an `x-` payload, §9.4) |
 
@@ -952,31 +1320,42 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `empty_modes` | a process has no modes |
 | `duplicate_device_id` | a device id repeats |
 | `duplicate_transporter_id` | a transporter id repeats |
+| `duplicate_replenisher_id` | a replenisher id repeats |
 | `duplicate_spot_id` | a spot name repeats within a device |
-| `device_transporter_id_conflict` | a device and a transporter share an id |
-| `cross_kind_id_coincidence` | a spot name shares an id with a device or a transporter (*warning*) |
-| `nonpositive_duration` | a device-occupying processing mode `duration` is not positive, or any mode `duration` is negative (a device-less pure-data mode may be zero) |
+| `duplicate_resource_id` | a resource name repeats within a device |
+| `device_transporter_id_conflict` | two machines share an id — a device, a transporter and a replenisher are all machines (§8.2). The code name predates replenishers |
+| `cross_kind_id_coincidence` | a spot or resource name shares an id with a machine (*warning*) |
+| `nonpositive_duration` | a device-occupying processing mode `duration` is not positive, a replenishment `duration` is not positive, a resource `capacity` is not positive, a `consumption` amount is not positive, or any mode `duration` is negative (a device-less pure-data mode may be zero) |
 | `empty_time_unit` | `time.unit` is empty or not a string |
 | `unknown_transporter` | `transports.transporter` is not a defined transporter |
-| `unknown_device` | a mode's `devices` entry, or the device part of a qualified spot, is not a defined device |
+| `unknown_replenisher` | `replenishments.replenisher` is not a defined replenisher |
+| `unknown_device` | a mode's `devices` entry, a `replenishments.device`, or the device part of a qualified spot or resource, is not a defined device |
 | `unknown_spot` | the spot part of a qualified spot is not defined on that device |
+| `unknown_resource` | the resource part of a qualified resource is not declared on that device |
+| `device_without_resources` | a `replenishments.device` declares no `resources` |
 | `duplicate_transport_entry` | a `(transporter, from, to)` triple repeats |
+| `duplicate_replenishment_entry` | a `(replenisher, device)` pair repeats |
 | `input_spots_share_spot` | two input ports of a mode use the same spot |
 | `output_spots_share_spot` | two output ports of a mode use the same spot |
 | `spot_device_not_in_mode` | a mode's spot is on a device not in that mode's `devices` |
+| `resource_device_not_in_mode` | a mode's `consumption` names a device not in that mode's `devices` |
+| `consumption_exceeds_capacity` | a mode consumes more of a resource than its device can hold (§4.7.1) |
 
 ### 10.3 Execution document (§9.2)
 
 | code | meaning |
 | --- | --- |
 | `missing_activities` | `activities` is absent |
-| `unknown_activity_kind` | `kind` is not `processing` / `transport` / `relay` |
+| `unknown_activity_kind` | `kind` is not `processing` / `transport` / `relay` / `replenishment` |
 | `unknown_status` | `status` is not `pending` / `running` / `completed` / `failed` / `cancelled` |
 | `unknown_outcome` | `outcome` is not one of the defined values |
 | `end_before_start` | `end` is earlier than `start` |
 | `empty_node_path` | a processing `node` is an empty list (an `arc` boundary endpoint may be empty, §6.4) |
 | `malformed_arc` | an `arc`'s `from` / `to` / `node` / `port` structure is wrong |
 | `relay_nonzero_duration` | a `relay` activity's `end` is not equal to its `start` |
+| `empty_amounts` | a `replenishment` activity's `amounts` is empty — a refill that adds nothing (§6.9) |
+| `replenishment_has_node` | a `replenishment` activity carries a `node`; it has no workflow provenance (§4.2) |
+| `duplicate_activity_id` | two activities in one document share an `id` |
 
 Absent `process` / `mode` / `from_spot` and similar use the shared
 `missing_required_field`; type violations use `wrong_type`. When `time` is
@@ -1005,7 +1384,17 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `interface_pure_data_port` | an `interface` binding names a Pure Data port (occupies no spot) |
 | `interface_duplicate_spot` | two bindings on one side (two inputs, or two outputs) bind the same spot |
 | `interface_input_missing` | an Object-bearing entry input has no `interface` binding (§6.8) |
+| `missing_inventories` | the resource model is in effect but the document has no `inventories` (§6.10). An empty `initial` is the way to say every stock starts empty |
+| `inventory_exceeds_capacity` | an `inventories.initial` level is above its resource's `capacity` |
+| `resources_ignored` | the environment declares resources but they were disabled (§4.7.3), so nothing was applied (*warning*) |
 | `infeasible` | the solver proved the instance has no feasible schedule |
+
+`unknown_device` and `unknown_resource` (§10.2) are reused here for an
+`inventories.initial` entry that names something the environment does not declare,
+as `unknown_device` / `unknown_spot` already are for `interface`. There is no
+"unreachable replenishment" code: unlike an arc, a refill is never required, so a
+device no replenisher can reach is a legitimate environment (§5.7) and running out
+of a stock is `infeasible`, not a validation error.
 
 Replanning (a document that sets `now`, §6.1), emitted while matching an execution
 status (§7) against the instance:
@@ -1017,6 +1406,8 @@ status (§7) against the instance:
 | `status_arc_unknown` | a status transport `arc` matches no Object-bearing arc in the workflow |
 | `status_mode_unknown` | a fixed processing cannot be pinned — its `mode` has no echo and the current env does not offer it |
 | `status_time_inconsistent` | a `completed` activity ends after `now`, or a `running` activity starts after `now` |
-| `status_duplicate` | two status entries fix the same processing (`node`) or the same transport leg (`arc` + `seq`) |
+| `status_duplicate` | two status entries fix the same processing (`node`), the same transport leg (`arc` + `seq`), or the same replenishment (`id`) |
+| `status_consumption_unknown` | a fixed processing's consumption cannot be resolved — no `consumption` echo and the current env does not offer its mode (§6.3) |
+| `status_inventory_inconsistent` | replaying the history against `inventories.initial` drives a resource outside `[0, capacity]` (§9.3) |
 | `broken_transport_chain` | a committed transport leg's source is not completed, or a leg does not continue the previous leg's arrival spot |
 | `terminal_status_not_replannable` | a replan input carries a `failed` / `cancelled` (terminal) activity; a stopped run has no remaining work to plan |

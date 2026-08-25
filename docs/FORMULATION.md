@@ -7,14 +7,18 @@ model. It is the theory `ofplang.schedule` implements, ported from the
 `ofp-scheduler` prototype.
 
 The model covers the current `ofplang.schedule` scope: a **single workflow**
-scheduled onto devices and spots, with mode selection and transport.
-`ofp-scheduler`'s final model additionally covers multiple concurrent runs and
-device-local consumable resources with replenishment; both are outside the
-current scope (SPEC §1: a single workflow at a time; SPEC §4.2: replenishment is
-a future activity kind) and are omitted here.
+scheduled onto devices and spots, with mode selection, transport, and
+device-local consumable resources with replenishment. `ofp-scheduler`'s final
+model additionally covers multiple concurrent runs, which is outside the current
+scope (SPEC §1: a single workflow at a time) and is omitted here.
+
+> The resource and replenishment part of this model (§10, §11, and the terms they
+> add to §7, §8 and §9) is **specified but not yet implemented**, matching SPEC's
+> status note.
 
 Terminology follows `SPECIFICATIONS.md`: **activity**, **processing activity**,
-**transport activity**, **device**, **spot**, **mode**, **transporter**,
+**transport activity**, **replenishment activity**, **device**, **spot**,
+**resource**, **mode**, **transporter**, **replenisher**,
 **workflow**, and the `pending` / `running` / `completed` statuses. This document
 covers the optimization model only; the scheduler input, environment schema,
 execution-document schema, identifiers, and validator scope are in
@@ -22,12 +26,17 @@ execution-document schema, identifiers, and validator scope are in
 
 ## Activities
 
-The scheduled units are **activities**, each with a start and an end. Two kinds
+The scheduled units are **activities**, each with a start and an end. Three kinds
 are scheduled together:
 
 - **Processing activity** — one per atomic process invocation.
 - **Transport activity** — one per Object-bearing arc; moves an Object from a
   source spot to a destination spot.
+- **Replenishment activity** — refills the consumable resources of one device
+  (SPEC §4.7.1). Unlike the other two it is **not** given by the workflow: the set
+  of candidates is constructed by the model (§10) and how many run is decided by
+  the solver. It occupies two devices (the refilled one and a replenisher) and no
+  spot.
 
 **Boundary nodes.** The workflow's boundary Object-bearing material (entry inputs,
 final outputs) is handled by two synthetic **boundary nodes**, added when the
@@ -61,6 +70,11 @@ The occupied-resource set is not a constant: it depends on the selected mode.
 Two resource kinds are occupied — **spots** and **devices** — and both are
 exclusive (mutual-exclusion applies to each; SPEC §4.4).
 
+**Consumables are a third, independent axis.** A device's consumable resources are
+not occupied and released; they are a *level* that falls and rises (§11). Nothing
+in §6 or §7 refers to them, and §11 refers to no spot — the two axes constrain the
+same schedule without interacting.
+
 ## Sets and indices
 
 - $T$: the processing-activity set. It includes the two **boundary nodes** (the
@@ -77,13 +91,26 @@ exclusive (mutual-exclusion applies to each; SPEC §4.4).
   out work (SPEC §4.4).
 - $L^{\mathrm{tr}} \subseteq L$: transporters — individual devices used for moves
   (SPEC §4.6). Each transport activity is assigned to exactly one transporter.
+- $L^{\mathrm{rp}} \subseteq L$: replenishers — individual devices that perform
+  refills (SPEC §5.6). Like a transporter, a replenisher is an ordinary member of
+  $L$, so §7 serialises it without a rule of its own. $L^{\mathrm{tr}}$,
+  $L^{\mathrm{rp}}$ and the work devices are pairwise disjoint (SPEC §8.2: no two
+  machines share an id).
 - $P$: spot set. A spot is a holding/processing position on a device and holds at
   most one item at a time (SPEC §4.4).
+- $G_\ell$: the consumable resources declared on device $\ell$ (SPEC §5.2),
+  possibly empty. Resources are device-local, so the pair $(\ell, g)$ with
+  $g \in G_\ell$ is the unit everything below is indexed by.
+- $W$: the **replenishment candidate** set, constructed in §10. Each $\omega \in W$
+  targets one device $\ell_\omega \in L$ with $G_{\ell_\omega} \ne \emptyset$.
+  $W$ is empty when resources are disabled (SPEC §4.7.3), and everything below then
+  degenerates to the resource-free model.
 - $M_i$: candidate mode set of processing activity $i$. Each mode fixes the
   device(s) used, the processing duration, and the spot assigned to each
   Object-bearing port (SPEC §5.5).
 - $H = \{\tau_r \mid r \in R\}$: transport-activity set.
-- $\mathcal{A} = T \cup H$: the full activity set (processing and transport).
+- $\mathcal{A} = T \cup H \cup W$: the full activity set (processing, transport and
+  replenishment).
 - $I_i$, $O_i$: Object-bearing input-port and output-port sets of processing
   activity $i$. (Pure Data ports occupy no spot and are not listed.)
 
@@ -127,6 +154,27 @@ $\sigma^{\mathrm{out}}$ (input node) or $\sigma^{\mathrm{in}}$ (output node) are
 interface spots (SPEC §6.8), and whose device set is empty. Their spots enter the
 model as ordinary $\sigma$ values.
 
+Resources and replenishment:
+
+- $c_{\ell,g} \in \mathbb{Z}_{>0}$: capacity of resource $g \in G_\ell$ on device
+  $\ell$ (SPEC §5.2).
+- $u_{i,m,\ell,g} \in \mathbb{Z}_{\ge 0}$: amount of $(\ell,g)$ consumed by
+  processing activity $i$ under mode $m$ (SPEC §5.5), taken in full at the
+  activity's **start**. Nonzero only for $\ell \in L_{i,m}$, and never exceeding
+  $c_{\ell,g}$ (SPEC §4.7.1 — the environment is rejected otherwise). Transport and
+  replenishment activities consume nothing.
+- $v^{0}_{\ell,g} \in \mathbb{Z}_{\ge 0}$: the level of $(\ell,g)$ at the **start of
+  the run** (`inventories.initial`, SPEC §6.10), with $v^{0}_{\ell,g} \le c_{\ell,g}$.
+  An unstated resource is $0$.
+- $\rho_{t,\ell} \in \mathbb{Z}_{>0}$: duration for replenisher $t \in
+  L^{\mathrm{rp}}$ to refill device $\ell$ (SPEC §5.7). A missing entry means $t$
+  **cannot** refill $\ell$ — the pair is excluded from the choice in §10, exactly as
+  a missing $d_{t,p,q}$ is excluded from the route choice. The duration does not
+  depend on which resources are refilled or by how much.
+- $L_{\omega,t} = \{\ell_\omega, t\}$: devices occupied by replenishment candidate
+  $\omega$ performed by replenisher $t$ — the refilled device and the replenisher,
+  so $|L_{\omega,t}| = 2$ (SPEC §4.7.1). No spot is occupied.
+
 Replanning:
 
 - $now \in \mathbb{Z}_{\ge 0}$: replan time.
@@ -138,8 +186,23 @@ Replanning:
 - $\hat{s}_i, \hat{e}_i$: actual / fixed start and end times.
 - $\hat{x}_{i,m}$: actual mode assignment of a fixed activity. For a running
   activity, $\hat{e}_i$ is the expected finish (SPEC §6.2).
+- $W^{\mathrm{done}}, W^{\mathrm{run}}$: completed and running replenishment
+  activities read from the status. They are **not** members of $W$: $W$ holds the
+  candidates the solver may still choose, while these are fixed history matched by
+  `id` (SPEC §6.6). A `pending` replenishment in the input is discarded and
+  re-derived like any other pending work.
+- $\hat{\Delta}_{\omega,g} \in \mathbb{Z}_{\ge 0}$: the amount of $(\ell_\omega,g)$
+  a fixed replenishment **reported** adding (SPEC §6.9). This is history, not a
+  fill-to-capacity figure: a refill that only partly filled the stock is stated as
+  such and used as reported.
+- $\hat{u}_{i,\ell,g} \in \mathbb{Z}_{\ge 0}$: the consumption a fixed processing
+  activity reported, read from its `consumption` echo and falling back to the
+  current environment's mode of the reported id (SPEC §6.3). The echo exists
+  because a replan may withdraw the very mode the activity used, and fixed parts
+  are never re-read against the current environment (SPEC §7).
 
-Transport activities carry the same `pending` / `running` / `completed` statuses.
+Transport and replenishment activities carry the same `pending` / `running` /
+`completed` statuses.
 
 ## Decision variables
 
@@ -165,16 +228,35 @@ Transport activities:
 - $a_r, b_r \in \mathbb{Z}_{\ge 0}$: start and end of transport activity
   $\tau_r$.
 
+Replenishment activities:
+
+- $y_{\omega,t} \in \{0,1\}$: candidate $\omega \in W$ runs, performed by
+  replenisher $t \in L^{\mathrm{rp}}$. A variable exists only where $\rho_{t,
+  \ell_\omega}$ is defined, which is how replenishment reachability enters the model
+  — the same device as the omitted $q_{r,m,n,t}$ combinations in transport.
+- $\bar{y}_\omega = \sum_{t \in L^{\mathrm{rp}}} y_{\omega,t} \in \{0,1\}$: whether
+  candidate $\omega$ is selected at all (derived). A candidate may run at most once.
+- $\gamma_\omega, \delta_\omega \in \mathbb{Z}_{\ge 0}$: start and end of
+  replenishment activity $\omega$.
+- $\Delta_{\omega,g} \in \mathbb{Z}_{\ge 0}$: amount of $(\ell_\omega,g)$ added by
+  $\omega$, for $g \in G_{\ell_\omega}$. This is a solver variable only so that §11
+  has an arithmetic term to work with; the value that reaches the plan is fixed
+  afterwards by the fill-to-capacity rule (§11), not chosen.
+
 Objective:
 
 - $C_{\max} \in \mathbb{Z}_{\ge 0}$: makespan.
+- $N_{\mathrm{repl}} = \sum_{\omega \in W} \bar{y}_\omega$: number of
+  replenishments in the plan (derived).
 
 ## Common activity-time notation
 
 For an activity $\alpha \in \mathcal{A}$, write $start_\alpha$ and $end_\alpha$
 for its start and end. For processing activity $\alpha = i \in T$,
 $start_\alpha = s_i$ and $end_\alpha = e_i$; for transport activity
-$\alpha = \tau_r$, $start_\alpha = a_r$ and $end_\alpha = b_r$.
+$\alpha = \tau_r$, $start_\alpha = a_r$ and $end_\alpha = b_r$; for replenishment
+activity $\alpha = \omega \in W$, $start_\alpha = \gamma_\omega$ and
+$end_\alpha = \delta_\omega$.
 
 For each device $\ell \in L$, let $\mathcal{A}_\ell$ be the activities occupying
 $\ell$ (used by §7). Occupancy follows the selected modes:
@@ -183,7 +265,10 @@ $\ell$ (used by §7). Occupancy follows the selected modes:
   $S_{i,m}$ of its selected mode;
 - a transport activity $\tau_r$ occupies the devices $L_{r,m,n,t}$ of its selected
   source mode, destination mode, and transporter, and its source and destination
-  spots (§6).
+  spots (§6);
+- a replenishment activity $\omega$ occupies the devices $L_{\omega,t}$ of its
+  selected replenisher — the refilled device and $t$ — and **no spot**, so material
+  may rest in the refilled device's spots throughout (SPEC §4.7.1).
 
 Device occupancy spans the whole activity interval (§7); spot occupancy can
 differ per spot and is given interval-by-interval in §6.
@@ -317,10 +402,19 @@ $$
 \quad \forall \ell \in L,\ \forall \alpha \ne \beta \in \mathcal{A}_\ell
 $$
 
+A replenishment activity $\omega$ occupies $L_{\omega,t} = \{\ell_\omega, t\}$ over
+$[\gamma_\omega, \delta_\omega]$ when $y_{\omega,t} = 1$, so it enters
+$\mathcal{A}_{\ell_\omega}$ and $\mathcal{A}_t$ and is serialised by the same
+inequality. Nothing above is special-cased for it: a two-device activity is already
+ordinary (SPEC §4.4.1). One consequence worth naming is that a refill and the work
+on the device it refills can never overlap — which is exactly why a device's
+consumption and replenishment events are totally ordered in time (§11).
+
 A transporter is one of these devices, so the same rule governs it: for each
 transporter $t \in L^{\mathrm{tr}}$, the transports with $z_{r,t} = 1$ are
 mutually non-overlapping (one move at a time per transporter), while transports
-assigned to different transporters may run concurrently.
+assigned to different transporters may run concurrently. A replenisher $t \in
+L^{\mathrm{rp}}$ works the same way with $y_{\omega,t}$.
 
 ### 8. Makespan
 
@@ -340,6 +434,17 @@ follows from $e_{\mathrm{out}} = C_{\max} \ge s_{\mathrm{out}} \ge b_r$. This is
 what holds a delivered Object's spot to the end of the schedule (§6). ($C_{\max}$
 is the max over real processing ends and boundary deliveries; the output node's own
 end equals it and is not itself a driver.)
+
+Replenishments count too (SPEC §4.8):
+
+$$
+C_{\max} \ge \delta_\omega, \quad \forall \omega \in W
+$$
+
+This never binds for a refill that is actually needed — such a refill precedes the
+work that consumes from it, so its end is already below that work's start. What it
+rules out is a selected replenishment parked after all productive work, where it
+would otherwise be free.
 
 ### 9. Replanning fixation
 
@@ -390,6 +495,28 @@ rendering the plan is where a stay-put relay together with its zero-distance
 re-transport is folded away as a no-op (SPEC §6.4.1), since the committed leg
 already delivers where the destination reads.
 
+**Replenishments replan by history, not by re-selection.** A candidate in $W$ is
+always pending — the set is rebuilt every solve (§10), so no $\bar{y}_\omega$ is
+ever fixed. What is fixed is $W^{\mathrm{done}}$ and $W^{\mathrm{run}}$, matched by
+`id` (SPEC §6.6) and pinned from their reported times, device, replenisher and
+$\hat{\Delta}_{\omega,g}$:
+
+$$
+\gamma_\omega = \hat{s}_\omega,\ \delta_\omega = \hat{e}_\omega,
+\quad \forall \omega \in W^{\mathrm{done}}
+$$
+$$
+\gamma_\omega = \hat{s}_\omega,\ \delta_\omega = \max(\hat{e}_\omega,\ now + m),
+\quad \forall \omega \in W^{\mathrm{run}}
+$$
+
+They hold their two devices over those intervals in §7 like any fixed activity. The
+difference from processing and transport is where their *effect* lands: a completed
+replenishment has already raised the level and is folded into $v^{now}$ (§11), while
+a running one has not and enters §11 as a fixed positive event at $\delta_\omega$.
+That split is the whole of their role — nothing re-derives them, and nothing
+re-validates them against the current environment (SPEC §7).
+
 **Boundary nodes replan uniformly.** The boundary nodes and their arcs are
 re-created every solve from the workflow and `interface` (they never appear in the
 status input, so they are not read back — like relays). The input node stays pinned
@@ -400,18 +527,163 @@ re-routes through relays if its committed arrival can no longer feed the
 destination). No boundary case is special-cased in the constraints — only the model
 **construction** (reading `interface` into the boundary nodes) differs.
 
+### 10. Replenishment candidates, selection and duration
+
+Replenishment candidates are **constructed**, not read. For each pending processing
+activity $i \in T^{\mathrm{pend}}$ and each device $\ell$, a single candidate
+$\omega = (i,\ell)$ is created iff some mode of $i$ both runs on $\ell$ and consumes
+something there:
+
+$$
+\exists\, m \in M_i:\ \ell \in L_{i,m}\ \wedge\ \exists\, g \in G_\ell:\ u_{i,m,\ell,g} > 0
+$$
+
+The activity $i$ is the candidate's *origin*, not its schedule position: nothing
+below ties $\omega$ to $i$'s interval, so a refill may be placed arbitrarily early
+(SPEC §4.7.1, refilling ahead).
+
+**Selection.** A candidate runs at most once, on one replenisher:
+
+$$
+\bar{y}_\omega = \sum_{t \in L^{\mathrm{rp}}} y_{\omega,t} \le 1,
+\quad \forall \omega \in W
+$$
+
+and only if its origin actually runs on the device it refills:
+
+$$
+\bar{y}_\omega \le \sum_{m \in M_i:\ \ell \in L_{i,m}} x_{i,m},
+\quad \forall \omega = (i,\ell) \in W
+$$
+
+This prunes without losing anything: if $i$ runs elsewhere it consumes nothing on
+$\ell$, and every other activity that does consume on $\ell$ carries its own
+candidate.
+
+**Duration.**
+
+$$
+\delta_\omega = \gamma_\omega + \sum_{t \in L^{\mathrm{rp}}} \rho_{t,\ell_\omega}\, y_{\omega,t},
+\quad \forall \omega \in W
+$$
+
+and on a replan a candidate is future work like any other pending activity:
+
+$$
+\gamma_\omega \ge now, \quad \forall \omega \in W
+$$
+
+**Why one candidate per (consuming activity, device) is enough.** Take any feasible
+schedule using arbitrarily many refills, each filling to capacity (§11). Fix a pair
+$(\ell,g)$. Its consumption events are totally ordered (§7), and between two
+consecutive consumptions at most one refill is worth keeping: if two occur with no
+consumption between them, deleting the earlier one leaves every later level
+unchanged, because the later refill restores the stock to $c_{\ell,g}$ regardless,
+and no lower-bound check falls between them. A refill after the last consumption on
+$\ell$ affects nothing and is deleted too. What remains can be indexed by the
+consumption that immediately follows it — one per (consuming activity, $\ell$) pair
+at most. The construction above therefore loses no feasible schedule, **provided**
+no single mode consumes more than a full stock, $u_{i,m,\ell,g} \le c_{\ell,g}$;
+that is a static property of the environment and is rejected there (SPEC §10.2,
+`consumption_exceeds_capacity`) rather than left to surface as infeasibility.
+
+### 11. Inventory level constraint
+
+Consumable levels are **replayed, not supplied** (SPEC §4.7.2). The level of
+$(\ell,g)$ at $now$ is derived from the run's initial level and the history:
+
+$$
+v^{now}_{\ell,g} = v^{0}_{\ell,g}
+- \sum_{i \in T^{\mathrm{done}} \cup T^{\mathrm{run}}} \hat{u}_{i,\ell,g}
++ \sum_{\omega \in W^{\mathrm{done}}} \hat{\Delta}_{\omega,g}
+$$
+
+A running processing activity has already taken its consumption (it is taken at the
+start, and the activity has started), while a running *replenishment* has not yet
+delivered — it appears below as a fixed future event instead. Replaying the history
+in time order must keep the level within $[0, c_{\ell,g}]$ at every historical
+event; otherwise the reported history and the environment disagree and the document
+cannot be replanned (SPEC §9.3, `status_inventory_inconsistent`).
+
+**Events.** For each $(\ell,g)$ let $\mathcal{E}_{\ell,g}$ hold, each with a time, a
+signed change, and an activation literal:
+
+| event | time | change | active iff |
+| --- | --- | --- | --- |
+| consumption, $i \in T^{\mathrm{pend}}$, $m \in M_i$, $\ell \in L_{i,m}$ | $s_i$ | $-u_{i,m,\ell,g}$ | $x_{i,m} = 1$ |
+| candidate refill, $\omega \in W$, $\ell_\omega = \ell$ | $\delta_\omega$ | $+\Delta_{\omega,g}$ | $\bar{y}_\omega = 1$ |
+| running refill, $\omega \in W^{\mathrm{run}}$, $\ell_\omega = \ell$ | $\delta_\omega$ | $+\hat{\Delta}_{\omega,g}$ | always |
+
+**Constraint.** At every point in time the level stays within its bounds:
+
+$$
+0 \;\le\; v^{now}_{\ell,g} \;+\!\!\sum_{\substack{\varepsilon \in \mathcal{E}_{\ell,g} \\ time_\varepsilon \,\le\, \theta}}\!\! \chi_\varepsilon\, change_\varepsilon
+\;\le\; c_{\ell,g},
+\quad \forall \ell \in L,\ \forall g \in G_\ell,\ \forall \theta
+$$
+
+Only the event times need checking, so the quantifier over $\theta$ is finite.
+Events sharing a time are summed, which is what realises SPEC §4.7's rule that a
+refill ending exactly when the work it feeds begins does feed it: the two changes
+net, and no intermediate level is examined between them.
+
+Every activity touching $(\ell,g)$ occupies $\ell$, so §7 already serialises them
+and the events of one $(\ell,g)$ are totally ordered up to that tie. Transport and
+relay activities contribute no events; the constraint is entirely independent of
+§6's spot occupancy.
+
+**Amounts.** In the solver, an amount is bounded and forced to zero for an
+unselected candidate, and a selected candidate must add something:
+
+$$
+0 \le \Delta_{\omega,g} \le c_{\ell_\omega,g}\, \bar{y}_\omega,
+\qquad
+\sum_{g \in G_{\ell_\omega}} \Delta_{\omega,g} \ge \bar{y}_\omega
+$$
+
+**Fill to capacity is imposed after solving, not as a constraint.** SPEC §4.7.1 says
+a planned refill fills each resource to `capacity`, but the constraint above offers
+no level *variable* to write $level = c_{\ell,g}$ against — the running sum is an
+expression, and a reservoir formulation (the intended implementation) does not
+expose the level at all. So the amounts are left free above and normalised once the
+solution is known: with times and selections fixed, each $(\ell,g)$'s events are
+totally ordered, and replaying them in time order sets each selected
+$\Delta_{\omega,g}$ to $c_{\ell,g}$ minus the level immediately before.
+
+This is sound and costs nothing. Raising an amount raises every later level, so the
+lower bound only slackens; the upper bound is met with equality by construction. The
+normalised solution keeps the same times, the same selections and therefore the same
+$C_{\max}$ and $N_{\mathrm{repl}}$ — it is the same optimum, reported determinately
+instead of arbitrarily among the many amount assignments the constraints admit. A
+selected candidate whose normalised amounts are all zero adds nothing and is dropped
+from the plan, which can only lower $N_{\mathrm{repl}}$.
+
 ## Objective
 
-The objective is **makespan minimization**:
+The objective is a lexicographic sequence of stages (SPEC §4.8). v0 defines
+$C_{\max}$ (makespan) and $N_{\mathrm{repl}} = \sum_{\omega \in W} \bar{y}_\omega$,
+the number of selected replenishment activities (§10).
+
+Lexicographic minimization of $(C_{\max}, N_{\mathrm{repl}})$ is encoded as a
+**single weighted objective** rather than a staged re-solve:
 
 $$
-\min C_{\max}
+\min\; (|W| + 1)\, C_{\max} + N_{\mathrm{repl}}
 $$
 
-Only makespan is accepted in the initial version; the objective is supplied by
-the environment definition's `objective` or overridden on the command line (SPEC
-§4.7, §5.6). The execution plan records the achieved objective as `objective.kind`
-and `objective.value` (SPEC §6.1).
+This is exact, because $0 \le N_{\mathrm{repl}} \le |W|$: one unit of $C_{\max}$
+outweighs every attainable value of $N_{\mathrm{repl}}$. It is preferred over
+solving one stage at a time and fixing its optimum, which would double the solve
+passes on a model that is already the scalability bottleneck. Where replenishment
+is disabled or no candidate exists, $W = \emptyset$ and the objective degenerates
+to $\min C_{\max}$.
+
+$C_{\max}$ is the maximum over the ends of **all** activities, replenishments
+included (SPEC §4.8), so a refill cannot be parked after the productive work.
+
+The objective is supplied by the environment definition's `objective` or overridden
+on the command line (SPEC §4.8, §5.8). The execution plan records the achieved
+objective as `objective.kind` and `objective.value` (SPEC §6.1).
 
 ## CP-SAT implementation notes
 
@@ -439,6 +711,31 @@ structure more directly with optional intervals.
 - Boundary nodes: create $C_{\max}$ before the activity intervals so the output
   node's interval can end at it; pin the input node to $[0,0]$ (exempt from the
   replan $s\ge now$ lower bound) and the output node's end to $C_{\max}$.
-- Makespan: bind $C_{\max}$ as the max over all real processing ends $e_i$ and
-  every boundary-output delivery $b_r$ (e.g. `AddMaxEquality`); the output node's
-  own end is then set equal to $C_{\max}$.
+- Makespan: bind $C_{\max}$ as the max over all real processing ends $e_i$, every
+  boundary-output delivery $b_r$, and every replenishment end $\delta_\omega$ (e.g.
+  `AddMaxEquality`); the output node's own end is then set equal to $C_{\max}$.
+- Replenishment: one optional interval per $(\omega, t)$ pair with presence
+  $y_{\omega,t}$, fed into both $\ell_\omega$'s and $t$'s `NoOverlap`;
+  `AddAtMostOne` over $t$ realises §10's selection. A candidate is *optional* rather
+  than required, which is the only structural difference from a transport's route
+  choice (`AddExactlyOne` there).
+- Inventory: one `AddReservoirConstraintWithActive` per $(\ell,g)$, with the event
+  times, signed changes and activation literals of §11's table, `min_level` $0$,
+  `max_level` $c_{\ell,g}$, and $v^{now}_{\ell,g}$ folded in as a constant event at
+  time $0$. The constraint sums simultaneous events, which is the tie rule §11
+  wants. Note it exposes **no level variable**, which is precisely why fill-to-
+  capacity is a post-solve normalisation (§11) and not a constraint.
+- Amount normalisation: after solving, walk each $(\ell,g)$'s events in time order
+  and set each selected $\Delta_{\omega,g}$ to $c_{\ell,g}$ minus the level before
+  it; drop any replenishment left with all-zero amounts, and recompute the reported
+  $N_{\mathrm{repl}}$ if it did.
+- **Horizon.** The trivial upper bound on any end time is a fully serial schedule,
+  so it must now include replenishment: adding $\max_t \rho_{t,\ell_\omega}$ for
+  every $\omega \in W$ keeps it a valid bound. Doing exactly that is also the
+  hazard — $|W|$ grows with the consuming activities, and the horizon is already
+  known to be several times the optimum and to dominate search cost (see
+  `dev-notes/report-solver-scalability.md`). A tighter bound that stays valid is to
+  add, per device, only as many refill durations as that device can actually fit
+  between its own consuming activities. Getting this wrong in either direction is a
+  real defect: too small silently turns feasible instances infeasible, too large
+  slows every solve.
