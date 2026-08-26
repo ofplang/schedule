@@ -1,7 +1,7 @@
 outcome: invalid
 match: exact
 errors:
-- {code: device_transporter_id_conflict}
+- {code: machine_id_conflict}
 notes: >-
   A device and a transporter share the id `reader_0`; spec §8.2 (both are
   machines, and a machine is taken out of service by id alone).

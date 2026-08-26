@@ -316,8 +316,8 @@ Minimising the number of replenishments matters as soon as replenishment is enab
 A refill that delays nothing is otherwise free, so without this stage a plan may
 carry refills that serve no purpose.
 
-The objective may be supplied by the environment definition or overridden on the
-command line.
+The objective is supplied by the environment definition (§5.8). There is no
+command-line override.
 
 ### 4.9 Replanning
 
@@ -476,7 +476,7 @@ Semantics:
   of stage names minimised lexicographically. The defined stage names are
   `makespan` and `replenishment_count`. When `objective` is omitted, the default is
   `[makespan, replenishment_count]`, which is equivalent to `makespan` wherever no
-  replenishment can occur. May be overridden on the command line.
+  replenishment can occur.
 
 ### 5.9 Example
 
@@ -1323,7 +1323,7 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `duplicate_replenisher_id` | a replenisher id repeats |
 | `duplicate_spot_id` | a spot name repeats within a device |
 | `duplicate_resource_id` | a resource name repeats within a device |
-| `device_transporter_id_conflict` | two machines share an id — a device, a transporter and a replenisher are all machines (§8.2). The code name predates replenishers |
+| `machine_id_conflict` | two machines share an id — a device, a transporter and a replenisher are all machines (§8.2) |
 | `cross_kind_id_coincidence` | a spot or resource name shares an id with a machine (*warning*) |
 | `nonpositive_duration` | a device-occupying processing mode `duration` is not positive, a replenishment `duration` is not positive, a resource `capacity` is not positive, a `consumption` amount is not positive, or any mode `duration` is negative (a device-less pure-data mode may be zero) |
 | `empty_time_unit` | `time.unit` is empty or not a string |

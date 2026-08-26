@@ -203,18 +203,17 @@ def _check_cross_kind(
 ) -> None:
     """Check the ids that are used as more than one kind (§8.2).
 
-    A device and a transporter sharing an id is an **error**: both are machines,
-    and a machine is taken out of service by id alone at execution time, so the
-    two would be indistinguishable there. Every other coincidence is only a
-    readability **warning** -- a spot is always referenced in its qualified form
-    `<device>.<spot>`, so it is never mistaken for a machine. Each colliding
-    string yields exactly one diagnostic.
+    Two machines sharing an id is an **error**: a machine is taken out of service
+    by id alone at execution time, so the two would be indistinguishable there.
+    Every other coincidence is only a readability **warning** -- a spot is always
+    referenced in its qualified form `<device>.<spot>`, so it is never mistaken
+    for a machine. Each colliding string yields exactly one diagnostic.
     """
     conflicts = set(devices) & set(transporters)
     for value in sorted(conflicts):
         path, node = transporters[value]
         diags.error(
-            errors.DEVICE_TRANSPORTER_ID_CONFLICT,
+            errors.MACHINE_ID_CONFLICT,
             f"id {value!r} names both a device and a transporter",
             path,
             at=node,

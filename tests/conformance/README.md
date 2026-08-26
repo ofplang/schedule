@@ -71,7 +71,7 @@ Codes are compared as **sets** (order- and duplicate-insensitive).
 |------------------|--------|
 | `valid/`         | minimal / full / multi-device mode / Pure-Data process |
 | `shape/`         | unknown/missing/extra keys, wrong value kinds, empty devices/modes, duplicate mapping keys |
-| `identifiers/`   | id grammar, duplicates, device/transporter id conflict (error), other cross-kind coincidence (warning) |
+| `identifiers/`   | id grammar, duplicates, machine id conflict (error), other cross-kind coincidence (warning) |
 | `values/`        | durations, `time.unit`, `objective.kind` |
 | `spots/`         | qualified-spot form, unknown device/spot, intra-mode spot rules |
 | `transports/`    | unknown transporter, duplicate transport entry |

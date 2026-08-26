@@ -25,10 +25,10 @@ EMPTY_MODES = "empty_modes"
 DUPLICATE_DEVICE_ID = "duplicate_device_id"
 DUPLICATE_TRANSPORTER_ID = "duplicate_transporter_id"
 DUPLICATE_SPOT_ID = "duplicate_spot_id"
-# A device and a transporter share an id. Both are machines, and a machine is
-# taken out of service by id alone at execution time, so the two would be
-# indistinguishable there (§8.2).
-DEVICE_TRANSPORTER_ID_CONFLICT = "device_transporter_id_conflict"
+# Two machines share an id. Devices, transporters and replenishers are all
+# machines, and a machine is taken out of service by id alone at execution time,
+# so the two would be indistinguishable there (§8.2).
+MACHINE_ID_CONFLICT = "machine_id_conflict"
 CROSS_KIND_ID_COINCIDENCE = "cross_kind_id_coincidence"
 NONPOSITIVE_DURATION = "nonpositive_duration"
 EMPTY_TIME_UNIT = "empty_time_unit"
@@ -144,7 +144,7 @@ ERROR_CODES = frozenset(
         DUPLICATE_DEVICE_ID,
         DUPLICATE_TRANSPORTER_ID,
         DUPLICATE_SPOT_ID,
-        DEVICE_TRANSPORTER_ID_CONFLICT,
+        MACHINE_ID_CONFLICT,
         NONPOSITIVE_DURATION,
         EMPTY_TIME_UNIT,
         UNKNOWN_TRANSPORTER,
