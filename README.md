@@ -12,12 +12,13 @@ definition and plans when its work runs; it also replans from an execution
 status. The design is documented in [docs/SPECIFICATIONS.md](docs/SPECIFICATIONS.md).
 
 > **Status:** the **schema validators** (environment definition and execution
-> document, spec §9) and the **scheduler** are implemented: it produces a
-> makespan-optimal plan for a single workflow with mode selection, spot/device
-> occupancy, and transport, pins a workflow's boundary material to spots via an
-> `interface` (spec §6.8), and **replans** from an execution document (`--document`)
-> by fixing completed/running activities and re-optimising the rest at or after
-> `now` (device-local resources not yet). A `visualize` command renders a plan as
+> document, spec §9) and the **scheduler** are implemented: it produces an optimal
+> plan for a single workflow with mode selection, spot/device occupancy, and
+> transport, pins a workflow's boundary material to spots via an `interface`
+> (spec §6.8), respects **device-local consumable resources** — what a mode draws
+> and what a **replenishment** puts back (spec §4.7) — and **replans** from an
+> execution document (`--document`) by fixing completed/running activities and
+> re-optimising the rest at or after `now`. A `visualize` command renders a plan as
 > a self-contained SVG/HTML Gantt chart. The model is documented in
 > [docs/FORMULATION.md](docs/FORMULATION.md).
 
@@ -54,15 +55,20 @@ ofp-schedule visualize <plan|status> [--view device|workflow|lane] [--theme ligh
 
 `validate` auto-detects whether the file is an environment definition or an
 execution document (pass `--kind` to force it); diagnostics are reported as
-`file:line:col: <severity> <code>`. `schedule` produces an execution plan (§6)
-that minimises makespan. A `--document` (execution document, §6) supplies the
-`interface` boundary constraint (§6.8, where a workflow's entry inputs / final
-outputs sit) and, when it sets `now`, the prior status to replan from (§7) —
+`file:line:col: <severity> <code>`. `schedule` produces an execution plan (§6),
+minimising the objective the document declares (§4.8; makespan, then the number of
+refills). A `--document` (execution document, §6) supplies the `interface` boundary
+constraint (§6.8, where a workflow's entry inputs / final outputs sit), the
+`inventories` a run starts with (§6.10) where devices hold consumables, the
+`objective` (§5.8) and, when it sets `now`, the prior status to replan from (§7) —
 emitting the full timeline (fixed history + re-optimised future) that round-trips
 as the next status input. By default the solve is non-deterministic
 (a multi-worker search that may return a different equally-optimal schedule each
 run); `--seed N` makes it reproducible by fixing the CP-SAT seed and using a
-single worker. `--no-validate` skips the one-shot `ofplang-validate` front-door
+single worker. `--ignore-resources` switches consumables off (§4.7.3): the
+declarations are still checked for shape but nothing is applied, and the plan is
+shaped as it would be from an environment that never declared one — a relaxation,
+so it never turns a solvable instance unsolvable. `--no-validate` skips the one-shot `ofplang-validate` front-door
 check of the workflow — use it when the workflow was already validated upstream
 (e.g. by the `ofp` umbrella CLI); `$import` is still resolved, since that is
 structural rather than a validation check. `visualize` renders any §6 execution
