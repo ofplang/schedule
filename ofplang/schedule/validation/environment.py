@@ -8,7 +8,11 @@ from __future__ import annotations
 
 from ofplang.schedule.core import yamlnode
 from ofplang.schedule.core.diagnostics import Diagnostics, ValidationResult
-from ofplang.schedule.core.identifiers import is_identifier, parse_qualified_spot
+from ofplang.schedule.core.identifiers import (
+    is_identifier,
+    parse_qualified_resource,
+    parse_qualified_spot,
+)
 from ofplang.schedule.core.yamlnode import YMap, YNode, YScalar
 from ofplang.schedule.validation import _objective, errors
 from ofplang.schedule.validation import _shape as shape
@@ -18,11 +22,12 @@ from ofplang.schedule.validation.duplicates import check_duplicate_keys
 ENV_TOP = {"time", "devices", "transporters", "transports", "processes", "objective"}
 REQUIRED_SECTIONS = ("time", "devices", "processes")
 TIME_KEYS = {"unit"}
-DEVICE_KEYS = {"id", "spots"}
+DEVICE_KEYS = {"id", "spots", "resources"}
 TRANSPORTER_KEYS = {"id"}
 TRANSPORT_KEYS = {"transporter", "from", "to", "duration"}
 PROCESS_KEYS = {"modes"}
-MODE_KEYS = {"id", "devices", "duration", "input_spots", "output_spots"}
+MODE_KEYS = {"id", "devices", "duration", "input_spots", "output_spots", "consumption"}
+RESOURCE_KEYS = {"capacity"}
 OBJECTIVE_KEYS = {"kind"}
 
 
@@ -67,11 +72,11 @@ def _check(root: YNode | None, diags: Diagnostics) -> None:
             diags.error(errors.MISSING_REQUIRED_SECTION, f"{section} is required", section, at=root)
 
     _check_time(root.get("time"), diags)
-    devices = _check_devices(root.get("devices"), diags)
+    devices, resources = _check_devices(root.get("devices"), diags)
     transporters = _check_transporters(root.get("transporters"), diags)
-    _check_cross_kind(devices, transporters, root, diags)
+    _check_cross_kind(devices, resources, transporters, root, diags)
     _check_transports(root.get("transports"), devices, transporters, diags)
-    _check_processes(root.get("processes"), devices, diags)
+    _check_processes(root.get("processes"), devices, resources, diags)
     _check_objective(root.get("objective"), diags)
 
 
@@ -94,15 +99,20 @@ def _check_time(node: YNode | None, diags: Diagnostics) -> None:
         )
 
 
-def _check_devices(node: YNode | None, diags: Diagnostics) -> dict[str, set[str]]:
-    """Return {device_id: {spot names}} for the well-formed devices found."""
+def _check_devices(
+    node: YNode | None, diags: Diagnostics
+) -> tuple[dict[str, set[str]], dict[str, dict[str, int | None]]]:
+    """Return ({device_id: {spot names}}, {device_id: {resource: capacity}}) for
+    the well-formed devices found. The resources come back separately because the
+    mode checks need capacities, not just names."""
     devices: dict[str, set[str]] = {}
+    resources: dict[str, dict[str, int | None]] = {}
     seq = shape.as_seq(node, "devices", diags)
     if seq is None:
-        return devices
+        return devices, resources
     if not seq.items:
         diags.error(errors.EMPTY_DEVICES, "devices must not be empty", "devices", at=seq)
-        return devices
+        return devices, resources
 
     for i, item in enumerate(seq.items):
         base = f"devices[{i}]"
@@ -112,6 +122,7 @@ def _check_devices(node: YNode | None, diags: Diagnostics) -> dict[str, set[str]
         shape.unknown_keys(dmap, DEVICE_KEYS, base, diags)
         dev_id = _check_id(dmap, base, "device", errors.INVALID_IDENTIFIER, diags)
         spots = _check_spots(dmap.get("spots"), base, diags)
+        stocks = _check_resources(dmap.get("resources"), base, diags)
         if dev_id is not None:
             if dev_id in devices:
                 diags.error(
@@ -122,7 +133,60 @@ def _check_devices(node: YNode | None, diags: Diagnostics) -> dict[str, set[str]
                 )
             else:
                 devices[dev_id] = spots
-    return devices
+                resources[dev_id] = stocks
+    return devices, resources
+
+
+def _check_resources(node: YNode | None, base: str, diags: Diagnostics) -> dict[str, int | None]:
+    """Return {resource name: capacity} for one device's declared stocks (§5.2).
+
+    A resource whose capacity is missing or malformed is still *declared*, and maps
+    to None. Dropping it instead would make every mode that draws on it report
+    `unknown_resource` as well -- a second diagnostic for a resource the document
+    plainly declares, pointing at the wrong place.
+
+    `resources` is an **open** map -- its keys are the user's resource names -- so an
+    `x-` key here is an ordinary (badly named) entry, not an extension (§9.4). Each
+    definition under it is closed, where `x-` is an extension point as usual. A
+    repeated resource name is a repeated mapping key and is already reported as
+    `duplicate_key` (§9); nothing extra is said about it here.
+    """
+    stocks: dict[str, int | None] = {}
+    rmap = shape.as_map(node, shape.join(base, "resources"), diags)
+    if rmap is None:
+        return stocks
+    for entry in rmap.entries:
+        path = shape.join(base, f"resources.{entry.key}")
+        if not is_identifier(entry.key):
+            diags.error(
+                errors.INVALID_IDENTIFIER,
+                f"invalid resource name {entry.key!r}",
+                path,
+                at=entry.value or rmap,
+            )
+            continue
+        stocks[entry.key] = None
+        spec = shape.as_map(entry.value, path, diags)
+        if spec is None:
+            continue
+        shape.unknown_keys(spec, RESOURCE_KEYS, path, diags)
+        capacity = shape.require(spec, "capacity", path, diags)
+        if capacity is None:
+            continue
+        cap_path = shape.join(path, "capacity")
+        if not (isinstance(capacity, YScalar) and capacity.is_int):
+            diags.error(errors.WRONG_TYPE, "capacity must be an integer", cap_path, at=capacity)
+            continue
+        if capacity.value <= 0:
+            diags.error(
+                errors.NONPOSITIVE_VALUE,
+                "capacity must be positive",
+                cap_path,
+                at=capacity,
+            )
+            continue
+        stocks[entry.key] = capacity.value
+    return stocks
 
 
 def _check_spots(node: YNode | None, base: str, diags: Diagnostics) -> set[str]:
@@ -197,6 +261,7 @@ def _check_id(
 
 def _check_cross_kind(
     devices: dict[str, set[str]],
+    resources: dict[str, dict[str, int | None]],
     transporters: dict[str, tuple[str, YNode]],
     root: YNode,
     diags: Diagnostics,
@@ -206,8 +271,9 @@ def _check_cross_kind(
     Two machines sharing an id is an **error**: a machine is taken out of service
     by id alone at execution time, so the two would be indistinguishable there.
     Every other coincidence is only a readability **warning** -- a spot is always
-    referenced in its qualified form `<device>.<spot>`, so it is never mistaken
-    for a machine. Each colliding string yields exactly one diagnostic.
+    referenced in its qualified form `<device>.<spot>` and a resource in
+    `<device>.<resource>` or under a key naming its device, so neither is ever
+    mistaken for a machine. Each colliding string yields exactly one diagnostic.
     """
     conflicts = set(devices) & set(transporters)
     for value in sorted(conflicts):
@@ -222,7 +288,15 @@ def _check_cross_kind(
     spot_names: set[str] = set()
     for names in devices.values():
         spot_names |= names
-    kinds = {"device": set(devices.keys()), "transporter": set(transporters), "spot": spot_names}
+    resource_names: set[str] = set()
+    for stocks in resources.values():
+        resource_names |= set(stocks)
+    kinds = {
+        "device": set(devices.keys()),
+        "transporter": set(transporters),
+        "spot": spot_names,
+        "resource": resource_names,
+    }
     owner: dict[str, str] = {}
     coincident: set[str] = set()
     for kind, ids in kinds.items():
@@ -234,7 +308,7 @@ def _check_cross_kind(
     for value in sorted(coincident - conflicts):
         diags.warning(
             errors.CROSS_KIND_ID_COINCIDENCE,
-            f"id {value!r} is used across device/spot/transporter",
+            f"id {value!r} is used across device/spot/resource/transporter",
             "",
             at=root,
         )
@@ -307,7 +381,12 @@ def _check_ref_spot(
     _resolve_spot(node, path, devices, None, diags)
 
 
-def _check_processes(node: YNode | None, devices: dict[str, set[str]], diags: Diagnostics) -> None:
+def _check_processes(
+    node: YNode | None,
+    devices: dict[str, set[str]],
+    resources: dict[str, dict[str, int | None]],
+    diags: Diagnostics,
+) -> None:
     pmap = shape.as_map(node, "processes", diags)
     if pmap is None:
         return
@@ -328,10 +407,16 @@ def _check_processes(node: YNode | None, devices: dict[str, set[str]], diags: Di
             )
             continue
         for j, mode in enumerate(modes.items):
-            _check_mode(mode, f"{base}.modes[{j}]", devices, diags)
+            _check_mode(mode, f"{base}.modes[{j}]", devices, resources, diags)
 
 
-def _check_mode(node: YNode, base: str, devices: dict[str, set[str]], diags: Diagnostics) -> None:
+def _check_mode(
+    node: YNode,
+    base: str,
+    devices: dict[str, set[str]],
+    resources: dict[str, dict[str, int | None]],
+    diags: Diagnostics,
+) -> None:
     mmap = shape.as_map(node, base, diags)
     if mmap is None:
         return
@@ -413,6 +498,94 @@ def _check_mode(node: YNode, base: str, devices: dict[str, set[str]], diags: Dia
         errors.OUTPUT_SPOTS_SHARE_SPOT,
         diags,
     )
+    _check_mode_consumption(
+        mmap.get("consumption"),
+        shape.join(base, "consumption"),
+        devices,
+        resources,
+        mode_devices,
+        diags,
+    )
+
+
+def _check_mode_consumption(
+    node: YNode | None,
+    path: str,
+    devices: dict[str, set[str]],
+    resources: dict[str, dict[str, int | None]],
+    mode_devices: set[str] | None,
+    diags: Diagnostics,
+) -> None:
+    """Check a mode's `consumption` (§5.5): qualified resource -> positive amount.
+
+    Keys are qualified for the same reason spots are -- a mode may name several
+    devices, so a bare resource name would not say whose stock is drawn on. The map
+    is open (its keys are the user's resources), so `x-` in it is an ordinary entry
+    (§9.4) and no closed-key check applies.
+
+    A mode may not draw more of a resource than its device can ever hold: it would
+    describe work that cannot run however the schedule is arranged, and everything
+    the solver could report about it would be an unexplained infeasibility. Both
+    sides are in this document, so it is settled here rather than left to the
+    execution layer (§9.1).
+    """
+    cmap = shape.as_map(node, path, diags)
+    if cmap is None:
+        return
+    for entry in cmap.entries:
+        key_path = shape.join(path, entry.key)
+        parsed = parse_qualified_resource(entry.key)
+        if parsed is None:
+            diags.error(
+                errors.MALFORMED_QUALIFIED_RESOURCE,
+                f"{entry.key!r} is not a qualified resource <device>.<resource>",
+                key_path,
+                at=entry.value or cmap,
+            )
+            continue
+        device, resource = parsed
+        amount = entry.value
+        if not (isinstance(amount, YScalar) and amount.is_int):
+            diags.error(errors.WRONG_TYPE, "consumption must be an integer", key_path, at=amount)
+            continue
+        if amount.value <= 0:
+            # A resource a mode does not draw on is left out, not written as `0`.
+            diags.error(
+                errors.NONPOSITIVE_VALUE, "consumption must be positive", key_path, at=amount
+            )
+            continue
+        if device not in devices:
+            diags.error(
+                errors.UNKNOWN_DEVICE, f"unknown device {device!r}", key_path, at=amount
+            )
+            continue
+        if mode_devices is not None and device not in mode_devices:
+            diags.error(
+                errors.RESOURCE_DEVICE_NOT_IN_MODE,
+                f"device {device!r} is not one of this mode's devices",
+                key_path,
+                at=amount,
+            )
+            continue
+        stocks = resources.get(device, {})
+        if resource not in stocks:
+            diags.error(
+                errors.UNKNOWN_RESOURCE,
+                f"device {device!r} declares no resource {resource!r}",
+                key_path,
+                at=amount,
+            )
+            continue
+        capacity = stocks[resource]
+        # None means the resource is declared but its capacity did not parse, which
+        # is already reported where it is written. Nothing to compare against.
+        if capacity is not None and amount.value > capacity:
+            diags.error(
+                errors.CONSUMPTION_EXCEEDS_CAPACITY,
+                f"consumes {amount.value} of {entry.key!r}, which holds at most {capacity}",
+                key_path,
+                at=amount,
+            )
 
 
 def _check_mode_spots(

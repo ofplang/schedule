@@ -1,0 +1,5 @@
+outcome: valid
+notes: >-
+  A processing activity echoes what its mode drew, in the same qualified form
+  the environment uses; spec §6.3, §9.2. The echo is what keeps a started
+  activity readable after a replan withdraws its mode.

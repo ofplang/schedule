@@ -1,0 +1,6 @@
+outcome: invalid
+match: exact
+errors:
+- {code: negative_value}
+notes: >-
+  A stock cannot hold less than nothing; spec §6.10, §9.2.

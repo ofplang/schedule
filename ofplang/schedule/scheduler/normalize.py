@@ -41,7 +41,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from ofplang.schedule.core.diagnostics import Diagnostics
-from ofplang.schedule.core.identifiers import format_node_path
+from ofplang.schedule.core.identifiers import format_node_path, parse_qualified_resource
 from ofplang.schedule.core.yamlnode import YMap, YNode, YScalar, YSeq, to_plain
 from ofplang.schedule.scheduler.instance import (
     ActivityInstance,
@@ -168,8 +168,136 @@ def normalize(
         return None, None, diags
 
     instance = Instance(env, base.time_unit, tuple(activities), tuple(arcs), base.precedence)
-    fixation = Fixation(now, act_fix, arc_fix)
+
+    # 3. Consumable levels at `now`, replayed from what the run started with (§4.7.2).
+    levels = _derive_levels(instance, act_fix, root, env, diags)
+    if _has_error(diags):
+        return None, None, diags
+
+    fixation = Fixation(now, act_fix, arc_fix, levels)
     return instance, fixation, diags
+
+
+def _resource_model_in_effect(instance: Instance) -> bool:
+    """Whether consumables constrain this instance (§9.3).
+
+    Some mode of some *invoked* process must declare `consumption`. Declaring
+    `resources` on a device is deliberately not enough: a stock nothing draws on
+    constrains nothing, and an environment should be free to describe what a device
+    holds without obliging every document written against it to state a level.
+    """
+    return any(mode.consumption for act in instance.activities for mode in act.modes)
+
+
+def _derive_levels(
+    instance: Instance,
+    act_fix: dict[int, ActivityFixation],
+    root: YNode | None,
+    env,
+    diags: Diagnostics,
+) -> dict[tuple[str, str], int]:
+    """The level of each `(device, resource)` at `now`.
+
+    Levels are replayed, never reported (§4.7.2): the document says what the run
+    started with and the history says what has been drawn since. Every started
+    processing activity has already taken its consumption -- it is taken at the
+    start, and the activity has started -- so the sum over the fixed activities is
+    subtracted from the initial levels. (There is nothing to add back yet;
+    replenishment is specified but not implemented.)
+    """
+    if not _resource_model_in_effect(instance):
+        return {}
+
+    inventories = root.get("inventories") if isinstance(root, YMap) else None
+    if inventories is None:
+        diags.error(
+            errors.MISSING_INVENTORIES,
+            "the environment's modes consume resources, so the document must say "
+            "what the run started with (inventories.initial); an empty `initial` "
+            "means every stock starts empty",
+            "inventories",
+            at=root,
+        )
+        return {}
+
+    levels = _initial_levels(inventories, env, diags)
+    if _has_error(diags):
+        return levels
+
+    for index, fixation in act_fix.items():
+        mode = instance.activities[index].modes[fixation.mode_index]
+        for qualified, amount in mode.consumption.items():
+            parsed = parse_qualified_resource(qualified)
+            if parsed is None:
+                continue
+            levels[parsed] = levels.get(parsed, 0) - amount
+
+    for (device, resource), level in sorted(levels.items()):
+        capacity = env.devices[device].resources.get(resource) if device in env.devices else None
+        if level < 0 or (capacity is not None and level > capacity):
+            diags.error(
+                errors.STATUS_INVENTORY_INCONSISTENT,
+                f"replaying the history leaves {device}.{resource} at {level}, "
+                f"outside [0, {capacity}]",
+                f"inventories.initial.{device}.{resource}",
+                at=root,
+            )
+    return levels
+
+
+def _initial_levels(node: YNode, env, diags: Diagnostics) -> dict[tuple[str, str], int]:
+    """`inventories.initial` resolved against the environment (§9.3).
+
+    A resource the environment declares but the document does not name starts at 0,
+    so the map is filled from the environment first and then overwritten. Naming
+    something the environment does not declare is an error -- device and resource
+    *declarations* survive a re-route (only modes and routes are withdrawn, §7), so
+    this stays strict across replans exactly as the `interface` spot checks do.
+    """
+    levels = {
+        (device_id, resource): 0
+        for device_id, device in env.devices.items()
+        for resource in device.resources
+    }
+    initial = node.get("initial") if isinstance(node, YMap) else None
+    if not isinstance(initial, YMap):
+        return levels
+
+    for entry in initial.entries:
+        device_id = entry.key
+        path = f"inventories.initial.{device_id}"
+        device = env.devices.get(device_id)
+        if device is None:
+            diags.error(errors.UNKNOWN_DEVICE, f"unknown device {device_id!r}", path, at=entry)
+            continue
+        stocks = entry.value
+        if not isinstance(stocks, YMap):
+            continue
+        for level_entry in stocks.entries:
+            resource = level_entry.key
+            level_path = f"{path}.{resource}"
+            capacity = device.resources.get(resource)
+            if capacity is None:
+                diags.error(
+                    errors.UNKNOWN_RESOURCE,
+                    f"device {device_id!r} declares no resource {resource!r}",
+                    level_path,
+                    at=level_entry,
+                )
+                continue
+            value = level_entry.value
+            if not (isinstance(value, YScalar) and value.is_int):
+                continue
+            if value.value > capacity:
+                diags.error(
+                    errors.INVENTORY_EXCEEDS_CAPACITY,
+                    f"{level_path} is {value.value}, above the capacity {capacity}",
+                    level_path,
+                    at=value,
+                )
+                continue
+            levels[(device_id, resource)] = value.value
+    return levels
 
 
 def _has_started_activities(root: YMap) -> bool:
@@ -418,13 +546,21 @@ def _frozen_processing_mode(entry: YMap, process: str, env, diags) -> Mode | Non
     inp = to_plain(entry.get("input_spots"))
     out = to_plain(entry.get("output_spots"))
     devs = to_plain(entry.get("devices"))
-    if inp or out or devs:
+    cons = to_plain(entry.get("consumption"))
+    # `consumption` is part of the echo for the same reason the spots are: a replan
+    # may withdraw the very mode this activity used -- that is how a re-route is
+    # triggered -- and a fixed activity is never re-read against the current
+    # environment (§7), so what it consumed has to travel with it (§6.3). It also
+    # counts towards "there is an echo here": a hand-written status may state the
+    # consumption and leave the spots out.
+    if inp or out or devs or cons:
         return Mode(
             mode_id,
             tuple(devs) if isinstance(devs, list) else (),
             0,
             dict(inp) if isinstance(inp, dict) else {},
             dict(out) if isinstance(out, dict) else {},
+            consumption=dict(cons) if isinstance(cons, dict) else {},
         )
     capability = env.processes.get(process)
     if capability is not None:

@@ -1,0 +1,7 @@
+outcome: invalid
+match: exact
+errors:
+- {code: malformed_qualified_resource}
+notes: >-
+  The `consumption` echo is qualified `<device>.<resource>`, as the mode's own
+  declaration is; spec §6.3, §9.2.

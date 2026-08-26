@@ -654,10 +654,11 @@ environment.
   activity used — that is how a re-route is triggered (§7) — and §7 forbids
   re-reading a fixed activity against the current environment, so the amount it
   consumed has to travel with it. A plan therefore always writes this echo where the
-  mode consumes something, and a started activity is read from the echo if it has
-  one and from the environment otherwise — the same fallback the `mode` itself uses
-  (§9.3). When neither yields an answer and the resource model is in effect, the
-  document cannot be replanned (`status_consumption_unknown`, §9.3).
+  mode consumes something, and a started activity's assignment is read from the echo
+  if it has one and from the environment otherwise. The echo is read as **one unit**
+  — spots, devices and consumption together — so consumption needs no failure of its
+  own: an activity whose consumption cannot be resolved is one whose mode cannot be
+  pinned at all, which is `status_mode_unknown` (§9.3).
 
 ### 6.4 Transport activity
 
@@ -1108,8 +1109,9 @@ given a valid v0 workflow.
   each process has at least one mode.
 - Value constraints: a processing `duration` is a positive YAML integer, a
   transport `duration` is a non-negative YAML integer, a replenishment `duration` is
-  a positive YAML integer; a resource `capacity` is a positive YAML integer and a
-  `consumption` amount a positive YAML integer; `time.unit` is a non-empty string;
+  a positive YAML integer (`nonpositive_duration`); a resource `capacity` and a
+  `consumption` amount are positive YAML integers (`nonpositive_value`);
+  `time.unit` is a non-empty string;
   if `objective` is present, its `kind` names only defined stages (§5.8) — a scalar
   name, or a non-empty list of distinct names.
 - Env-internal references: each `transports.transporter` is a defined transporter;
@@ -1121,10 +1123,11 @@ given a valid v0 workflow.
   qualified resource `<device>.<resource>` naming a defined device and a resource
   declared on it.
 - Duplicate detection: duplicate ids within a kind (two devices, two transporters,
-  two replenishers, or two spots or two resources on one device sharing an id); two
-  machines sharing an id (§8.2); duplicate `transports` entries for the same
-  `(transporter, from, to)`; duplicate `replenishments` entries for the same
-  `(replenisher, device)`.
+  two replenishers, or two spots on one device sharing an id); two machines sharing
+  an id (§8.2); duplicate `transports` entries for the same `(transporter, from,
+  to)`; duplicate `replenishments` entries for the same `(replenisher, device)`.
+  Resources need no rule of their own: they are keys of a mapping, so a repeat is a
+  repeated mapping key and is already `duplicate_key` (§9).
 - Intra-mode spot rules: within a mode, input ports do not share a spot, output
   ports do not share a spot, and every referenced spot's device is one of the
   mode's `devices`.
@@ -1226,10 +1229,13 @@ environment for processes the workflow never invokes are not checked.
   No two bindings on the same side (two `inputs`, or two `outputs`) bind the same
   spot (`interface_duplicate_spot`). Every Object-bearing entry input must be bound
   (`interface_input_missing` otherwise); outputs are optional.
-- **Inventories** (§6.10): whether the resource model is in effect is an
-  environment question — it is, unless it has been disabled (§4.7.3), whenever any
-  invoked mode declares `consumption` or any device declares `resources`. When it
-  is, `inventories` is required (`missing_inventories` otherwise); an empty
+- **Inventories** (§6.10): the resource model is in effect, unless it has been
+  disabled (§4.7.3), when **some mode of some invoked process declares
+  `consumption`**. Declaring `resources` on a device is not enough on its own: a
+  stock nothing draws on constrains nothing, and an environment should be free to
+  describe what a device holds without obliging every document written against it
+  to state a level. When the model is in effect, `inventories` is required
+  (`missing_inventories` otherwise); an empty
   `initial` is a valid answer meaning every stock starts empty. Each device and
   resource named exists in the environment (`unknown_device` / `unknown_resource`)
   and no level exceeds its `capacity` (`inventory_exceeds_capacity`). Device and
@@ -1278,9 +1284,9 @@ leg is pinned like any committed leg; a pending one is re-derived).
   less what every started processing consumed, plus what every finished
   replenishment added (§4.7.2). A started processing's consumption comes from its
   `consumption` echo (§6.3), falling back to the current environment's mode of the
-  reported id, and errors only if neither resolves
-  (`status_consumption_unknown`) — the same fallback `status_mode_unknown` uses, for
-  the same reason. If replaying the history drives any level outside
+  reported id — the same fallback, read as one unit, that pins the mode itself, so a
+  consumption that resolves by neither route is reported as `status_mode_unknown`
+  rather than by a code of its own. If replaying the history drives any level outside
   `[0, capacity]`, the reported history and the environment disagree and the
   document cannot be replanned (`status_inventory_inconsistent`). A `running`
   replenishment has not landed: its `amounts` become a fixed increase at its end,
@@ -1304,9 +1310,12 @@ top level and its `time` / device / transporter / transport / process / mode /
 `objective` mappings (§9.1); and the execution-document top level and its `time` /
 `objective` / `interface` / activity mappings (§9.2). They are **not** interpreted
 inside the open name/port maps whose keys are user-chosen — `processes`,
-`input_spots` / `output_spots`, and `interface.inputs` / `outputs` — where an
-`x-`-prefixed key is an ordinary (badly named) entry, not an extension. (Mirrors
-the workflow `x-` convention, ofplang-spec §26.)
+`input_spots` / `output_spots`, `interface.inputs` / `outputs`, a device's
+`resources`, a mode's `consumption`, `inventories.initial` and the per-device maps
+under it, and a replenishment's `amounts` — where an `x-`-prefixed key is an
+ordinary (badly named) entry, not an extension. (Mirrors the workflow `x-`
+convention, ofplang-spec §26.) Each *resource definition* under `resources` is a
+closed mapping, so `x-` is an extension point there as everywhere else.
 
 ## 10. Error codes
 
@@ -1326,6 +1335,7 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `malformed_qualified_resource` | a resource is not in `<device>.<resource>` form (exactly one `.`) |
 | `unknown_objective_kind` | `objective.kind` is not a set of stages (§5.8): it names a stage v0 does not define, names none at all, repeats one, or is neither a name nor a list of names |
 | `negative_value` | an integer that must be non-negative is negative |
+| `nonpositive_value` | an integer that must be positive is zero or negative — a resource `capacity`, a `consumption` amount (a resource a mode does not draw on is left out, not written as `0`) |
 | `duplicate_key` | a mapping key repeats (§9; not reported inside an `x-` payload, §9.4) |
 
 ### 10.2 Environment definition (§9.1)
@@ -1339,10 +1349,9 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `duplicate_transporter_id` | a transporter id repeats |
 | `duplicate_replenisher_id` | a replenisher id repeats |
 | `duplicate_spot_id` | a spot name repeats within a device |
-| `duplicate_resource_id` | a resource name repeats within a device |
 | `machine_id_conflict` | two machines share an id — a device, a transporter and a replenisher are all machines (§8.2) |
 | `cross_kind_id_coincidence` | a spot or resource name shares an id with a machine (*warning*) |
-| `nonpositive_duration` | a device-occupying processing mode `duration` is not positive, a replenishment `duration` is not positive, a resource `capacity` is not positive, a `consumption` amount is not positive, or any mode `duration` is negative (a device-less pure-data mode may be zero) |
+| `nonpositive_duration` | a device-occupying processing mode `duration` is not positive, a replenishment `duration` is not positive, or any mode `duration` is negative (a device-less pure-data mode may be zero). A `capacity` or `consumption` that is not positive is `nonpositive_value` (§10.1) — the same rule, but this code names a duration |
 | `empty_time_unit` | `time.unit` is empty or not a string |
 | `unknown_transporter` | `transports.transporter` is not a defined transporter |
 | `unknown_replenisher` | `replenishments.replenisher` is not a defined replenisher |
@@ -1427,7 +1436,6 @@ status (§7) against the instance:
 | `status_mode_unknown` | a fixed processing cannot be pinned — its `mode` has no echo and the current env does not offer it |
 | `status_time_inconsistent` | a `completed` activity ends after `now`, or a `running` activity starts after `now` |
 | `status_duplicate` | two status entries fix the same processing (`node`), the same transport leg (`arc` + `seq`), or the same replenishment (`id`) |
-| `status_consumption_unknown` | a fixed processing's consumption cannot be resolved — no `consumption` echo and the current env does not offer its mode (§6.3) |
 | `status_inventory_inconsistent` | replaying the history against `inventories.initial` drives a resource outside `[0, capacity]` (§9.3) |
 | `broken_transport_chain` | a committed transport leg's source is not completed, or a leg does not continue the previous leg's arrival spot |
 | `terminal_status_not_replannable` | a replan input carries a `failed` / `cancelled` (terminal) activity; a stopped run has no remaining work to plan |

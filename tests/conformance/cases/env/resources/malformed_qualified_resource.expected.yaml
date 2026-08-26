@@ -1,0 +1,7 @@
+outcome: invalid
+match: exact
+errors:
+- {code: malformed_qualified_resource}
+notes: >-
+  `consumption` keys are qualified `<device>.<resource>`: a mode may name several
+  devices, so a bare name would not say whose stock is drawn on; spec §5.5, §9.1.

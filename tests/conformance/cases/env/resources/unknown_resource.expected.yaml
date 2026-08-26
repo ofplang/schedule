@@ -1,0 +1,6 @@
+outcome: invalid
+match: exact
+errors:
+- {code: unknown_resource}
+notes: >-
+  The mode draws on a resource its device does not declare; spec §5.5, §9.1.

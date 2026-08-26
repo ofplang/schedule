@@ -1,0 +1,57 @@
+# Consumable-resource example — three assays competing for one limited stock.
+#
+# The workflow itself says nothing about consumables: `assay` is an ordinary atomic
+# process, and that running it draws on a reagent is a property of the *device* that
+# runs it (SPEC §4.7). Three plates are assayed; the environment says each assay
+# draws 2 units of `reader.reagent`, and the document says the run starts with 5.
+# Five units cover two assays, not three, so this instance is infeasible until the
+# starting level is raised — which is the point of the example.
+#
+#   ofp-schedule schedule consumable.workflow.yaml --env consumable.env.yaml \
+#       --document consumable.document.yaml
+spec_version: "0.0"
+
+types:
+  Plate:
+    domain: object
+
+processes:
+
+  make_plate:                                   # creates the material internally
+    kind: atomic
+    outputs:
+      plate: { type: Plate, phase: data }
+    objects:
+      create:
+        - outputs.plate
+
+  assay:                                        # draws on the reader's reagent
+    kind: atomic
+    inputs:
+      plate: { type: Plate, phase: data }
+    outputs:
+      out: { type: Plate, phase: data }
+    objects:
+      map:
+        outputs.out: inputs.plate
+
+  discard:
+    kind: atomic
+    inputs:
+      plate: { type: Plate, phase: data }
+    objects:
+      consume:
+        - inputs.plate
+
+  main:
+    kind: composite
+    body:
+      nodes:
+        - { id: MakeA, process: make_plate }
+        - { id: MakeB, process: make_plate }
+        - { id: AssayA, process: assay, state: { plate: { from: MakeA.plate } } }
+        - { id: AssayB, process: assay, state: { plate: { from: MakeB.plate } } }
+        - { id: DropA, process: discard, state: { plate: { from: AssayA.out } } }
+        - { id: DropB, process: discard, state: { plate: { from: AssayB.out } } }
+
+entry: main

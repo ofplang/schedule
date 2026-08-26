@@ -1,0 +1,20 @@
+# Execution document for consumable.workflow.yaml: what the run starts with.
+#
+# `inventories.initial` is the level of each stock at the *start of the run*, not
+# now (SPEC §6.10). Levels at any later moment are replayed from this plus the
+# history, so this section does not change from one replan to the next — the same
+# treatment `interface` gets, and for the same reason.
+#
+# Required here because some invoked mode declares `consumption` (SPEC §9.3).
+# `initial: {}` would be the way to say every stock starts empty; leaving the
+# section out entirely is `missing_inventories`.
+#
+# Two assays at 2 units each need 4, and 4 is what the reader starts with. Raising
+# a third assay into the workflow, or lowering this to 3, makes the instance
+# infeasible — the honest answer when a stock cannot be refilled.
+inventories:
+  initial:
+    reader:
+      reagent: 4
+
+activities: []

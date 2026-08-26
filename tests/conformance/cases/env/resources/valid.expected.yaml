@@ -1,0 +1,4 @@
+outcome: valid
+notes: >-
+  A device declares a consumable with a capacity and a mode declares what it
+  draws, qualified `<device>.<resource>`; spec §5.2, §5.5, §9.1.

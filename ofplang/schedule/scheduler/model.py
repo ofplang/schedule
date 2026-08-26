@@ -31,14 +31,21 @@ NodePath = tuple[str, ...]
 
 @dataclass(frozen=True)
 class Mode:
-    """One way to run a process: the device(s) it occupies, its duration, and the
-    spot bound to each Object-bearing port (qualified `device.spot`)."""
+    """One way to run a process: the device(s) it occupies, its duration, the
+    spot bound to each Object-bearing port (qualified `device.spot`), and what it
+    consumes."""
 
     id: str
     devices: tuple[str, ...]
     duration: int
     input_spots: dict[str, str]
     output_spots: dict[str, str]
+    # Consumable drawn on when this mode runs (§4.7): qualified `device.resource`
+    # -> a positive amount, taken in full at the activity's start. Qualified
+    # because a mode may name several devices, exactly as its spots are. Defaulted:
+    # most modes consume nothing, and a Mode is built positionally in places that
+    # predate resources.
+    consumption: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -53,6 +60,10 @@ class ProcessCapability:
 class Device:
     id: str
     spots: frozenset[str]
+    # Consumable resources this device holds (§5.2): resource name -> capacity, the
+    # largest level it can hold. Names are device-local; the globally unique id is
+    # the qualified `<device>.<resource>`. Empty for a device holding no consumable.
+    resources: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

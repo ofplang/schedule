@@ -65,6 +65,37 @@ ofp-schedule schedule interface_load.workflow.yaml --env interface_load.env.yaml
 An Object-bearing entry input with no `interface` binding is an error
 (`interface_input_missing`), so `--document` is required here.
 
+## `consumable` — a limited stock two assays compete for
+
+- `consumable.workflow.yaml` — two plates, each assayed then discarded. The
+  workflow says nothing about consumables: that an assay draws on a reagent is a
+  property of the **device** that runs it.
+- `consumable.env.yaml` — `reader` declares a resource `reagent` with a
+  **capacity** of 6 (SPEC §5.2), and the `assay` mode declares
+  `consumption: { reader.reagent: 2 }` (SPEC §5.5, qualified because a mode may
+  name several devices).
+- `consumable.document.yaml` — `inventories.initial` (SPEC §6.10): what the run
+  **starts** with, here 4 units.
+
+Capacity is what the device can ever hold; the starting level is a property of the
+run, which is why the two live in different documents. Levels at any later moment
+are never stated — they are replayed from the initial level plus the history
+(SPEC §4.7.2), so `inventories` does not change from one replan to the next, the
+same treatment `interface` gets. Run it with
+
+```sh
+ofp-schedule schedule consumable.workflow.yaml --env consumable.env.yaml \
+    --document consumable.document.yaml
+```
+
+Two assays at 2 units need 4, and 4 is what the reader starts with. Lower it to 3
+and the plan is `infeasible` — the honest answer for a stock nothing refills
+(replenishment is specified but not implemented). Drop the `inventories` section
+altogether and it is `missing_inventories`: some invoked mode consumes, so the
+document has to say what the run began with. `initial: {}` is how to say every
+stock starts empty. Declaring `resources` that no invoked mode draws on demands
+nothing — a stock nothing consumes constrains nothing.
+
 ## `simple` — minimal source → target
 
 - `simple.workflow.yaml` — the v0 workflow.

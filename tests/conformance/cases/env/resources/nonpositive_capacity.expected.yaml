@@ -1,0 +1,7 @@
+outcome: invalid
+match: exact
+errors:
+- {code: nonpositive_value}
+notes: >-
+  A capacity of zero holds nothing; spec §5.2, §9.1. Not `nonpositive_duration`
+  -- a capacity is not a duration, and naming one would point at the wrong field.

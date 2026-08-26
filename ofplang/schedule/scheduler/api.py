@@ -106,6 +106,7 @@ def schedule(
     # whether the output echoes `now`.
     doc_path = document_path
     interface = None
+    inventories = None
     had_now = False
     root = None
     if doc_path is not None:
@@ -120,9 +121,11 @@ def schedule(
         # `interface` is copied before being echoed into the plan (below).
         if isinstance(doc_path, dict):
             interface = copy.deepcopy(doc_path.get("interface"))
+            inventories = copy.deepcopy(doc_path.get("inventories"))
             had_now = "now" in doc_path
         elif isinstance(root, YMap):
             interface = yamlnode.to_plain(root.get("interface"))
+            inventories = yamlnode.to_plain(root.get("inventories"))
             had_now = "now" in root
 
     # 3. Build the instance (boundary nodes/arcs from interface always re-created,
@@ -170,5 +173,6 @@ def schedule(
         status=_provenance(doc_path, document_source) if root is not None else None,
         now=fixation.now if had_now else None,
         interface=interface,
+        inventories=inventories,
     )
     return ScheduleReport(solution.outcome, solution.makespan, plan, diagnostics)

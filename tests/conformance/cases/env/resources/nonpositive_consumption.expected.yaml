@@ -1,0 +1,6 @@
+outcome: invalid
+match: exact
+errors:
+- {code: nonpositive_value}
+notes: >-
+  A resource a mode does not draw on is left out, not written as `0`; spec §5.5, §9.1.

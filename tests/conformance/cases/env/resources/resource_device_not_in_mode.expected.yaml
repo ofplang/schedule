@@ -1,0 +1,7 @@
+outcome: invalid
+match: exact
+errors:
+- {code: resource_device_not_in_mode}
+notes: >-
+  The mode draws on a stock held by a device it does not occupy; spec §5.5, §9.1
+  (the counterpart of `spot_device_not_in_mode`).

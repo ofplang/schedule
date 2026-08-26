@@ -1,0 +1,11 @@
+activities:
+- kind: processing
+  start: 0
+  end: 60
+  process: measure_od
+  mode: fast
+  node: [assay]
+inventories:
+  at: 120
+  initial:
+    reader_0: {dye: 4}

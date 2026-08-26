@@ -1,0 +1,7 @@
+outcome: invalid
+match: exact
+errors:
+- {code: unknown_key}
+notes: >-
+  `inventories` is closed: it carries `initial` and nothing else. v0 has no way
+  to state a level measured at a later time; spec §6.10, §9.2.

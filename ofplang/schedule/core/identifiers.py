@@ -30,6 +30,17 @@ def format_endpoint(node_path, port) -> str:
     return f"{format_node_path(node_path)}.{port}"
 
 
+def parse_qualified_resource(value) -> tuple[str, str] | None:
+    """Split `<device>.<resource>` into (device, resource).
+
+    A qualified resource has the same form as a qualified spot and passes the same
+    check; the two are told apart by the section they appear in, not by their shape
+    (SPECIFICATIONS.md §8.2). Named separately so a call site reads as the thing it
+    is actually validating.
+    """
+    return parse_qualified_spot(value)
+
+
 def parse_qualified_spot(value) -> tuple[str, str] | None:
     """Split `<device>.<spot>` into (device, spot).
 

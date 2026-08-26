@@ -1,0 +1,8 @@
+outcome: invalid
+match: exact
+errors:
+- {code: consumption_exceeds_capacity}
+notes: >-
+  The mode draws more than its device can ever hold, so the work cannot run
+  however the schedule is arranged; spec §4.7.1, §9.1. Both sides are in this
+  document, so it is settled here rather than surfacing as infeasibility.

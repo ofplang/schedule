@@ -47,9 +47,13 @@ def load_environment(source) -> tuple[Environment | None, ValidationResult]:
 def _build(data: dict) -> Environment:
     time_unit = data["time"]["unit"]
 
-    # Devices own a set of local spot names.
+    # Devices own a set of local spot names and, optionally, consumable stocks.
     devices = {
-        d["id"]: Device(d["id"], frozenset(d.get("spots", [])))
+        d["id"]: Device(
+            d["id"],
+            frozenset(d.get("spots", [])),
+            {name: spec["capacity"] for name, spec in (d.get("resources") or {}).items()},
+        )
         for d in data["devices"]
     }
 
@@ -71,6 +75,7 @@ def _build(data: dict) -> Environment:
                 duration=m["duration"],
                 input_spots=dict(m.get("input_spots", {})),
                 output_spots=dict(m.get("output_spots", {})),
+                consumption=dict(m.get("consumption", {})),
             )
             for index, m in enumerate(proc["modes"])
         )

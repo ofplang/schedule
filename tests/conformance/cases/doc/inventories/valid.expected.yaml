@@ -1,0 +1,5 @@
+outcome: valid
+notes: >-
+  `inventories.initial` states what the run started with, per device and
+  resource; spec §6.10, §9.2. That the devices exist needs the environment and
+  is the execution layer's job.

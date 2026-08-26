@@ -11,8 +11,14 @@ MISSING_REQUIRED_FIELD = "missing_required_field"
 WRONG_TYPE = "wrong_type"
 INVALID_IDENTIFIER = "invalid_identifier"
 MALFORMED_QUALIFIED_SPOT = "malformed_qualified_spot"
+MALFORMED_QUALIFIED_RESOURCE = "malformed_qualified_resource"
 UNKNOWN_OBJECTIVE_KIND = "unknown_objective_kind"
 NEGATIVE_VALUE = "negative_value"
+# An integer that must be strictly positive is zero or negative. Distinct from
+# NONPOSITIVE_DURATION, which says the same of a duration: a capacity of 0 is not a
+# duration, and a diagnostic that called it one would send the reader to the wrong
+# field (§10.1).
+NONPOSITIVE_VALUE = "nonpositive_value"
 # A mapping key that appears more than once. YAML itself permits it and resolves
 # the entry last-wins, which makes it a silent way to write one document and get
 # another; it is never intentional in these schemas.
@@ -35,10 +41,15 @@ EMPTY_TIME_UNIT = "empty_time_unit"
 UNKNOWN_TRANSPORTER = "unknown_transporter"
 UNKNOWN_DEVICE = "unknown_device"
 UNKNOWN_SPOT = "unknown_spot"
+UNKNOWN_RESOURCE = "unknown_resource"
 DUPLICATE_TRANSPORT_ENTRY = "duplicate_transport_entry"
 INPUT_SPOTS_SHARE_SPOT = "input_spots_share_spot"
 OUTPUT_SPOTS_SHARE_SPOT = "output_spots_share_spot"
 SPOT_DEVICE_NOT_IN_MODE = "spot_device_not_in_mode"
+RESOURCE_DEVICE_NOT_IN_MODE = "resource_device_not_in_mode"
+# A mode draws more of a resource than its device can ever hold, so the work it
+# describes cannot run however the schedule is arranged (§4.7.1).
+CONSUMPTION_EXCEEDS_CAPACITY = "consumption_exceeds_capacity"
 
 # §10.3 Execution document
 MISSING_ACTIVITIES = "missing_activities"
@@ -75,6 +86,15 @@ PURE_DATA_PORT_MAPPED = "pure_data_port_mapped"
 MODE_PORTS_INCOMPLETE = "mode_ports_incomplete"
 ARC_UNREACHABLE = "arc_unreachable"
 INFEASIBLE = "infeasible"
+
+# Consumable resources (§4.7, §6.10, §9.3). The model is in effect when some mode
+# of some invoked process declares `consumption`; declaring a stock nothing draws
+# on constrains nothing and demands nothing of a document.
+# The document does not say what the run started with, so no level can be derived.
+MISSING_INVENTORIES = "missing_inventories"
+# An `inventories.initial` level is above the capacity its device declares.
+INVENTORY_EXCEEDS_CAPACITY = "inventory_exceeds_capacity"
+
 # Warning (not an error): a composite carries a `scheduling` section, but this
 # scheduler does not implement scheduling_policies (§23) / object policies (§24) --
 # best-effort preferences an implementation may ignore -- so the section is dropped
@@ -107,7 +127,9 @@ STATUS_NODE_UNKNOWN = "status_node_unknown"
 # A status entry's `arc` does not match any Object-bearing arc in the workflow.
 STATUS_ARC_UNKNOWN = "status_arc_unknown"
 # A fixed processing activity cannot be pinned: its `mode` has no echo
-# (input/output spots, devices) and the current environment does not offer it.
+# (input/output spots, devices, consumption) and the current environment does not
+# offer it. The echo is read as one unit, so this also covers a consumption that
+# resolves by neither route -- there is no separate code for it.
 STATUS_MODE_UNKNOWN = "status_mode_unknown"
 # A started activity's reported times contradict `now` (a completed activity
 # ends after `now`, or a running activity starts after `now`).
@@ -123,6 +145,9 @@ BROKEN_TRANSPORT_CHAIN = "broken_transport_chain"
 # is a valid execution-document shape, but a run that has failed is not replannable
 # (v0 stops the whole run on any failure), so it cannot be fed to the scheduler.
 TERMINAL_STATUS_NOT_REPLANNABLE = "terminal_status_not_replannable"
+# Replaying the history against `inventories.initial` drives a resource outside
+# [0, capacity]: the reported history and the environment disagree (§9.3).
+STATUS_INVENTORY_INCONSISTENT = "status_inventory_inconsistent"
 
 # The `cross_kind_id_coincidence` code is the only warning; everything else is an
 # error. The runner and CLI use this to check severity.
@@ -135,8 +160,10 @@ ERROR_CODES = frozenset(
         WRONG_TYPE,
         INVALID_IDENTIFIER,
         MALFORMED_QUALIFIED_SPOT,
+        MALFORMED_QUALIFIED_RESOURCE,
         UNKNOWN_OBJECTIVE_KIND,
         NEGATIVE_VALUE,
+        NONPOSITIVE_VALUE,
         DUPLICATE_KEY,
         MISSING_REQUIRED_SECTION,
         EMPTY_DEVICES,
@@ -150,10 +177,13 @@ ERROR_CODES = frozenset(
         UNKNOWN_TRANSPORTER,
         UNKNOWN_DEVICE,
         UNKNOWN_SPOT,
+        UNKNOWN_RESOURCE,
         DUPLICATE_TRANSPORT_ENTRY,
         INPUT_SPOTS_SHARE_SPOT,
         OUTPUT_SPOTS_SHARE_SPOT,
         SPOT_DEVICE_NOT_IN_MODE,
+        RESOURCE_DEVICE_NOT_IN_MODE,
+        CONSUMPTION_EXCEEDS_CAPACITY,
         MISSING_ACTIVITIES,
         UNKNOWN_ACTIVITY_KIND,
         UNKNOWN_STATUS,
@@ -173,6 +203,8 @@ ERROR_CODES = frozenset(
         MODE_PORTS_INCOMPLETE,
         ARC_UNREACHABLE,
         INFEASIBLE,
+        MISSING_INVENTORIES,
+        INVENTORY_EXCEEDS_CAPACITY,
         INTERFACE_UNKNOWN_PORT,
         INTERFACE_PURE_DATA_PORT,
         INTERFACE_DUPLICATE_SPOT,
@@ -185,6 +217,7 @@ ERROR_CODES = frozenset(
         STATUS_DUPLICATE,
         BROKEN_TRANSPORT_CHAIN,
         TERMINAL_STATUS_NOT_REPLANNABLE,
+        STATUS_INVENTORY_INCONSISTENT,
     }
 )
 

@@ -1,0 +1,16 @@
+time: {unit: second}
+devices:
+- id: reader_0
+  spots: [stage]
+- id: store_0
+  spots: [slot]
+  resources:
+    dye: {capacity: 6}
+processes:
+  measure_od:
+    modes:
+    - devices: [reader_0]
+      duration: 45
+      input_spots: {plate: reader_0.stage}
+      output_spots: {plate: reader_0.stage}
+      consumption: {store_0.dye: 2}

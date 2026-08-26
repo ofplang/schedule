@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from ortools.sat.python import cp_model
 
 from ofplang.schedule.core import objective as objective_stages
-from ofplang.schedule.core.identifiers import parse_qualified_spot
+from ofplang.schedule.core.identifiers import parse_qualified_resource, parse_qualified_spot
 from ofplang.schedule.scheduler.instance import (
     BoundaryInfo,
     Instance,
@@ -265,6 +265,9 @@ def solve(
     for intervals in transporter_iv.values():
         model.AddNoOverlap(intervals)
 
+    # --- consumable resources (FORMULATION §11) ---
+    _add_consumption(model, instance, fixation, mode_lits)
+
     # --- objective ---
     # c_max is the max over real activity ends and boundary-output deliveries
     # (make_ends); the output node's own end equals c_max and is not fed back.
@@ -336,6 +339,46 @@ def solve(
         objective_kind=stages,
         objective_values=(solver.Value(c_max),),
     )
+
+
+def _add_consumption(model, instance: Instance, fixation: Fixation | None, mode_lits) -> None:
+    """Constrain what the pending work may still draw from each stock.
+
+    FORMULATION §11 states the general rule as a level that must stay within
+    `[0, capacity]` at every event. **Without replenishment that reservoir is not
+    needed.** Levels only ever fall, so the whole trajectory is bounded by its end:
+    "level >= 0 at every consumption" is exactly "everything still to be consumed
+    fits in what is left at `now`", one linear inequality per `(device, resource)`.
+    The upper bound cannot be violated at all -- nothing raises a level -- and the
+    starting level is checked against capacity when it is read (§9.3).
+
+    So this deliberately builds none of the event machinery §11 describes: no event
+    times, no intervals, no ordering. Introducing replenishment is what makes the
+    trajectory non-monotonic and the reservoir necessary; until then it would be
+    cost on a model whose size is already the binding constraint on solve time
+    (dev-notes/report-solver-scalability.md).
+
+    Fixed activities contribute nothing here: their consumption is already spent and
+    is folded into the levels at `now` (§4.7.2).
+    """
+    levels = fixation.levels if fixation is not None else {}
+    if not levels:
+        return
+
+    fixed = fixation.activities if fixation is not None else {}
+    demand: dict[tuple[str, str], list] = {}
+    for i, act in enumerate(instance.activities):
+        if i in fixed:
+            continue
+        for m, mode in enumerate(act.modes):
+            for qualified, amount in mode.consumption.items():
+                parsed = parse_qualified_resource(qualified)
+                if parsed is None:  # pragma: no cover - the env validator rejects it
+                    continue
+                demand.setdefault(parsed, []).append(amount * mode_lits[i][m])
+
+    for key, terms in demand.items():
+        model.Add(sum(terms) <= levels.get(key, 0))
 
 
 def _fixed_end(status: str, reported_end: int, now: int, margin: int) -> int:

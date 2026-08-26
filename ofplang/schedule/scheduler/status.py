@@ -11,7 +11,7 @@ to this module alone.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ofplang.schedule.core.yamlnode import YMap, YNode, YScalar, YSeq
 from ofplang.schedule.scheduler.model import NodePath
@@ -51,6 +51,12 @@ class Fixation:
     now: int
     activities: dict[int, ActivityFixation]
     arcs: dict[int, ArcFixation]
+    # Consumable levels at `now`, keyed by (device, resource). Derived, not
+    # reported: the document gives what the run *started* with and the history says
+    # what has been drawn since (§4.7.2), so this is the other half of what the
+    # executed part settles -- which is why it belongs here rather than being passed
+    # alongside. Empty when the resource model is not in effect.
+    levels: dict[tuple[str, str], int] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------

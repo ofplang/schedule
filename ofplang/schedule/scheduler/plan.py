@@ -29,6 +29,7 @@ def render_plan(
     status: str | None = None,
     now: int | None = None,
     interface: dict | None = None,
+    inventories: dict | None = None,
 ) -> dict:
     """Build the execution-document dict for `solution`."""
     activities: list[dict] = []
@@ -77,6 +78,11 @@ def render_plan(
             entry["input_spots"] = dict(p.mode.input_spots)
         if p.mode.output_spots:
             entry["output_spots"] = dict(p.mode.output_spots)
+        # Always echoed where the mode consumes something (§6.3): a later replan may
+        # withdraw this mode from the environment, and a fixed activity is not read
+        # back against it, so the amount has to be here to be recoverable.
+        if p.mode.consumption:
+            entry["consumption"] = dict(p.mode.consumption)
         activities.append(entry)
 
     for t in solution.transport:
@@ -110,6 +116,12 @@ def render_plan(
     # plan can be fed back as the next document.
     if interface:
         doc["interface"] = interface
+    # `inventories` says what the run started with, so it does not change from one
+    # replan to the next (§6.10). Echoed verbatim for the same reason `interface` is:
+    # the plan has to be usable as the next document, and levels are replayed from
+    # this rather than reported.
+    if inventories:
+        doc["inventories"] = inventories
     doc["outcome"] = solution.outcome
     # `value` takes the shape of its `kind` (§6.1): a scalar for one stage, a list
     # for several. A plan is only rendered when a solve succeeded, so every stage

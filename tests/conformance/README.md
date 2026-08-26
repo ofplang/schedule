@@ -74,6 +74,7 @@ Codes are compared as **sets** (order- and duplicate-insensitive).
 | `identifiers/`   | id grammar, duplicates, machine id conflict (error), other cross-kind coincidence (warning) |
 | `values/`        | durations, `time.unit`, `objective.kind` |
 | `spots/`         | qualified-spot form, unknown device/spot, intra-mode spot rules |
+| `resources/`     | a device's `resources` and a mode's `consumption` (§5.2, §5.5): qualified form, capacity/amount positivity, unknown resource, device not in the mode, consuming more than the capacity |
 | `transports/`    | unknown transporter, duplicate transport entry |
 | `extensions/`    | where `x-` keys are admitted (§9.4), and what is / is not checked inside a payload |
 
@@ -84,7 +85,8 @@ Codes are compared as **sets** (order- and duplicate-insensitive).
 | `valid/`         | plan / status / minimal / Pure-Data + transport |
 | `shape/`         | unknown/missing keys, wrong value kinds, duplicate mapping keys |
 | `activity/`      | kind, status, missing start, ordering, negative times |
-| `processing/`    | required fields, node-path shape |
+| `processing/`    | required fields, node-path shape, the `consumption` echo (§6.3) |
+| `inventories/`   | `inventories.initial` shape and section closure (§6.10) |
 | `transport/`     | required fields, arc shape, qualified spots |
 | `relay/`         | required fields, `seq`, zero duration, a valid relayed chain |
 | `interface/`     | port names, qualified spots, section shape (§6.8) |

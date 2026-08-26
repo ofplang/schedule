@@ -9,13 +9,27 @@ from __future__ import annotations
 
 from ofplang.schedule.core import yamlnode
 from ofplang.schedule.core.diagnostics import Diagnostics, ValidationResult
-from ofplang.schedule.core.identifiers import is_identifier, parse_qualified_spot
+from ofplang.schedule.core.identifiers import (
+    is_identifier,
+    parse_qualified_resource,
+    parse_qualified_spot,
+)
 from ofplang.schedule.core.yamlnode import YMap, YNode, YScalar, YSeq
 from ofplang.schedule.validation import _objective, errors
 from ofplang.schedule.validation import _shape as shape
 from ofplang.schedule.validation.duplicates import check_duplicate_keys
 
-DOC_TOP = {"time", "now", "outcome", "objective", "interface", "activities", "meta"}
+DOC_TOP = {
+    "time",
+    "now",
+    "outcome",
+    "objective",
+    "interface",
+    "inventories",
+    "activities",
+    "meta",
+}
+INVENTORIES_KEYS = {"initial"}
 OUTCOMES = {"optimal", "feasible", "infeasible", "unknown"}
 # `failed` / `cancelled` are terminal statuses (§6.2): a run stops on any failure,
 # so they only ever appear in a final status, never fed back to the scheduler (a
@@ -34,6 +48,7 @@ PROCESSING_KEYS = {
     "devices",
     "input_spots",
     "output_spots",
+    "consumption",
 }
 # A transport carries an optional `seq` (its position in a multi-leg chain that
 # serves one logical arc; absent on a single-leg transport). See §6.6.
@@ -96,6 +111,7 @@ def _check(root: YNode | None, diags: Diagnostics) -> None:
     _check_outcome(root.get("outcome"), diags)
     _check_objective(root.get("objective"), diags)
     _check_interface(root.get("interface"), diags)
+    _check_inventories(root.get("inventories"), diags)
 
     if "activities" not in root:
         diags.error(errors.MISSING_ACTIVITIES, "activities is required", "activities", at=root)
@@ -148,6 +164,49 @@ def _check_objective(node: YNode | None, diags: Diagnostics) -> None:
     else:
         stages = _objective.check_kind(kind, diags)
     _objective.check_value(omap, stages, diags)
+
+
+def _check_inventories(node: YNode | None, diags: Diagnostics) -> None:
+    """Shape only (§6.10): `inventories` is `{initial}`, a map of device id to a map
+    of resource name to a non-negative level.
+
+    That the devices and resources exist, that no level is above its capacity, and
+    that the section is *required* at all need the environment, so they are the
+    execution layer's job (§9.3). Both maps here are open -- device ids and resource
+    names are the user's -- so `x-` in either is an ordinary entry (§9.4).
+    """
+    imap = shape.as_map(node, "inventories", diags)
+    if imap is None:
+        return
+    shape.unknown_keys(imap, INVENTORIES_KEYS, "inventories", diags)
+    initial = shape.require(imap, "initial", "inventories", diags)
+    dmap = shape.as_map(initial, "inventories.initial", diags)
+    if dmap is None:
+        return
+    for entry in dmap.entries:
+        path = shape.join("inventories.initial", entry.key)
+        if not is_identifier(entry.key):
+            diags.error(
+                errors.INVALID_IDENTIFIER,
+                f"invalid device id {entry.key!r}",
+                path,
+                at=entry.value or dmap,
+            )
+            continue
+        levels = shape.as_map(entry.value, path, diags)
+        if levels is None:
+            continue
+        for level in levels.entries:
+            level_path = shape.join(path, level.key)
+            if not is_identifier(level.key):
+                diags.error(
+                    errors.INVALID_IDENTIFIER,
+                    f"invalid resource name {level.key!r}",
+                    level_path,
+                    at=level.value or levels,
+                )
+                continue
+            shape.nonneg_int(level.value, level_path, diags)
 
 
 def _check_interface(node: YNode | None, diags: Diagnostics) -> None:
@@ -251,6 +310,37 @@ def _check_processing(amap: YMap, base: str, diags: Diagnostics) -> None:
     _require_str(amap, "mode", base, diags)
     node = shape.require(amap, "node", base, diags)
     _check_node_path(node, shape.join(base, "node"), diags)
+    _check_consumption(amap.get("consumption"), shape.join(base, "consumption"), diags)
+
+
+def _check_consumption(node: YNode | None, path: str, diags: Diagnostics) -> None:
+    """A processing activity's `consumption` echo (§6.3): qualified resource ->
+    positive amount, the same shape a mode declares (§5.5).
+
+    Shape only. That the device and resource exist needs the environment, which this
+    validator never reads (§9.2); the execution layer resolves them. The map is open
+    (its keys are the user's resources), so `x-` in it is an ordinary entry (§9.4).
+    """
+    cmap = shape.as_map(node, path, diags)
+    if cmap is None:
+        return
+    for entry in cmap.entries:
+        key_path = shape.join(path, entry.key)
+        if parse_qualified_resource(entry.key) is None:
+            diags.error(
+                errors.MALFORMED_QUALIFIED_RESOURCE,
+                f"{entry.key!r} is not a qualified resource <device>.<resource>",
+                key_path,
+                at=entry.value or cmap,
+            )
+            continue
+        amount = entry.value
+        if not (isinstance(amount, YScalar) and amount.is_int):
+            diags.error(errors.WRONG_TYPE, "consumption must be an integer", key_path, at=amount)
+        elif amount.value <= 0:
+            diags.error(
+                errors.NONPOSITIVE_VALUE, "consumption must be positive", key_path, at=amount
+            )
 
 
 def _check_node_path(node: YNode | None, path: str, diags: Diagnostics) -> None:
