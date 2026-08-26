@@ -111,11 +111,11 @@ def solve(
     up to `now + running_task_margin` so an overrunning task is never fixed to a
     finish in the past (FORMULATION §9).
 
-    `objective` is the declared stage list (§4.8); it defaults to the
-    environment's. Taking it as an argument rather than reading
-    `instance.env.objective` here is deliberate: the declaration is on its way from
-    the environment definition to the execution document, and this parameter is the
-    seam that keeps the move a change at the caller.
+    `objective` is the stage list to minimise (§4.8). The caller resolves where it
+    was declared -- the execution document, or an environment still using the
+    deprecated section -- because that is a question about the *inputs*, not about
+    the model; falling back here to the environment's and then to the default only
+    keeps a bare `solve(instance)` meaningful.
 
     By default the solve is non-deterministic: CP-SAT runs a multi-worker
     portfolio that races on wall-clock time, so a fresh run may return a different
@@ -297,7 +297,7 @@ def solve(
     # possible at all; `effective` drops it otherwise, which is what keeps a
     # resource-free plan reporting the bare makespan it always did.
     stages = objective_stages.effective(
-        instance.env.objective if objective is None else objective,
+        objective or instance.env.objective or objective_stages.DEFAULT,
         replenishment_possible=bool(instance.replenishments),
     )
     n_refills = sum(vars_.present for vars_ in refills.values())

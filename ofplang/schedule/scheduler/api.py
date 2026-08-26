@@ -22,8 +22,9 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 
+from ofplang.schedule.core import objective as objective_stages
 from ofplang.schedule.core import yamlnode
-from ofplang.schedule.core.diagnostics import ERROR, Diagnostic, Diagnostics
+from ofplang.schedule.core.diagnostics import ERROR, WARNING, Diagnostic, Diagnostics
 from ofplang.schedule.core.yamlnode import YMap
 from ofplang.schedule.scheduler.cpsat import solve
 from ofplang.schedule.scheduler.envload import load_environment
@@ -52,6 +53,35 @@ class ScheduleReport:
 
 def _has_error(diagnostics) -> bool:
     return any(d.severity == ERROR for d in diagnostics)
+
+
+def _objective_of(declared, env, diagnostics: list[Diagnostic]) -> tuple[str, ...]:
+    """The stages to minimise: the document's declaration, the environment's while it
+    is still allowed, else the default (§4.8, §5.8).
+
+    The objective says how *this run* is to be optimised, so it belongs with the
+    run's other planning inputs rather than with the description of the lab -- the
+    same argument that put `interface` and `inventories` in the document. The
+    environment is still read where the document says nothing, so environments
+    written before the move keep working; that fallback is deprecated and says so.
+    """
+    from_document = objective_stages.normalize(declared) if declared is not None else None
+    if env.objective is not None:
+        diagnostics.append(
+            Diagnostic(
+                errors.OBJECTIVE_IN_ENVIRONMENT_DEPRECATED,
+                "the objective belongs to the execution document; declaring it in the "
+                "environment is deprecated"
+                + ("" if from_document is None else " and the document's is used"),
+                "objective",
+                severity=WARNING,
+            )
+        )
+    if from_document is not None:
+        return from_document
+    if env.objective is not None:
+        return env.objective
+    return objective_stages.DEFAULT
 
 
 def _provenance(value, source: str | None) -> str:
@@ -116,6 +146,7 @@ def schedule(
     doc_path = document_path
     interface = None
     inventories = None
+    declared_objective = None
     had_now = False
     root = None
     if doc_path is not None:
@@ -131,10 +162,13 @@ def schedule(
         if isinstance(doc_path, dict):
             interface = copy.deepcopy(doc_path.get("interface"))
             inventories = copy.deepcopy(doc_path.get("inventories"))
+            declared_objective = (doc_path.get("objective") or {}).get("kind")
             had_now = "now" in doc_path
         elif isinstance(root, YMap):
             interface = yamlnode.to_plain(root.get("interface"))
             inventories = yamlnode.to_plain(root.get("inventories"))
+            stated = yamlnode.to_plain(root.get("objective"))
+            declared_objective = stated.get("kind") if isinstance(stated, dict) else None
             had_now = "now" in root
 
     # 3. Build the instance (boundary nodes/arcs from interface always re-created,
@@ -166,11 +200,7 @@ def schedule(
         running_task_margin=running_task_margin,
         max_time_seconds=max_time_seconds,
         random_seed=random_seed,
-        # Passed explicitly rather than left for `solve` to read off the
-        # environment: this is the single place that says where the objective was
-        # declared, and it is the line that changes when the declaration moves to
-        # the execution document.
-        objective=env.objective,
+        objective=_objective_of(declared_objective, env, diagnostics),
     )
     if solution.outcome not in ("optimal", "feasible"):
         diagnostics.append(Diagnostic(errors.INFEASIBLE, "no feasible schedule found"))

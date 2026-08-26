@@ -1,11 +1,12 @@
-"""The objective is a lexicographic stage list (§4.8) declared in the environment
-and reported in the plan.
+"""The objective is a lexicographic stage list (§4.8), declared in the execution
+document and reported in the plan.
 
-The invariant these tests exist to hold is the one at the join between the two: an
-environment that cannot replenish reports the bare `makespan` it always did,
-whatever stage list it declared. That is what lets a v0-era plan and a plan written
-today be the same document, and it is easy to lose the moment a second stage
-becomes reachable.
+Two things these tests exist to hold. A run that cannot replenish reports the bare
+`makespan` it always did, whatever stage list was declared -- that is what lets a
+v0-era plan and a plan written today be the same document, and it is easy to lose
+the moment a second stage becomes reachable. And an environment that still declares
+an objective keeps working while §5.8 is deprecated, saying so rather than silently
+being ignored.
 """
 
 from __future__ import annotations
@@ -84,16 +85,15 @@ def test_render_shape_follows_the_stage_count():
 
 
 def _plan_objective(declared):
+    # Declared in the *document* -- the declaration site (§6.1).
     env = yaml.safe_load((EXAMPLES / "interface_load.env.yaml").read_text(encoding="utf-8"))
-    if declared is None:
-        env.pop("objective", None)
-    else:
-        env["objective"] = {"kind": declared}
-    report = schedule(
-        EXAMPLES / "interface_load.workflow.yaml",
-        env,
-        document_path=EXAMPLES / "interface_load.document.yaml",
+    env.pop("objective", None)
+    document = yaml.safe_load(
+        (EXAMPLES / "interface_load.document.yaml").read_text(encoding="utf-8")
     )
+    if declared is not None:
+        document["objective"] = {"kind": declared}
+    report = schedule(EXAMPLES / "interface_load.workflow.yaml", env, document_path=document)
     assert report.plan is not None, [d.code for d in report.diagnostics]
     return report.plan["objective"]
 
@@ -167,3 +167,64 @@ def test_a_malformed_kind_does_not_also_fault_its_value():
     # The field already has a diagnostic; guessing which shape `value` was meant to
     # take would only add a second one saying the same thing.
     assert _doc_errors({"kind": "latency", "value": 1}) == ["unknown_objective_kind"]
+
+
+# --- where the objective is declared -------------------------------------
+#
+# It says how *this run* is to be optimised, so it belongs with the run's other
+# planning inputs rather than with the description of the lab. The environment is
+# still read while §5.8 is deprecated, so environments written before the move keep
+# working -- these pin that fallback, and that it says so.
+
+
+def _report(env_kind=None, doc_kind=None):
+    env = yaml.safe_load((EXAMPLES / "interface_load.env.yaml").read_text(encoding="utf-8"))
+    env.pop("objective", None)
+    if env_kind is not None:
+        env["objective"] = {"kind": env_kind}
+    document = yaml.safe_load(
+        (EXAMPLES / "interface_load.document.yaml").read_text(encoding="utf-8")
+    )
+    if doc_kind is not None:
+        document["objective"] = {"kind": doc_kind}
+    return schedule(EXAMPLES / "interface_load.workflow.yaml", env, document_path=document)
+
+
+def _codes(report):
+    return [d.code for d in report.diagnostics]
+
+
+def test_the_document_declares_the_objective():
+    report = _report(doc_kind=["makespan"])
+    assert report.plan is not None, _codes(report)
+    assert _codes(report) == []
+
+
+def test_an_environment_that_still_declares_one_is_honoured_and_warned():
+    report = _report(env_kind="makespan")
+    assert report.plan is not None, _codes(report)
+    assert _codes(report) == ["objective_in_environment_deprecated"]
+
+
+def test_the_document_wins_over_the_environment():
+    # Both present: the document is the declaration site, and the warning says the
+    # environment's was not the one used.
+    report = _report(env_kind=["replenishment_count", "makespan"], doc_kind="makespan")
+    assert report.plan is not None, _codes(report)
+    assert _codes(report) == ["objective_in_environment_deprecated"]
+    message = report.diagnostics[0].message
+    assert "the document's is used" in message
+
+
+def test_declaring_it_nowhere_is_the_default_and_says_nothing():
+    report = _report()
+    assert report.plan is not None, _codes(report)
+    assert _codes(report) == []
+    # No replenishment is possible here, so the default's second stage drops out.
+    assert report.plan["objective"] == {"kind": "makespan", "value": 14}
+
+
+def test_a_malformed_declaration_in_the_document_is_rejected():
+    report = _report(doc_kind="latency")
+    assert report.plan is None
+    assert "unknown_objective_kind" in _codes(report)

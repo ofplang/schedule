@@ -60,7 +60,7 @@ In scope:
 | Artifact | Role | Nature |
 | --- | --- | --- |
 | ofplang workflow YAML | The logical DAG (what to do; data / Object flow) | Logical, invariant |
-| Execution environment YAML (§5) | Where / how long (capabilities, durations, transport) | Physical, static, reusable |
+| Execution environment YAML (§5) | Where / how long (capabilities, durations, transport, stocks a device can hold) | Physical, static, reusable |
 | Execution document YAML (§6) | Input carrying the `interface` boundary constraint and the `inventories` starting levels and, on a replan, the prior status; also the output plan | Planning constraint / dynamic / result |
 
 An execution document (§6) is the shared shape used for both the scheduler's
@@ -325,8 +325,8 @@ Minimising the number of replenishments matters as soon as replenishment is enab
 A refill that delays nothing is otherwise free, so without this stage a plan may
 carry refills that serve no purpose.
 
-The objective is supplied by the environment definition (§5.8). There is no
-command-line override.
+The objective is declared in the execution document (§6.1); an environment may
+still declare one while §5.8 is deprecated. There is no command-line override.
 
 ### 4.9 Replanning
 
@@ -479,16 +479,29 @@ Semantics:
 - The duration does not depend on which resources are refilled or by how much. One
   visit refills the device.
 
-### 5.8 `objective` (optional)
+### 5.8 `objective` (optional, **deprecated**)
 
-- `kind` — the objective (§4.8). Either a single stage name as a scalar, or a list
-  of stage names minimised lexicographically; a one-element list means the same as
-  the bare name. The defined stage names are `makespan` and `replenishment_count`.
-  A list must be **non-empty** (an empty one names nothing to minimise) and must
-  **not repeat** a stage (a repeat is minimised subject to its own optimum, so it
-  could never change the outcome). The order is the caller's: `[replenishment_count,
-  makespan]` is a different objective from `[makespan, replenishment_count]`, not a
-  malformed one. When `objective` is omitted, the default is `[makespan,
+The objective is declared in the **execution document** (§6.1). It says how *this
+run* is to be optimised, which is a property of the run and not of the lab — the
+same reason `interface` and `inventories` live there. An environment describes
+equipment, and equipment has no opinion about what a schedule should be good at.
+
+- `kind` — accepted here for now, and used when the document declares no objective,
+  so an environment written before the move keeps working. It raises
+  `objective_in_environment_deprecated` (§10.4) and will be removed.
+
+Both documents accept the same `kind`, and must: a plan is fed back as the next
+input (§6.2), so a shape one accepted and the other rejected would break the round
+trip.
+
+- Either a single stage name as a scalar, or a list of stage names minimised
+  lexicographically; a one-element list means the same as the bare name. The
+  defined stage names are `makespan` and `replenishment_count`. A list must be
+  **non-empty** (an empty one names nothing to minimise) and must **not repeat** a
+  stage (a repeat is minimised subject to its own optimum, so it could never change
+  the outcome). The order is the caller's: `[replenishment_count, makespan]` is a
+  different objective from `[makespan, replenishment_count]`, not a malformed one.
+  When neither document declares one, the default is `[makespan,
   replenishment_count]`, which is equivalent to `makespan` wherever no replenishment
   can occur.
 
@@ -609,12 +622,20 @@ environment.
   A plan written where no replenishment can occur reports the scalar form, so a plan
   from a resource-free environment is shaped exactly as it always was.
 
-  This section **reports**, it does not instruct: the objective is declared in the
-  environment definition (§5.8), and an `objective` in a document handed to the
-  scheduler is ignored rather than obeyed. Keeping one declaration site is what
-  makes a plan mean the same thing when it is fed back as the next replanning input
-  (§6.2) — a document that could also *set* the objective would silently redirect
-  the next solve.
+  This section both **declares** and **reports**. `kind` says how this run is to be
+  optimised — it belongs here, with the run's other planning inputs, rather than in
+  the description of a lab that knows nothing of this run — and `value` reports what
+  the solve achieved.
+
+  One consequence follows from their sharing a field, and is worth stating rather
+  than discovering. A plan reports the **effective** stages, so a stage that could
+  not apply is absent from what it writes; feeding that plan back as the next input
+  therefore declares less than the original document did. Within a run this is
+  harmless: refill candidates come only from *pending* work, so a stage that has
+  dropped out stays dropped, and minimising a count that can only be zero changes
+  nothing. It bites only where an environment gains refill capability part-way
+  through a run, and the answer there is to say so — restate the objective in the
+  document that asks for the replan.
 - `activities` (required).
 - `meta` (optional) — provenance, e.g. `workflow` and `environment` source
   references.
@@ -1424,6 +1445,7 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `interface_input_missing` | an Object-bearing entry input has no `interface` binding (§6.8) |
 | `missing_inventories` | the resource model is in effect but the document has no `inventories` (§6.10). An empty `initial` is the way to say every stock starts empty |
 | `inventory_exceeds_capacity` | an `inventories.initial` level is above its resource's `capacity` |
+| `objective_in_environment_deprecated` | the environment declares `objective`, which belongs to the execution document (§5.8). Honoured while the document says nothing, so environments written before the move keep working (*warning*) |
 | `resources_ignored` | the resource model was disabled (§4.7.3) where it would otherwise have been in effect, so nothing was applied. Not raised for an environment that merely declares a stock nothing draws on — switching that off changes nothing (*warning*) |
 | `infeasible` | the solver proved the instance has no feasible schedule |
 

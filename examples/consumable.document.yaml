@@ -17,4 +17,12 @@ inventories:
     reader:
       reagent: 0
 
+# How *this run* is to be optimised (SPEC §4.8, §5.8) — a property of the run, not
+# of the lab, which is why it sits here beside `interface` and `inventories` rather
+# than in the environment. Omitting it would give exactly this, the default; it is
+# written out to show the shape. Without the second stage a refill that delays
+# nothing is free, so the plan could carry refills that serve no purpose.
+objective:
+  kind: [makespan, replenishment_count]
+
 activities: []

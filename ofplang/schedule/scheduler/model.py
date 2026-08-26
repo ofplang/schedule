@@ -16,8 +16,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ofplang.schedule.core import objective as objective_stages
-
 # A node path (SPECIFICATIONS.md §6.3): node ids from the entry composite's body
 # down to the atomic invocation. Single-level workflows yield a one-tuple. It is
 # the stable identity of a processing activity.
@@ -74,10 +72,12 @@ class Environment:
     # (transporter, from_spot, to_spot) -> duration, both spots qualified.
     transports: dict[tuple[str, str, str], int]
     processes: dict[str, ProcessCapability]
-    # The objective's stages in lexicographic order (§5.8). Defaulted, because an
-    # environment that omits the section means exactly this and a hand-built
-    # Environment should not have to say so.
-    objective: tuple[str, ...] = objective_stages.DEFAULT
+    # The objective's stages in lexicographic order, or None where this environment
+    # does not declare them (§5.8). None rather than the default because the two
+    # differ now: declaring the objective here is **deprecated** -- it belongs to the
+    # execution document, which says how *this run* is to be optimised, not to the
+    # description of the lab. Only a real declaration is worth warning about.
+    objective: tuple[str, ...] | None = None
     # Replenishers (§5.6) and the (replenisher, device) -> duration table (§5.7).
     # Like transporters and transports, and absent for the same kind of reason:
     # an environment where nothing is refilled needs neither.

@@ -81,16 +81,13 @@ def _build(data: dict) -> Environment:
         )
         processes[name] = ProcessCapability(name, modes)
 
-    # The objective's stages (§5.8). The validator has already established that
-    # `kind` names v0 stages, so `normalize` cannot fail here; an absent `objective`
-    # means the default. This is the one place that reads where the objective is
-    # *declared*, which is what will move when it moves to the execution document.
+    # The objective's stages, if this environment still declares them (§5.8,
+    # deprecated). The validator has already established that `kind` names v0
+    # stages, so `normalize` cannot fail here. Absent stays None: the caller
+    # distinguishes "declared here" from "not declared" to know whether to warn.
     declared = (data.get("objective") or {}).get("kind")
-    objective = objective_stages.DEFAULT
-    if declared is not None:
-        parsed = objective_stages.normalize(declared)
-        assert parsed is not None
-        objective = parsed
+    objective = None if declared is None else objective_stages.normalize(declared)
+    assert declared is None or objective is not None
 
     # Replenishers and the (replenisher, device) -> duration table (§5.6, §5.7),
     # both optional in exactly the way transporters and transports are.

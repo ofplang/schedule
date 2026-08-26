@@ -685,9 +685,8 @@ to $\min C_{\max}$.
 $C_{\max}$ is the maximum over the ends of **all** activities, replenishments
 included (SPEC §4.8), so a refill cannot be parked after the productive work.
 
-The objective is supplied by the environment definition's `objective` (SPEC §5.8).
-The execution plan records the achieved objective as `objective.kind` and
-`objective.value` (SPEC §6.1).
+The objective is declared in the execution document (SPEC §6.1), which also records
+the achieved values as `objective.value`.
 
 ## CP-SAT implementation notes
 

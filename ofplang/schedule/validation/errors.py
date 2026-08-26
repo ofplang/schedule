@@ -121,6 +121,10 @@ SCHEDULING_POLICIES_IGNORED = "scheduling_policies_ignored"
 # have been in effect -- switching off a stock nothing draws on changes nothing and
 # is not worth saying.
 RESOURCES_IGNORED = "resources_ignored"
+# Warning (not an error): the environment declares `objective`, which now belongs to
+# the execution document (§5.8). Still honoured where the document says nothing, so
+# environments written before the move keep working while they are updated.
+OBJECTIVE_IN_ENVIRONMENT_DEPRECATED = "objective_in_environment_deprecated"
 
 # Interface / boundary conditions (§6.8, §9.3). An `interface` binding pins a
 # workflow boundary port (entry input / final output) to a spot.
