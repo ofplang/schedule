@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Run it by hand as well. A push to `main` once landed without Actions ever
+  # scheduling a run for it -- the commit was on the branch, no run and no push
+  # event existed -- which left no way to get a verdict on a commit that is the
+  # release procedure's gate. This is that way.
+  workflow_dispatch:
 
 jobs:
   test:
