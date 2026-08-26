@@ -78,6 +78,11 @@ class Environment:
     # environment that omits the section means exactly this and a hand-built
     # Environment should not have to say so.
     objective: tuple[str, ...] = objective_stages.DEFAULT
+    # Replenishers (§5.6) and the (replenisher, device) -> duration table (§5.7).
+    # Like transporters and transports, and absent for the same kind of reason:
+    # an environment where nothing is refilled needs neither.
+    replenishers: tuple[str, ...] = ()
+    replenishments: dict[tuple[str, str], int] = field(default_factory=dict)
 
     def transport_duration(self, transporter: str, frm: str, to: str) -> int | None:
         """Duration for one transporter to move `frm` -> `to`, or None if it
@@ -85,6 +90,17 @@ class Environment:
         if frm == to:
             return 0
         return self.transports.get((transporter, frm, to))
+
+    def refills(self, device: str) -> tuple[tuple[str, int], ...]:
+        """The (replenisher, duration) pairs that can refill `device`, or empty if
+        none can. Absence from the table is how §5.7 says "cannot", exactly as it
+        does for transport -- and unlike a transport, a refill is never required, so
+        empty is a legitimate answer rather than a dead end."""
+        return tuple(
+            (replenisher, duration)
+            for (replenisher, target), duration in sorted(self.replenishments.items())
+            if target == device
+        )
 
 
 # --------------------------------------------------------------------------

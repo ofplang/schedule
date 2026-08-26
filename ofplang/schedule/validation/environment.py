@@ -19,12 +19,23 @@ from ofplang.schedule.validation import _shape as shape
 from ofplang.schedule.validation.duplicates import check_duplicate_keys
 
 # Allowed keys per structure (unknown keys are errors; §9.1, strict).
-ENV_TOP = {"time", "devices", "transporters", "transports", "processes", "objective"}
+ENV_TOP = {
+    "time",
+    "devices",
+    "transporters",
+    "transports",
+    "replenishers",
+    "replenishments",
+    "processes",
+    "objective",
+}
 REQUIRED_SECTIONS = ("time", "devices", "processes")
 TIME_KEYS = {"unit"}
 DEVICE_KEYS = {"id", "spots", "resources"}
 TRANSPORTER_KEYS = {"id"}
 TRANSPORT_KEYS = {"transporter", "from", "to", "duration"}
+REPLENISHER_KEYS = {"id"}
+REPLENISHMENT_KEYS = {"replenisher", "device", "duration"}
 PROCESS_KEYS = {"modes"}
 MODE_KEYS = {"id", "devices", "duration", "input_spots", "output_spots", "consumption"}
 RESOURCE_KEYS = {"capacity"}
@@ -74,8 +85,10 @@ def _check(root: YNode | None, diags: Diagnostics) -> None:
     _check_time(root.get("time"), diags)
     devices, resources = _check_devices(root.get("devices"), diags)
     transporters = _check_transporters(root.get("transporters"), diags)
-    _check_cross_kind(devices, resources, transporters, root, diags)
+    replenishers = _check_replenishers(root.get("replenishers"), diags)
+    _check_cross_kind(devices, resources, transporters, replenishers, root, diags)
     _check_transports(root.get("transports"), devices, transporters, diags)
+    _check_replenishments(root.get("replenishments"), devices, resources, replenishers, diags)
     _check_processes(root.get("processes"), devices, resources, diags)
     _check_objective(root.get("objective"), diags)
 
@@ -212,34 +225,147 @@ def _check_spots(node: YNode | None, base: str, diags: Diagnostics) -> set[str]:
 
 
 def _check_transporters(node: YNode | None, diags: Diagnostics) -> dict[str, tuple[str, YNode]]:
-    """Return {transporter_id: (path, id node)} for the well-formed transporters
-    found. The position is kept so the cross-kind check can point at the id.
+    return _check_machines(node, "transporters", "transporter", errors.DUPLICATE_TRANSPORTER_ID,
+                           TRANSPORTER_KEYS, diags)
+
+
+def _check_replenishers(node: YNode | None, diags: Diagnostics) -> dict[str, tuple[str, YNode]]:
+    return _check_machines(node, "replenishers", "replenisher", errors.DUPLICATE_REPLENISHER_ID,
+                           REPLENISHER_KEYS, diags)
+
+
+def _check_machines(
+    node: YNode | None,
+    section: str,
+    kind: str,
+    duplicate_code: str,
+    allowed: set[str],
+    diags: Diagnostics,
+) -> dict[str, tuple[str, YNode]]:
+    """Return {machine_id: (path, id node)} for the well-formed entries of one
+    machine list. The position is kept so the cross-kind check can point at the id.
+
+    Transporters and replenishers are the same shape because they are the same kind
+    of thing (§8.2): an individually exclusive machine, named by an id, taken out of
+    service by that id alone. Only the duplicate code differs, so that a diagnostic
+    still names the section the reader is looking at.
     """
-    transporters: dict[str, tuple[str, YNode]] = {}
-    seq = shape.as_seq(node, "transporters", diags)
+    machines: dict[str, tuple[str, YNode]] = {}
+    seq = shape.as_seq(node, section, diags)
     if seq is None:
-        return transporters
+        return machines
     for i, item in enumerate(seq.items):
-        base = f"transporters[{i}]"
-        tmap = shape.as_map(item, base, diags)
-        if tmap is None:
+        base = f"{section}[{i}]"
+        mmap = shape.as_map(item, base, diags)
+        if mmap is None:
             continue
-        shape.unknown_keys(tmap, TRANSPORTER_KEYS, base, diags)
-        tid = _check_id(tmap, base, "transporter", errors.INVALID_IDENTIFIER, diags)
-        if tid is None:
+        shape.unknown_keys(mmap, allowed, base, diags)
+        machine_id = _check_id(mmap, base, kind, errors.INVALID_IDENTIFIER, diags)
+        if machine_id is None:
             continue
         path = shape.join(base, "id")
-        if tid in transporters:
+        if machine_id in machines:
             diags.error(
-                errors.DUPLICATE_TRANSPORTER_ID,
-                f"duplicate transporter id {tid!r}",
+                duplicate_code,
+                f"duplicate {kind} id {machine_id!r}",
                 path,
-                at=tmap.get("id"),
+                at=mmap.get("id"),
             )
         else:
-            id_node = tmap.get("id")
-            transporters[tid] = (path, id_node if id_node is not None else tmap)
-    return transporters
+            id_node = mmap.get("id")
+            machines[machine_id] = (path, id_node if id_node is not None else mmap)
+    return machines
+
+
+def _check_replenishments(
+    node: YNode | None,
+    devices: dict[str, set[str]],
+    resources: dict[str, dict[str, int | None]],
+    replenishers: dict[str, tuple[str, YNode]],
+    diags: Diagnostics,
+) -> None:
+    """The replenishment capability table (§5.7), keyed by `(replenisher, device)`.
+
+    Absence from the table is how the environment says a replenisher cannot refill a
+    device -- reachability by presence, exactly as `transports` does it (§5.4). The
+    difference from a transport is that a refill is never *required*, so nothing here
+    can be unreachable: a device no entry names simply has stocks that only fall.
+    """
+    seq = shape.as_seq(node, "replenishments", diags)
+    if seq is None:
+        return
+    seen: set[tuple[str, str]] = set()
+    for i, item in enumerate(seq.items):
+        base = f"replenishments[{i}]"
+        emap = shape.as_map(item, base, diags)
+        if emap is None:
+            continue
+        shape.unknown_keys(emap, REPLENISHMENT_KEYS, base, diags)
+
+        replenisher = _require_name(emap, "replenisher", base, diags)
+        if replenisher is not None and replenisher not in replenishers:
+            diags.error(
+                errors.UNKNOWN_REPLENISHER,
+                f"unknown replenisher {replenisher!r}",
+                shape.join(base, "replenisher"),
+                at=emap.get("replenisher"),
+            )
+            replenisher = None
+
+        device = _require_name(emap, "device", base, diags)
+        if device is not None and device not in devices:
+            diags.error(
+                errors.UNKNOWN_DEVICE,
+                f"unknown device {device!r}",
+                shape.join(base, "device"),
+                at=emap.get("device"),
+            )
+            device = None
+        elif device is not None and not resources.get(device):
+            # Nothing to refill: the visit would hold two machines and change no level.
+            diags.error(
+                errors.DEVICE_WITHOUT_RESOURCES,
+                f"device {device!r} declares no resources to refill",
+                shape.join(base, "device"),
+                at=emap.get("device"),
+            )
+
+        duration = shape.require(emap, "duration", base, diags)
+        if duration is not None:
+            path = shape.join(base, "duration")
+            if not (isinstance(duration, YScalar) and duration.is_int):
+                diags.error(errors.WRONG_TYPE, "duration must be an integer", path, at=duration)
+            elif duration.value <= 0:
+                # A refill is real work, the same rule a device-occupying processing
+                # mode follows (§5.5).
+                diags.error(
+                    errors.NONPOSITIVE_DURATION,
+                    "replenishment duration must be positive",
+                    path,
+                    at=duration,
+                )
+
+        if replenisher is None or device is None:
+            continue
+        if (replenisher, device) in seen:
+            diags.error(
+                errors.DUPLICATE_REPLENISHMENT_ENTRY,
+                f"duplicate replenishment entry for ({replenisher!r}, {device!r})",
+                base,
+                at=emap,
+            )
+        seen.add((replenisher, device))
+
+
+def _require_name(ymap: YMap, key: str, base: str, diags: Diagnostics) -> str | None:
+    """Require a string field; return its value when it is one, else None."""
+    node = shape.require(ymap, key, base, diags)
+    if node is None:
+        return None
+    if not (isinstance(node, YScalar) and node.is_str):
+        diags.error(errors.WRONG_TYPE, f"{key} must be a string", shape.join(base, key), at=node)
+        return None
+    return node.value
 
 
 def _check_id(
@@ -263,6 +389,7 @@ def _check_cross_kind(
     devices: dict[str, set[str]],
     resources: dict[str, dict[str, int | None]],
     transporters: dict[str, tuple[str, YNode]],
+    replenishers: dict[str, tuple[str, YNode]],
     root: YNode,
     diags: Diagnostics,
 ) -> None:
@@ -275,15 +402,27 @@ def _check_cross_kind(
     `<device>.<resource>` or under a key naming its device, so neither is ever
     mistaken for a machine. Each colliding string yields exactly one diagnostic.
     """
-    conflicts = set(devices) & set(transporters)
-    for value in sorted(conflicts):
-        path, node = transporters[value]
-        diags.error(
-            errors.MACHINE_ID_CONFLICT,
-            f"id {value!r} names both a device and a transporter",
-            path,
-            at=node,
-        )
+    # Every pair of machine kinds, so a device/replenisher or transporter/replenisher
+    # clash is caught as squarely as the device/transporter one. Reported against the
+    # second kind's position, which is where the reader can act.
+    conflicts: set[str] = set()
+    machine_kinds = (("device", None), ("transporter", transporters), ("replenisher", replenishers))
+    seen_machines: dict[str, str] = dict.fromkeys(devices, "device")
+    for kind, table in machine_kinds:
+        if table is None:
+            continue
+        for value in sorted(table):
+            if value in seen_machines:
+                path, node = table[value]
+                diags.error(
+                    errors.MACHINE_ID_CONFLICT,
+                    f"id {value!r} names both a {seen_machines[value]} and a {kind}",
+                    path,
+                    at=node,
+                )
+                conflicts.add(value)
+            else:
+                seen_machines[value] = kind
 
     spot_names: set[str] = set()
     for names in devices.values():
@@ -294,6 +433,7 @@ def _check_cross_kind(
     kinds = {
         "device": set(devices.keys()),
         "transporter": set(transporters),
+        "replenisher": set(replenishers),
         "spot": spot_names,
         "resource": resource_names,
     }
@@ -308,7 +448,7 @@ def _check_cross_kind(
     for value in sorted(coincident - conflicts):
         diags.warning(
             errors.CROSS_KIND_ID_COINCIDENCE,
-            f"id {value!r} is used across device/spot/resource/transporter",
+            f"id {value!r} is used across device/spot/resource/transporter/replenisher",
             "",
             at=root,
         )

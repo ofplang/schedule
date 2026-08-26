@@ -1,0 +1,7 @@
+outcome: invalid
+match: exact
+errors:
+- {code: device_without_resources}
+notes: >-
+  The table names a device holding no consumable, so the visit would refill
+  nothing; spec §5.7, §9.1.

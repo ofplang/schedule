@@ -1,0 +1,5 @@
+outcome: valid
+notes: >-
+  A replenisher and the (replenisher, device) capability table; spec §5.6, §5.7,
+  §9.1. Absence from the table is how the environment says a replenisher cannot
+  refill a device.

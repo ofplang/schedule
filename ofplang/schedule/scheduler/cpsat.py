@@ -15,6 +15,7 @@ applied per spot, per device, and per transporter.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from ortools.sat.python import cp_model
 
@@ -59,11 +60,26 @@ class TransportResult:
 
 
 @dataclass(frozen=True)
+class RefillResult:
+    """A refill in the plan (§6.9). `amounts` is what it adds, keyed by bare
+    resource name -- `device` already says whose stock it is."""
+
+    id: str
+    device: str
+    replenisher: str
+    amounts: dict[str, int]
+    start: int
+    end: int
+    status: str | None = None
+
+
+@dataclass(frozen=True)
 class Solution:
     outcome: str  # optimal | feasible | infeasible | unknown
     makespan: int | None
     processing: tuple[ProcessingResult, ...]
     transport: tuple[TransportResult, ...]
+    replenishment: tuple[RefillResult, ...] = ()
     # The objective actually minimised, and what each of its stages reached. These
     # are the *effective* stages (`core.objective.effective`): a stage this
     # instance cannot tell two schedules apart by is dropped, so a plan from an
@@ -265,8 +281,9 @@ def solve(
     for intervals in transporter_iv.values():
         model.AddNoOverlap(intervals)
 
-    # --- consumable resources (FORMULATION §11) ---
-    _add_consumption(model, instance, fixation, mode_lits)
+    # --- refills (FORMULATION §10) and the stocks they feed (§11) ---
+    refills = _add_refills(model, instance, fixation, mode_lits, horizon, now, device_iv)
+    _add_resources(model, instance, fixation, mode_lits, starts, refills)
 
     # --- objective ---
     # c_max is the max over real activity ends and boundary-output deliveries
@@ -276,18 +293,32 @@ def solve(
     else:
         model.Add(c_max == 0)
 
-    # No replenishment activity exists yet (SPEC §4.7.1 is specified, not
-    # implemented), so `replenishment_count` cannot tell two schedules of this
-    # instance apart and `effective` drops it. Only makespan can remain, which is
-    # why the weighted encoding of FORMULATION "Objective" degenerates here to the
-    # plain minimisation this has always been. Adding replenishment means passing
-    # `replenishment_possible=True` and giving the weight its second term.
+    # `replenishment_count` can only tell two schedules apart where a refill is
+    # possible at all; `effective` drops it otherwise, which is what keeps a
+    # resource-free plan reporting the bare makespan it always did.
     stages = objective_stages.effective(
         instance.env.objective if objective is None else objective,
-        replenishment_possible=False,
+        replenishment_possible=bool(instance.replenishments),
     )
-    assert stages == (objective_stages.MAKESPAN,)
-    model.Minimize(c_max)
+    n_refills = sum(vars_.present for vars_ in refills.values())
+
+    # Lexicographic stages as a single weighted objective (FORMULATION "Objective").
+    # Exact because the count is bounded by the number of candidates, so one unit of
+    # the earlier stage outweighs every attainable value of the later one -- and it
+    # keeps the solve to one pass, on a model whose size is already what bounds solve
+    # time (dev-notes/report-solver-scalability.md).
+    bound = len(instance.replenishments)
+    terms = {
+        objective_stages.MAKESPAN: (c_max, horizon),
+        objective_stages.REPLENISHMENT_COUNT: (n_refills, bound),
+    }
+    expression = 0
+    weight = 1
+    for stage in reversed(stages):
+        value, stage_bound = terms[stage]
+        expression = expression + weight * value
+        weight *= stage_bound + 1
+    model.Minimize(expression)
 
     solver = cp_model.CpSolver()
     if max_time_seconds is not None:
@@ -331,42 +362,260 @@ def solve(
         )
         for r, arc in enumerate(instance.arcs)
     )
+    replenishment = _refill_results(solver, instance, fixation, refills, processing)
+    values = {
+        objective_stages.MAKESPAN: solver.Value(c_max),
+        # Counted from what survives normalisation, not from the solver's own count:
+        # topping up an earlier refill can leave a later one adding nothing, and such
+        # a refill is dropped rather than reported.
+        objective_stages.REPLENISHMENT_COUNT: sum(
+            1 for r in replenishment if r.status is None
+        ),
+    }
     return Solution(
         outcome,
         solver.Value(c_max),
         processing,
         transport,
+        replenishment,
         objective_kind=stages,
-        objective_values=(solver.Value(c_max),),
+        objective_values=tuple(values[stage] for stage in stages),
     )
 
 
-def _add_consumption(model, instance: Instance, fixation: Fixation | None, mode_lits) -> None:
-    """Constrain what the pending work may still draw from each stock.
+def _refill_results(
+    solver, instance: Instance, fixation: Fixation | None, refills, processing
+) -> tuple[RefillResult, ...]:
+    """The refills of a solved model, with their amounts normalised to a fill.
 
-    FORMULATION §11 states the general rule as a level that must stay within
-    `[0, capacity]` at every event. **Without replenishment that reservoir is not
-    needed.** Levels only ever fall, so the whole trajectory is bounded by its end:
-    "level >= 0 at every consumption" is exactly "everything still to be consumed
-    fits in what is left at `now`", one linear inequality per `(device, resource)`.
-    The upper bound cannot be violated at all -- nothing raises a level -- and the
-    starting level is checked against capacity when it is read (§9.3).
+    §4.7.1 says a planned refill fills each resource to `capacity`, but the reservoir
+    offers no level *variable* to write that against, so the amounts are left free in
+    the model and settled here. With times and selections known, each stock's events
+    are totally ordered -- every activity that touches a stock occupies its device,
+    and a device is exclusive -- so replaying them in time order gives each refill
+    exactly the room it has: `capacity` minus the level immediately before.
 
-    So this deliberately builds none of the event machinery §11 describes: no event
-    times, no intervals, no ordering. Introducing replenishment is what makes the
-    trajectory non-monotonic and the reservoir necessary; until then it would be
-    cost on a model whose size is already the binding constraint on solve time
-    (dev-notes/report-solver-scalability.md).
+    Sound and free: raising an amount only raises later levels, so the lower bound
+    slackens while the upper is met with equality. Times and selections are
+    untouched, so this is the same optimum, reported determinately instead of
+    arbitrarily among the many amount assignments the constraints admit.
 
-    Fixed activities contribute nothing here: their consumption is already spent and
-    is folded into the levels at `now` (§4.7.2).
+    A refill left adding nothing -- an earlier one having already filled the stock --
+    is dropped rather than reported: it would hold two machines and change no level.
+
+    Started refills are carried through untouched. Their amounts are what was
+    reported, not what a fill would have been (§6.9): a refill that only half filled
+    a bottle is history, not a figure to correct.
+    """
+    fixed = fixation.replenishments if fixation is not None else {}
+    results = [
+        RefillResult(
+            identifier,
+            fix.device,
+            fix.replenisher,
+            dict(fix.amounts),
+            fix.start,
+            fix.end,
+            fix.status,
+        )
+        for identifier, fix in sorted(fixed.items())
+    ]
+
+    selected = [c for c in instance.replenishments if solver.Value(refills[c.id].present)]
+    if not selected:
+        return tuple(results)
+
+    # Events per stock, in the order they occur. At equal times a refill lands before
+    # a draw (§4.7), so it feeds work starting exactly when it ends.
+    events: dict[tuple[str, str], list[tuple[int, int, str | None]]] = {}
+    for p in processing:
+        if p.status is not None:  # already spent, and inside the levels at `now`
+            continue
+        for qualified, amount in p.mode.consumption.items():
+            parsed = parse_qualified_resource(qualified)
+            if parsed is not None:
+                events.setdefault(parsed, []).append((p.start, -amount, None))
+    for fix in fixed.values():
+        if fix.status != "running":
+            continue
+        for resource, amount in fix.amounts.items():
+            events.setdefault((fix.device, resource), []).append((fix.end, amount, None))
+    for candidate in selected:
+        end = solver.Value(refills[candidate.id].end)
+        for resource in candidate.resources:
+            events.setdefault((candidate.device, resource), []).append((end, 0, candidate.id))
+
+    amounts: dict[str, dict[str, int]] = {c.id: {} for c in selected}
+    for key, entries in events.items():
+        level = (fixation.levels.get(key, 0) if fixation is not None else 0)
+        capacity = _capacity_of(instance, key[0], key[1])
+        # A refill first among simultaneous events: sort planned refills ahead of
+        # draws at the same instant.
+        for _time, change, refill_id in sorted(entries, key=lambda e: (e[0], e[2] is None)):
+            if refill_id is None:
+                level += change
+                continue
+            added = capacity - level
+            level = capacity
+            if added > 0:
+                amounts[refill_id][key[1]] = added
+
+    for candidate in selected:
+        if not amounts[candidate.id]:
+            continue  # adds nothing after the fill above; not worth two machines
+        vars_ = refills[candidate.id]
+        chosen = next(
+            (o.replenisher for o in candidate.options
+             if solver.Value(vars_.end) - solver.Value(vars_.start) == o.duration),
+            candidate.options[0].replenisher,
+        )
+        results.append(
+            RefillResult(
+                candidate.id,
+                candidate.device,
+                chosen,
+                amounts[candidate.id],
+                solver.Value(vars_.start),
+                solver.Value(vars_.end),
+            )
+        )
+    return tuple(results)
+
+
+@dataclass(frozen=True)
+class _RefillVars:
+    """The solver variables of one refill candidate (FORMULATION §10)."""
+
+    # Solver objects, left unannotated like every other CP-SAT handle in this
+    # module: ortools ships no type information (pyproject skips it for mypy).
+    present: Any  # BoolVar: this candidate runs at all
+    start: Any
+    end: Any
+    amounts: dict[str, Any]  # resource -> IntVar, how much it adds
+
+
+def _add_refills(
+    model,
+    instance: Instance,
+    fixation: Fixation | None,
+    mode_lits,
+    horizon: int,
+    now: int,
+    device_iv: dict[str, list],
+) -> dict[str, _RefillVars]:
+    """Build each refill candidate: whether it runs, when, on which replenisher, and
+    how much it adds (FORMULATION §10).
+
+    A candidate is *optional* -- that is the one structural difference from a
+    transport's route, which must be served by exactly one option.
+
+    It occupies two machines (§4.7.1). The device it refills is held whichever
+    replenisher does the work, so that is one interval whose presence is the
+    candidate; the replenisher is held only by the one chosen, so those are an
+    interval each. The device's interval needs a Literal for its presence, and so
+    does the reservoir event, which is why the candidate carries a real BoolVar
+    rather than just the sum of its per-replenisher literals.
+    """
+    refills: dict[str, _RefillVars] = {}
+    fixed_refills = fixation.replenishments if fixation is not None else {}
+
+    for candidate in instance.replenishments:
+        present = model.NewBoolVar(f"refill_{candidate.id}")
+        start = model.NewIntVar(now, horizon, f"refill_start_{candidate.id}")
+        end = model.NewIntVar(now, horizon, f"refill_end_{candidate.id}")
+
+        option_lits = []
+        for option in candidate.options:
+            chosen = model.NewBoolVar(f"refill_{candidate.id}_{option.replenisher}")
+            option_lits.append(chosen)
+            model.Add(end == start + option.duration).OnlyEnforceIf(chosen)
+            device_iv.setdefault(option.replenisher, []).append(
+                model.NewOptionalIntervalVar(
+                    start, option.duration, end, chosen,
+                    f"riv_{candidate.id}_{option.replenisher}",
+                )
+            )
+        model.Add(sum(option_lits) == present)
+
+        # The refilled device is held for the whole visit, whoever performs it. The
+        # size is a variable because which replenisher was chosen decides it, and an
+        # interval's size must be a variable or a constant, not an expression.
+        size = model.NewIntVar(0, horizon, f"rdur_{candidate.id}")
+        model.Add(size == end - start)
+        device_iv.setdefault(candidate.device, []).append(
+            model.NewOptionalIntervalVar(start, size, end, present, f"rdev_{candidate.id}")
+        )
+
+        # Only where the activity this candidate was generated from actually runs on
+        # the device. If it runs elsewhere it draws nothing there, and every other
+        # activity that does draw carries its own candidate -- so this prunes without
+        # losing a schedule.
+        gate = [
+            mode_lits[candidate.origin][m]
+            for m, mode in enumerate(instance.activities[candidate.origin].modes)
+            if candidate.device in mode.devices
+        ]
+        model.Add(present <= sum(gate) if gate else present == 0)
+
+        amounts: dict[str, Any] = {}
+        for resource in candidate.resources:
+            capacity = _capacity_of(instance, candidate.device, resource)
+            amount = model.NewIntVar(0, capacity, f"refill_{candidate.id}_{resource}")
+            model.Add(amount <= capacity * present)
+            amounts[resource] = amount
+        # A selected refill must add something; a refill that adds nothing would hold
+        # two machines for no reason.
+        if amounts:
+            model.Add(sum(amounts.values()) >= present)
+
+        refills[candidate.id] = _RefillVars(present, start, end, amounts)
+
+    # A running refill still holds its two machines while it finishes.
+    for identifier, fix in fixed_refills.items():
+        if fix.status != "running":
+            continue
+        interval = model.NewIntervalVar(
+            fix.start, max(fix.end - fix.start, 0), fix.end, f"rfix_{identifier}"
+        )
+        device_iv.setdefault(fix.device, []).append(interval)
+        if fix.replenisher:
+            device_iv.setdefault(fix.replenisher, []).append(interval)
+
+    return refills
+
+
+def _add_resources(
+    model,
+    instance: Instance,
+    fixation: Fixation | None,
+    mode_lits,
+    starts,
+    refills: dict[str, _RefillVars],
+) -> None:
+    """Constrain each stock by what is left and what may still be added.
+
+    FORMULATION §11 states the rule as a level held within `[0, capacity]` at every
+    event, which is a reservoir. **A stock nothing can refill does not need one.**
+    Its level only ever falls, so the whole trajectory is bounded by its end:
+    "level >= 0 at every draw" is exactly "everything still to be drawn fits in what
+    is left at `now`" -- one linear inequality, no event times, no ordering. That is
+    not a special case worth skipping: an environment with stocks and no replenisher
+    is a supported configuration (§5.6), the one where an operator tops up outside
+    the schedule, and it should not pay for machinery it cannot use.
+
+    So the reservoir is built only for the stocks a refill can actually reach.
+
+    Fixed activities contribute nothing either way: their draw is already spent and
+    folded into the levels at `now` (§4.7.2).
     """
     levels = fixation.levels if fixation is not None else {}
     if not levels:
         return
-
     fixed = fixation.activities if fixation is not None else {}
-    demand: dict[tuple[str, str], list] = {}
+    fixed_refills = fixation.replenishments if fixation is not None else {}
+
+    # Draws still to come, per stock: the amount and the literal that selects it.
+    draws: dict[tuple[str, str], list[tuple[int, Any, Any]]] = {}
     for i, act in enumerate(instance.activities):
         if i in fixed:
             continue
@@ -375,10 +624,70 @@ def _add_consumption(model, instance: Instance, fixation: Fixation | None, mode_
                 parsed = parse_qualified_resource(qualified)
                 if parsed is None:  # pragma: no cover - the env validator rejects it
                     continue
-                demand.setdefault(parsed, []).append(amount * mode_lits[i][m])
+                draws.setdefault(parsed, []).append((amount, mode_lits[i][m], starts[i]))
 
-    for key, terms in demand.items():
-        model.Add(sum(terms) <= levels.get(key, 0))
+    # Which stocks a refill can reach: candidates the solver may choose, plus the
+    # running ones whose increase is already fixed.
+    refillable: set[tuple[str, str]] = set()
+    for candidate in instance.replenishments:
+        for resource in candidate.resources:
+            refillable.add((candidate.device, resource))
+    for fix in fixed_refills.values():
+        if fix.status == "running":
+            for resource in fix.amounts:
+                refillable.add((fix.device, resource))
+
+    for key in sorted(set(draws) | refillable):
+        device, resource = key
+        capacity = _capacity_of(instance, device, resource)
+        if key not in refillable:
+            # Monotone: one inequality is exactly equivalent to the reservoir.
+            terms = [amount * lit for amount, lit, _ in draws.get(key, ())]
+            if terms:
+                model.Add(sum(terms) <= levels.get(key, 0))
+            continue
+
+        times: list = []
+        changes: list = []
+        actives: list = []
+
+        # The starting level enters as a fixed change at time 0: the reservoir's own
+        # level always begins at 0, and its documentation names this as the way to
+        # state an initial state.
+        times.append(0)
+        changes.append(levels.get(key, 0))
+        actives.append(1)
+
+        for amount, lit, start in draws.get(key, ()):
+            times.append(start)
+            changes.append(-amount)
+            actives.append(lit)
+
+        for candidate in instance.replenishments:
+            if candidate.device != device or resource not in candidate.resources:
+                continue
+            vars_ = refills[candidate.id]
+            times.append(vars_.end)
+            changes.append(vars_.amounts[resource])
+            actives.append(vars_.present)
+
+        for fix in fixed_refills.values():
+            # A completed refill is already inside `levels`; a running one has not
+            # landed and is a fixed increase at its (fixed) end.
+            if fix.status != "running" or fix.device != device:
+                continue
+            amount = fix.amounts.get(resource, 0)
+            if amount:
+                times.append(fix.end)
+                changes.append(amount)
+                actives.append(1)
+
+        model.AddReservoirConstraintWithActive(times, changes, actives, 0, capacity)
+
+
+def _capacity_of(instance: Instance, device: str, resource: str) -> int:
+    entry = instance.env.devices.get(device)
+    return (entry.resources.get(resource, 0) if entry is not None else 0) or 0
 
 
 def _fixed_end(status: str, reported_end: int, now: int, margin: int) -> int:
@@ -408,9 +717,17 @@ def _horizon(instance: Instance, fixation: Fixation | None, margin: int) -> int:
         total += max((m.duration for m in act.modes), default=0)
     for arc in instance.arcs:
         total += max((o.duration for o in arc.options), default=0)
+    # Refills are work too, and a bound that left them out would cut off schedules
+    # that only fit once a stock is topped up -- turning feasible instances
+    # infeasible. Adding the longest each could take keeps this the fully-serial
+    # bound it already was, now serial over the refills as well.
+    for candidate in instance.replenishments:
+        total += max((o.duration for o in candidate.options), default=0)
     if fixation is not None:
-        fixed_ends = [f.end for f in fixation.activities.values()] + [
-            f.end for f in fixation.arcs.values()
-        ]
+        fixed_ends = (
+            [f.end for f in fixation.activities.values()]
+            + [f.end for f in fixation.arcs.values()]
+            + [f.end for f in fixation.replenishments.values()]
+        )
         total += fixation.now + max(fixed_ends, default=0) + margin
     return total + 1

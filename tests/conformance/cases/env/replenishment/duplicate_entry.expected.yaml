@@ -1,0 +1,6 @@
+outcome: invalid
+match: exact
+errors:
+- {code: duplicate_replenishment_entry}
+notes: >-
+  One (replenisher, device) pair, two durations; spec §5.7, §9.1.

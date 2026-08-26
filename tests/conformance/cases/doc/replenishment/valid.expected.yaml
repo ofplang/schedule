@@ -1,0 +1,4 @@
+outcome: valid
+notes: >-
+  A replenishment activity: an explicit `id` because it has no workflow
+  provenance, the two machines it holds, and what it added; spec §6.9, §9.2.

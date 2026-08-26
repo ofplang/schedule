@@ -13,8 +13,12 @@ model additionally covers multiple concurrent runs, which is outside the current
 scope (SPEC §1: a single workflow at a time) and is omitted here.
 
 > The resource and replenishment part of this model (§10, §11, and the terms they
-> add to §7, §8 and §9) is **specified but not yet implemented**, matching SPEC's
-> status note.
+> add to §7, §8 and §9) is implemented. One deliberate departure: where **no refill
+> can reach a stock**, its level is monotone and §11's reservoir is replaced by the
+> single inequality it collapses to — everything still to be drawn must fit in what
+> is left. That is an exact equivalence, not an approximation, and it keeps an
+> environment with stocks and no replenisher (§5.6) from paying for event machinery
+> it cannot use.
 
 Terminology follows `SPECIFICATIONS.md`: **activity**, **processing activity**,
 **transport activity**, **replenishment activity**, **device**, **spot**,

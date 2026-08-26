@@ -1,0 +1,3 @@
+activities:
+- {kind: replenishment, id: r0, start: 0, end: 30, device: reader_0, replenisher: dispenser_0, amounts: {dye: 6}}
+- {kind: replenishment, id: r0, start: 40, end: 70, device: reader_0, replenisher: dispenser_0, amounts: {dye: 6}}

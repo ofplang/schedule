@@ -43,6 +43,25 @@ class ArcFixation:
 
 
 @dataclass(frozen=True)
+class RefillFixation:
+    """A started refill read back from the status (§6.9), matched by its `id`.
+
+    Its effect is where it differs from every other fixed activity. A `completed`
+    one has already raised the level and is folded into the levels at `now`; a
+    `running` one has not landed yet and enters the model as a fixed increase at its
+    end. That split is the whole of its role -- nothing re-derives it, and nothing
+    re-validates it against the current environment (§7).
+    """
+
+    status: str  # completed | running
+    start: int
+    end: int
+    device: str
+    replenisher: str
+    amounts: dict[str, int]
+
+
+@dataclass(frozen=True)
 class Fixation:
     """Everything the solver needs to fix the executed part and re-optimise the
     rest at or after `now`. Keyed by the augmented instance's activity / arc
@@ -57,6 +76,10 @@ class Fixation:
     # executed part settles -- which is why it belongs here rather than being passed
     # alongside. Empty when the resource model is not in effect.
     levels: dict[tuple[str, str], int] = field(default_factory=dict)
+    # Started refills, by `id`. Only `running` ones reach the solver (as a fixed
+    # future increase); a `completed` one is already inside `levels`. Both are kept
+    # because both are history the plan has to carry back out.
+    replenishments: dict[str, RefillFixation] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------

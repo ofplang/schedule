@@ -71,11 +71,11 @@ An Object-bearing entry input with no `interface` binding is an error
   workflow says nothing about consumables: that an assay draws on a reagent is a
   property of the **device** that runs it.
 - `consumable.env.yaml` — `reader` declares a resource `reagent` with a
-  **capacity** of 6 (SPEC §5.2), and the `assay` mode declares
+  **capacity** of 6 (SPEC §5.2), the `assay` mode declares
   `consumption: { reader.reagent: 2 }` (SPEC §5.5, qualified because a mode may
-  name several devices).
+  name several devices), and `dispenser` can refill the reader (SPEC §5.6, §5.7).
 - `consumable.document.yaml` — `inventories.initial` (SPEC §6.10): what the run
-  **starts** with, here 4 units.
+  **starts** with, here nothing at all.
 
 Capacity is what the device can ever hold; the starting level is a property of the
 run, which is why the two live in different documents. Levels at any later moment
@@ -88,18 +88,25 @@ ofp-schedule schedule consumable.workflow.yaml --env consumable.env.yaml \
     --document consumable.document.yaml
 ```
 
-Two assays at 2 units need 4, and 4 is what the reader starts with. Lower it to 3
-and the plan is `infeasible` — the honest answer for a stock nothing refills
-(replenishment is specified but not implemented). Drop the `inventories` section
-altogether and it is `missing_inventories`: some invoked mode consumes, so the
-document has to say what the run began with. `initial: {}` is how to say every
-stock starts empty. Declaring `resources` that no invoked mode draws on demands
-nothing — a stock nothing consumes constrains nothing.
+The reader starts empty, so nothing can be assayed until the dispenser has been.
+The plan carries **one** refill: a refill fills to capacity, 6 covers the 4 the two
+assays need, and the second objective stage (`replenishment_count`, the default)
+is what stops a second one appearing. It is placed early enough to cost nothing —
+the makespan is the same as if the reader had started full — but it *holds* the
+reader while it works, so it can never overlap the assays it feeds.
+
+Delete `replenishers` and `replenishments` and the same document is `infeasible`:
+that is the honest answer for a stock nothing can refill, and a legitimate
+environment to write (an operator tops it up outside the schedule). Drop the
+`inventories` section instead and it is `missing_inventories` — some invoked mode
+consumes, so the document has to say what the run began with; `initial: {}` is how
+to say every stock starts empty. Declaring `resources` that no invoked mode draws
+on demands nothing: a stock nothing consumes constrains nothing.
 
 `--ignore-resources` switches the model off (SPEC §4.7.3): the declarations are
 still checked for shape, but nothing is applied, and the plan carries no
 `consumption` echo — so a reader that knows nothing of resources can still take it.
-Off is a relaxation, so the 3-unit case above plans happily with it. It is total,
+Off is a relaxation, so an empty stock no longer stops anything. It is total,
 though: what is switched off is not checked either, so a mistake in `inventories`
 goes unreported. The command says it switched something off
 (`warning resources_ignored`) whenever the model would otherwise have been in effect.
@@ -112,9 +119,8 @@ goes unreported. The command says it switched something off
 Ported from `ofp-scheduler`'s `examples/app/job_sample.json`: a `source` step
 produces one `Sample`, a `target` step consumes it, connected by a single
 Object-bearing arc (one transport between two devices, one spot each). The
-reagent consumption + replenishment in the original context is dropped
-(device-local resources are outside the initial scope). This is the smallest
-end-to-end case, for bringing the scheduler up before the larger `reformatter`.
+reagent consumption + replenishment in the original context is left out to keep
+this the smallest end-to-end case; `consumable` covers that ground.
 
 - `simple.status.yaml` — a **replanning input** (execution status, §7) for this
   example: the `source` step has finished (`completed`, `[0, 2]`) but nothing

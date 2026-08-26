@@ -1,0 +1,7 @@
+outcome: invalid
+match: exact
+errors:
+- {code: machine_id_conflict}
+notes: >-
+  A device and a replenisher share an id. Both are machines, and a machine is
+  taken out of service by id alone; spec §8.2, §9.1.

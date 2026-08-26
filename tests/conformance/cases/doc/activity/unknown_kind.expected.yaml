@@ -2,4 +2,7 @@ outcome: invalid
 match: exact
 errors:
 - {code: unknown_activity_kind}
-notes: '`kind` is not processing/transport; spec §6.2, §9.2.'
+notes: >-
+  `kind` is none of processing / transport / relay / replenishment; spec §6.2, §9.2.
+  The kind selects the rest of the schema, so nothing else about the activity is
+  reported on top of it.

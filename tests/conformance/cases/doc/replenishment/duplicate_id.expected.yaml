@@ -1,0 +1,8 @@
+outcome: invalid
+match: exact
+errors:
+- {code: duplicate_activity_id}
+notes: >-
+  An `id` identifies one activity within one document, and it is the only thing
+  identifying a refill -- a repeat would silently merge two of them on a
+  replan; spec §6.9, §9.2.

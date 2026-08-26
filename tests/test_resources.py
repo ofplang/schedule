@@ -1,10 +1,15 @@
-"""Device-local consumable resources: what a mode draws, and what is left (§4.7).
+"""Device-local consumable resources: what a mode draws, what refills it, and what
+is left (§4.7).
 
-The slice under test is consumption alone — nothing refills a stock yet — so a
-level only ever falls. Two properties carry most of the weight here: an environment
-that declares a stock nobody draws on must stay as undemanding as one that declares
-none, and a started activity must remain readable after a replan has withdrawn the
-very mode it used.
+A few properties carry most of the weight here. An environment that declares a
+stock nobody draws on must stay as undemanding as one that declares none. A started
+activity must remain readable after a replan has withdrawn the very mode it used.
+And the two halves of a refill have to stay apart: a *planned* one fills to
+capacity, while a *started* one is history and is reported as it happened.
+
+Where a test needs to see what a stock does on its own, it uses an environment with
+no replenisher (`_env_no_refills`) — otherwise the answer to "not enough" is always
+"refill it", and the stock itself is never under test.
 """
 
 from __future__ import annotations
@@ -23,6 +28,20 @@ EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 def _env(**overrides):
     env = yaml.safe_load((EXAMPLES / "consumable.env.yaml").read_text(encoding="utf-8"))
     env.update(copy.deepcopy(overrides))
+    return env
+
+
+def _env_no_refills():
+    """The same environment with nothing that can refill the reader.
+
+    A legitimate configuration, not a degenerate one (§5.6): it describes a stock an
+    operator tops up outside the schedule. It is also the only way to see what a
+    stock does on its own, since with a replenisher present the answer to "not
+    enough" is always "refill it".
+    """
+    env = _env()
+    env.pop("replenishers", None)
+    env.pop("replenishments", None)
     return env
 
 
@@ -167,8 +186,8 @@ def test_the_example_plans():
 
 
 def test_a_stock_that_cannot_cover_the_work_is_infeasible():
-    # Two assays at 2 units need 4; nothing refills, so 3 is simply not enough.
-    report = _plan(document=_document({"reader": {"reagent": 3}}))
+    # Two assays at 2 units need 4; with nothing to refill it, 3 is not enough.
+    report = _plan(env=_env_no_refills(), document=_document({"reader": {"reagent": 3}}))
     assert report.plan is None
     assert "infeasible" in [d.code for d in report.diagnostics]
 
@@ -184,7 +203,7 @@ def test_the_plan_carries_the_starting_levels_through():
     # `inventories` says what the run started with, so it round-trips unchanged and
     # the plan can be fed back as the next document.
     plan = _plan().plan
-    assert plan["inventories"] == {"initial": {"reader": {"reagent": 4}}}
+    assert plan["inventories"] == {"initial": {"reader": {"reagent": 0}}}
 
 
 def test_the_plan_is_itself_a_valid_document():
@@ -211,7 +230,8 @@ def test_a_consuming_environment_requires_the_starting_levels():
 
 
 def test_an_empty_initial_means_every_stock_starts_empty():
-    report = _plan(document=_document({}))
+    # Empty and nothing to refill it: the work cannot run.
+    report = _plan(env=_env_no_refills(), document=_document({}))
     assert report.plan is None
     assert "infeasible" in [d.code for d in report.diagnostics]
 
@@ -233,7 +253,7 @@ def test_starting_levels_are_resolved_against_the_environment(initial, expected)
 # --- replanning ----------------------------------------------------------
 
 
-def _replan_document(consumption_echo: bool = True):
+def _replan_document(consumption_echo: bool = True, env=None, initial: int = 0):
     """A status taken from the plan at the moment the first assay finishes.
 
     Everything that has ended by then is marked `completed`; the rest is left out
@@ -241,7 +261,7 @@ def _replan_document(consumption_echo: bool = True):
     that completed one activity while leaving what fed it pending would be
     inconsistent history, not a test of consumption.
     """
-    plan = _plan().plan
+    plan = _plan(env=env, document=_document({"reader": {"reagent": initial}})).plan
     now = min(a["end"] for a in plan["activities"] if a.get("process") == "assay")
     activities = []
     for activity in plan["activities"]:
@@ -257,13 +277,13 @@ def _replan_document(consumption_echo: bool = True):
 
 def test_a_completed_activity_draws_down_the_stock():
     # 4 to begin with, one completed assay took 2, and the remaining assay needs 2.
-    report = _plan(document=_replan_document(consumption_echo=True))
-    assert report.plan is not None, [d.code for d in report.diagnostics]
+    doc = _replan_document(env=_env_no_refills(), initial=4)
+    assert _plan(env=_env_no_refills(), document=doc).plan is not None
 
-    # With only 3 to begin with there is nothing left for the second assay.
-    doc = _replan_document(consumption_echo=True)
+    # With only 3 to begin with there is nothing left for the second assay, and
+    # nothing here can refill it.
     doc["inventories"] = {"initial": {"reader": {"reagent": 3}}}
-    assert _plan(document=doc).plan is None
+    assert _plan(env=_env_no_refills(), document=doc).plan is None
 
 
 def test_the_echo_survives_the_mode_being_withdrawn():
@@ -281,12 +301,12 @@ def test_the_echo_survives_the_mode_being_withdrawn():
             "consumption": {"reader.reagent": 2},
         }
     ]
-    report = _plan(env=env, document=_replan_document(consumption_echo=True))
+    report = _plan(env=env, document=_replan_document(initial=4))
     assert report.plan is not None, [d.code for d in report.diagnostics]
 
 
 def test_a_history_that_contradicts_the_environment_is_rejected():
-    doc = _replan_document(consumption_echo=True)
+    doc = _replan_document(initial=4)
     # One completed assay drew 2, but the run is said to have started with none.
     doc["inventories"] = {"initial": {"reader": {"reagent": 0}}}
     report = _plan(document=doc)
@@ -309,8 +329,9 @@ def _off(document=None, env=None):
 def test_switching_off_is_a_relaxation():
     # A stock too small to cover the work is infeasible with the model on, and
     # simply not looked at with it off. Off can never lose a schedule.
-    assert _plan(document=_document({"reader": {"reagent": 3}})).plan is None
-    assert _off(document=_document({"reader": {"reagent": 3}})).plan is not None
+    thin = _document({"reader": {"reagent": 3}})
+    assert _plan(env=_env_no_refills(), document=thin).plan is None
+    assert _off(env=_env_no_refills(), document=thin).plan is not None
 
 
 def test_switching_off_needs_no_starting_levels():
@@ -329,13 +350,13 @@ def test_switching_off_adds_nothing_a_resource_free_reader_cannot_read():
 def test_switching_off_still_echoes_what_the_caller_supplied():
     # `inventories` is the caller's own input; dropping it would lose it from the
     # document rather than leave the plan unmarked.
-    assert _off().plan["inventories"] == {"initial": {"reader": {"reagent": 4}}}
+    assert _off().plan["inventories"] == {"initial": {"reader": {"reagent": 0}}}
 
 
 def test_switching_off_does_not_change_the_schedule_it_finds():
-    on = _plan().plan
-    off = _off().plan
-    assert off["objective"] == on["objective"]
+    on = _plan(env=_env_no_refills(), document=_document({"reader": {"reagent": 4}}))
+    off = _off(env=_env_no_refills(), document=_document({"reader": {"reagent": 4}}))
+    assert off.plan["objective"] == on.plan["objective"]
 
 
 def test_switching_off_stops_checking_what_it_stopped_applying():
@@ -360,3 +381,136 @@ def test_switching_off_a_stock_nobody_draws_on_says_nothing():
 
 def test_a_plan_made_with_resources_off_is_a_valid_document():
     assert _doc_codes(_off().plan) == []
+
+
+# --- refills (§4.7.1) ----------------------------------------------------
+
+
+def _refills(plan):
+    return [a for a in plan["activities"] if a["kind"] == "replenishment"]
+
+
+def test_a_stock_that_runs_out_is_refilled_rather_than_ending_the_run():
+    # The reader starts empty. Without a replenisher this cannot be scheduled at
+    # all; with one, the answer to "not enough" is "top it up".
+    assert _plan(env=_env_no_refills()).plan is None
+    plan = _plan().plan
+    assert plan is not None
+    assert len(_refills(plan)) == 1
+
+
+def test_a_refill_fills_the_device_to_capacity():
+    # Amounts are derived, not chosen (§4.7.1): capacity 6, starting from empty.
+    refill = _refills(_plan().plan)[0]
+    assert refill["amounts"] == {"reagent": 6}
+    assert refill["device"] == "reader"
+    assert refill["replenisher"] == "dispenser"
+
+
+def test_one_refill_covers_work_that_fits_in_one_fill():
+    # Two assays at 2 need 4, and a fill gives 6. Minimising the count is what stops
+    # the plan carrying a second refill it does not need.
+    assert len(_refills(_plan().plan)) == 1
+
+
+def test_a_refill_holds_both_machines_so_it_cannot_overlap_the_work_it_feeds():
+    plan = _plan().plan
+    refill = _refills(plan)[0]
+    for assay in [a for a in plan["activities"] if a.get("process") == "assay"]:
+        assert refill["end"] <= assay["start"] or assay["end"] <= refill["start"]
+
+
+def test_the_count_is_reported_as_a_second_objective_stage():
+    plan = _plan().plan
+    assert plan["objective"] == {
+        "kind": ["makespan", "replenishment_count"],
+        "value": [32, 1],
+    }
+
+
+def test_a_plan_with_refills_is_a_valid_document():
+    assert _doc_codes(_plan().plan) == []
+
+
+def test_a_device_no_replenisher_reaches_gets_no_refill():
+    # Reachability is presence in the table (§5.7). An empty table is a legitimate
+    # environment, not a broken one -- the stock simply only falls.
+    env = _env()
+    env["replenishments"] = []
+    assert _plan(env=env).plan is None
+
+
+def test_switching_off_drops_the_refills_too():
+    plan = _off().plan
+    assert plan is not None  # the empty stock is simply not looked at
+    assert _refills(plan) == []
+
+
+# --- replanning a run that has refilled ----------------------------------
+
+
+def _replan_after_refill():
+    """A status cut just after the refill has completed."""
+    plan = _plan().plan
+    refill = _refills(plan)[0]
+    now = refill["end"]
+    activities = [dict(a, status="completed") for a in plan["activities"] if a["end"] <= now]
+    return {"now": now, "inventories": plan["inventories"], "activities": activities}
+
+
+def test_a_completed_refill_is_folded_into_the_level():
+    # It has already raised the stock, so the remaining assays need no second one.
+    report = _plan(document=_replan_after_refill())
+    assert report.plan is not None, [d.code for d in report.diagnostics]
+    planned = [r for r in _refills(report.plan) if r.get("status") is None]
+    assert planned == []
+
+
+def test_a_started_refill_is_carried_back_out_as_history():
+    status = _replan_after_refill()
+    was = next(a for a in status["activities"] if a["kind"] == "replenishment")
+    plan = _plan(document=status).plan
+    completed = [r for r in _refills(plan) if r.get("status") == "completed"]
+    assert len(completed) == 1
+    # Reported as it happened, keeping the id it was planned with (§6.9). Which id
+    # that is, is not something to assert: a generated id is unique within one
+    # document and no more, so pinning a literal here would be asserting the
+    # opposite of what the spec promises.
+    assert completed[0]["id"] == was["id"]
+    assert completed[0]["amounts"] == was["amounts"]
+
+
+def test_a_new_refill_does_not_reuse_an_id_the_history_holds():
+    # Drain the stock so more refills are needed alongside the one in the history.
+    doc = _replan_after_refill()
+    doc["inventories"] = {"initial": {"reader": {"reagent": 0}}}
+    for entry in doc["activities"]:
+        if entry.get("process") == "assay":
+            entry["consumption"] = {"reader.reagent": 6}
+    plan = _plan(document=doc).plan
+    assert plan is not None
+    ids = [r["id"] for r in _refills(plan)]
+    assert len(ids) == len(set(ids))
+    kept = {r["id"] for r in _refills(plan) if r.get("status") is not None}
+    assert kept  # the history's own refill is still there, under its own id
+
+
+def test_a_pending_refill_in_the_status_is_refused():
+    # How many refills to run is re-decided every solve, so one in the input
+    # describes a decision that is not the caller's to make.
+    doc = _document({"reader": {"reagent": 0}})
+    doc["activities"] = [
+        {
+            "kind": "replenishment",
+            "id": "replenishment_9",
+            "start": 0,
+            "end": 4,
+            "device": "reader",
+            "replenisher": "dispenser",
+            "amounts": {"reagent": 6},
+        }
+    ]
+    doc["now"] = 10
+    report = _plan(document=doc)
+    assert report.plan is None
+    assert "pending_replenishment_in_status" in [d.code for d in report.diagnostics]

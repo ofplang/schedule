@@ -1,0 +1,6 @@
+outcome: invalid
+match: exact
+errors:
+- {code: unknown_replenisher}
+notes: >-
+  The table names a replenisher the environment does not declare; spec §5.7, §9.1.

@@ -117,6 +117,23 @@ def render_plan(
         activities.append(entry)
 
     # A stable, readable order: by time, then processing before transport.
+    for r in solution.replenishment:
+        # A refill has no workflow provenance -- the scheduler decided to run it --
+        # so it carries an explicit `id` where the others carry a node or an arc
+        # (§4.2, §6.9). `amounts` keys are bare: `device` already says whose stock.
+        entry = {
+            "kind": "replenishment",
+            "id": r.id,
+            "start": r.start,
+            "end": r.end,
+            "device": r.device,
+            "replenisher": r.replenisher,
+            "amounts": dict(r.amounts),
+        }
+        if r.status is not None:
+            entry["status"] = r.status
+        activities.append(entry)
+
     activities.sort(key=lambda a: (a["start"], a["end"], a["kind"]))
     # Standard output normalization: elide relay + zero-distance re-transport pairs.
     activities = _fold_relayed_zero_distance(activities)

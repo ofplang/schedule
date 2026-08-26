@@ -1,0 +1,9 @@
+activities:
+- kind: replenishment
+  id: replenishment_0
+  start: 0
+  end: 30
+  device: reader_0
+  replenisher: dispenser_0
+  amounts: {dye: 6}
+  node: [assay]

@@ -5,10 +5,9 @@
 > serves as both plan and status (§6, §7), the identifiers (§8), the schema-
 > validator scope (§9), and the error-code catalog (§10) are settled.
 >
-> **Consumable resources and replenishment (§4.7, and the parts of §5, §6, §9 and
-> §10 they reach) are specified but not yet implemented.** They are written here
-> ahead of the code so the design can be reviewed as a whole; the implementation
-> lands in slices, starting with consumption alone.
+> **Consumable resources and replenishment (§4.7) are implemented.** Replanning a
+> run that has refilled is included: a finished refill folds into the levels, a
+> running one is a fixed increase still to land.
 
 ## 1. Overview
 
@@ -304,8 +303,8 @@ would lose it from the document rather than leave the plan unmarked.
 
 Switching resources off never makes a schedule harder to find: the disabled model is
 a relaxation of the enabled one. Started replenishment activities in a replanning
-input are still echoed, because they are historical fact (§7); they are simply not
-used to compute anything.
+input are still read and echoed, because they are historical fact (§7); they are
+simply not used to compute anything.
 
 ### 4.8 Objective
 
@@ -1391,7 +1390,6 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `malformed_arc` | an `arc`'s `from` / `to` / `node` / `port` structure is wrong |
 | `relay_nonzero_duration` | a `relay` activity's `end` is not equal to its `start` |
 | `empty_amounts` | a `replenishment` activity's `amounts` is empty — a refill that adds nothing (§6.9) |
-| `replenishment_has_node` | a `replenishment` activity carries a `node`; it has no workflow provenance (§4.2) |
 | `duplicate_activity_id` | two activities in one document share an `id` |
 
 Absent `process` / `mode` / `from_spot` and similar use the shared

@@ -96,6 +96,36 @@ class ArcInstance:
 
 
 @dataclass(frozen=True)
+class RefillOption:
+    """One way to perform a refill: which replenisher, and how long it takes."""
+
+    replenisher: str
+    duration: int
+
+
+@dataclass(frozen=True)
+class RefillCandidate:
+    """A refill the solver *may* run, on the device `device` (FORMULATION §10).
+
+    Candidates are constructed, not read: one per (pending consuming activity,
+    device) pair, which is enough to cover any schedule that is possible at all
+    because a planned refill fills to capacity. `origin` is the activity index the
+    candidate was generated from -- it gates the candidate (a refill for a device
+    the activity does not run on is never useful) but does **not** tie it in time:
+    a refill may be placed arbitrarily early (§4.7.1).
+
+    `resources` is every resource the device declares, not only the ones the origin
+    draws on: one visit tops the device up.
+    """
+
+    id: str
+    device: str
+    origin: int
+    options: tuple[RefillOption, ...]
+    resources: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Instance:
     env: Environment
     time_unit: str
@@ -103,6 +133,11 @@ class Instance:
     arcs: tuple[ArcInstance, ...]
     # Precedence edges as (source activity index, destination activity index).
     precedence: tuple[tuple[int, int], ...]
+    # Refills the solver may run (§10). Kept apart from `activities` deliberately:
+    # those are indexed, and the fixation keys off those indices, while a refill is
+    # matched by `id` and has no workflow element to be indexed against. Defaulted
+    # so an instance built without resources stays a five-argument construction.
+    replenishments: tuple[RefillCandidate, ...] = ()
 
 
 def build_instance(

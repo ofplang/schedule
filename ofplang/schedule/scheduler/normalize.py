@@ -38,7 +38,7 @@ lives there. All relay awareness is here (construction) and in `plan` (render).
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ofplang.schedule.core.diagnostics import Diagnostics
 from ofplang.schedule.core.identifiers import format_node_path, parse_qualified_resource
@@ -47,6 +47,8 @@ from ofplang.schedule.scheduler.instance import (
     ActivityInstance,
     ArcInstance,
     Instance,
+    RefillCandidate,
+    RefillOption,
     RelayInfo,
     transport_options,
 )
@@ -55,6 +57,7 @@ from ofplang.schedule.scheduler.status import (
     ActivityFixation,
     ArcFixation,
     Fixation,
+    RefillFixation,
     arc_key,
     node_path,
     status_of,
@@ -173,13 +176,142 @@ def normalize(
 
     instance = Instance(env, base.time_unit, tuple(activities), tuple(arcs), base.precedence)
 
-    # 3. Consumable levels at `now`, replayed from what the run started with (§4.7.2).
-    levels = _derive_levels(instance, act_fix, root, env, diags, ignore_resources)
+    # 3. Started refills read back from the status, then the consumable levels at
+    #    `now` replayed from what the run started with (§4.7.2), then the refills the
+    #    solver may still run (§10).
+    refills = _read_refills(root, now, diags, ignore_resources)
     if _has_error(diags):
         return None, None, diags
 
-    fixation = Fixation(now, act_fix, arc_fix, levels)
+    levels = _derive_levels(instance, act_fix, refills, root, env, diags, ignore_resources)
+    if _has_error(diags):
+        return None, None, diags
+
+    if levels:
+        instance = replace(
+            instance,
+            replenishments=_refill_candidates(instance, act_fix, env, set(refills)),
+        )
+
+    fixation = Fixation(now, act_fix, arc_fix, levels, refills)
     return instance, fixation, diags
+
+
+def _read_refills(
+    root: YNode | None, now: int, diags: Diagnostics, ignore_resources: bool
+) -> dict[str, RefillFixation]:
+    """Started refills from the status, by `id` (§6.9).
+
+    Read even with the model switched off: they are historical fact and the plan has
+    to carry them back out (§4.7.3), which it cannot do if they were never read.
+    Nothing is computed from them there.
+
+    A `pending` refill is refused rather than ignored. Every other kind of pending
+    entry is re-derived from the workflow, so ignoring it loses nothing; a refill has
+    no workflow to be re-derived from, and how many to run is the scheduler's
+    decision, not the caller's.
+    """
+    refills: dict[str, RefillFixation] = {}
+    if not isinstance(root, YMap):
+        return refills
+    activities = root.get("activities")
+    if not isinstance(activities, YSeq):
+        return refills
+
+    for index, item in enumerate(activities.items):
+        if not isinstance(item, YMap) or text(item.get("kind")) != "replenishment":
+            continue
+        path = f"activities[{index}]"
+        status = status_of(item)
+        identifier = text(item.get("id"))
+        if status == "pending":
+            diags.error(
+                errors.PENDING_REPLENISHMENT_IN_STATUS,
+                "a pending replenishment is not carried over: how many to run is "
+                "re-decided every solve",
+                path,
+                at=item,
+            )
+            continue
+        if status not in ("completed", "running"):
+            continue  # terminal statuses are refused elsewhere
+
+        start, end = times(item)
+        if status == "completed" and end > now:
+            diags.error(
+                errors.STATUS_TIME_INCONSISTENT,
+                f"completed replenishment {identifier!r} ends after now",
+                path,
+                at=item,
+            )
+            continue
+        if status == "running" and start > now:
+            diags.error(
+                errors.STATUS_TIME_INCONSISTENT,
+                f"running replenishment {identifier!r} starts after now",
+                path,
+                at=item,
+            )
+            continue
+
+        amounts = to_plain(item.get("amounts"))
+        amounts = amounts if isinstance(amounts, dict) else {}
+        refills[identifier] = RefillFixation(
+            status=status,
+            start=start,
+            end=end,
+            device=text(item.get("device")),
+            replenisher=text(item.get("replenisher")),
+            amounts={k: v for k, v in amounts.items() if isinstance(v, int)},
+        )
+    return refills
+
+
+def _refill_candidates(
+    instance: Instance,
+    act_fix: dict[int, ActivityFixation],
+    env,
+    used_ids: set[str],
+) -> tuple[RefillCandidate, ...]:
+    """The refills the solver may run (FORMULATION §10).
+
+    One per (pending consuming activity, device it might consume on) that some
+    replenisher can reach. A fixed activity contributes none: its draw is already
+    spent and folded into the levels at `now`.
+
+    Ids avoid those the status already uses. They are unique within one document and
+    no more (§6.9) -- only started refills are ever matched by id, and a started one
+    keeps the id it was planned with, carried forward in the status.
+    """
+    candidates: list[RefillCandidate] = []
+    counter = 0
+    for index, activity in enumerate(instance.activities):
+        if index in act_fix:
+            continue
+        devices: list[str] = []
+        for mode in activity.modes:
+            for qualified in mode.consumption:
+                parsed = parse_qualified_resource(qualified)
+                if parsed is not None and parsed[0] not in devices:
+                    devices.append(parsed[0])
+        for device in devices:
+            options = tuple(
+                RefillOption(replenisher, duration)
+                for replenisher, duration in env.refills(device)
+            )
+            # No replenisher reaches it: a legitimate environment (§5.7), and simply
+            # no candidate. The stock only falls.
+            if not options:
+                continue
+            resources = tuple(sorted(env.devices[device].resources))
+            while f"replenishment_{counter}" in used_ids:
+                counter += 1
+            identifier = f"replenishment_{counter}"
+            counter += 1
+            candidates.append(
+                RefillCandidate(identifier, device, index, options, resources)
+            )
+    return tuple(candidates)
 
 
 def _resource_model_declared(instance: Instance) -> bool:
@@ -196,6 +328,7 @@ def _resource_model_declared(instance: Instance) -> bool:
 def _derive_levels(
     instance: Instance,
     act_fix: dict[int, ActivityFixation],
+    refills: dict[str, RefillFixation],
     root: YNode | None,
     env,
     diags: Diagnostics,
@@ -252,6 +385,14 @@ def _derive_levels(
             if parsed is None:
                 continue
             levels[parsed] = levels.get(parsed, 0) - amount
+
+    # A completed refill has already raised the level; a running one has not landed
+    # and reaches the solver as a fixed increase at its end instead (§4.7.2).
+    for refill in refills.values():
+        if refill.status != "completed":
+            continue
+        for resource, amount in refill.amounts.items():
+            levels[(refill.device, resource)] = levels.get((refill.device, resource), 0) + amount
 
     for (device, resource), level in sorted(levels.items()):
         capacity = env.devices[device].resources.get(resource) if device in env.devices else None

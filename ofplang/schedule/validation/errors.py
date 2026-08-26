@@ -30,6 +30,7 @@ EMPTY_DEVICES = "empty_devices"
 EMPTY_MODES = "empty_modes"
 DUPLICATE_DEVICE_ID = "duplicate_device_id"
 DUPLICATE_TRANSPORTER_ID = "duplicate_transporter_id"
+DUPLICATE_REPLENISHER_ID = "duplicate_replenisher_id"
 DUPLICATE_SPOT_ID = "duplicate_spot_id"
 # Two machines share an id. Devices, transporters and replenishers are all
 # machines, and a machine is taken out of service by id alone at execution time,
@@ -39,6 +40,11 @@ CROSS_KIND_ID_COINCIDENCE = "cross_kind_id_coincidence"
 NONPOSITIVE_DURATION = "nonpositive_duration"
 EMPTY_TIME_UNIT = "empty_time_unit"
 UNKNOWN_TRANSPORTER = "unknown_transporter"
+UNKNOWN_REPLENISHER = "unknown_replenisher"
+# A `replenishments` entry names a device that holds no consumable, so there would
+# be nothing for the visit to refill.
+DEVICE_WITHOUT_RESOURCES = "device_without_resources"
+DUPLICATE_REPLENISHMENT_ENTRY = "duplicate_replenishment_entry"
 UNKNOWN_DEVICE = "unknown_device"
 UNKNOWN_SPOT = "unknown_spot"
 UNKNOWN_RESOURCE = "unknown_resource"
@@ -62,6 +68,10 @@ MALFORMED_ARC = "malformed_arc"
 # A `relay` activity (a transport junction, §6) has a non-zero duration; a relay
 # is instantaneous, so its `end` must equal its `start`.
 RELAY_NONZERO_DURATION = "relay_nonzero_duration"
+# A `replenishment` activity's `amounts` is empty: a refill that adds nothing would
+# hold two machines for no reason (§6.9).
+EMPTY_AMOUNTS = "empty_amounts"
+DUPLICATE_ACTIVITY_ID = "duplicate_activity_id"
 
 # Execution layer (§9.3) and scheduling. These are produced by the scheduler
 # (not the schema validators) while reading the workflow and building/solving the
@@ -94,6 +104,11 @@ INFEASIBLE = "infeasible"
 MISSING_INVENTORIES = "missing_inventories"
 # An `inventories.initial` level is above the capacity its device declares.
 INVENTORY_EXCEEDS_CAPACITY = "inventory_exceeds_capacity"
+# A replanning input carries a `pending` replenishment. Pending refills are not
+# carried over: the scheduler decides how many to run and re-derives the candidates
+# every solve, so one in the input describes a decision that is not the caller's
+# to make (§6.9).
+PENDING_REPLENISHMENT_IN_STATUS = "pending_replenishment_in_status"
 
 # Warning (not an error): a composite carries a `scheduling` section, but this
 # scheduler does not implement scheduling_policies (§23) / object policies (§24) --
@@ -178,11 +193,15 @@ ERROR_CODES = frozenset(
         EMPTY_MODES,
         DUPLICATE_DEVICE_ID,
         DUPLICATE_TRANSPORTER_ID,
+        DUPLICATE_REPLENISHER_ID,
         DUPLICATE_SPOT_ID,
         MACHINE_ID_CONFLICT,
         NONPOSITIVE_DURATION,
         EMPTY_TIME_UNIT,
         UNKNOWN_TRANSPORTER,
+        UNKNOWN_REPLENISHER,
+        DEVICE_WITHOUT_RESOURCES,
+        DUPLICATE_REPLENISHMENT_ENTRY,
         UNKNOWN_DEVICE,
         UNKNOWN_SPOT,
         UNKNOWN_RESOURCE,
@@ -200,6 +219,8 @@ ERROR_CODES = frozenset(
         EMPTY_NODE_PATH,
         MALFORMED_ARC,
         RELAY_NONZERO_DURATION,
+        EMPTY_AMOUNTS,
+        DUPLICATE_ACTIVITY_ID,
         UNSUPPORTED_FEATURE,
         NO_ENTRY_PROCESS,
         PROCESS_NOT_DEFINED,
@@ -213,6 +234,7 @@ ERROR_CODES = frozenset(
         INFEASIBLE,
         MISSING_INVENTORIES,
         INVENTORY_EXCEEDS_CAPACITY,
+        PENDING_REPLENISHMENT_IN_STATUS,
         INTERFACE_UNKNOWN_PORT,
         INTERFACE_PURE_DATA_PORT,
         INTERFACE_DUPLICATE_SPOT,

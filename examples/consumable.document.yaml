@@ -9,12 +9,12 @@
 # `initial: {}` would be the way to say every stock starts empty; leaving the
 # section out entirely is `missing_inventories`.
 #
-# Two assays at 2 units each need 4, and 4 is what the reader starts with. Raising
-# a third assay into the workflow, or lowering this to 3, makes the instance
-# infeasible — the honest answer when a stock cannot be refilled.
+# The reader starts empty, so the two assays (2 units each) cannot run until the
+# dispenser has been. The scheduler works out that one refill covers both -- it
+# fills to capacity, and 6 covers 4 -- and places it early enough to cost nothing.
 inventories:
   initial:
     reader:
-      reagent: 4
+      reagent: 0
 
 activities: []

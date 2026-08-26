@@ -66,7 +66,10 @@ TRANSPORT_KEYS = {
 # A relay (§6) is a transport junction: it belongs to a logical `arc` at a `seq`
 # position, occupies one `spot`, and is instantaneous (end == start).
 RELAY_KEYS = {"kind", "status", "start", "end", "arc", "seq", "spot"}
-ACTIVITY_KINDS = {"processing", "transport", "relay"}
+# A replenishment (§6.9) refills one device's stocks. It is the one kind with no
+# workflow provenance -- no `node`, no `arc` -- so it carries an explicit `id`.
+REPLENISHMENT_KEYS = {"kind", "status", "start", "end", "id", "device", "replenisher", "amounts"}
+ACTIVITY_KINDS = {"processing", "transport", "relay", "replenishment"}
 ARC_ENDPOINT_KEYS = {"node", "port"}
 
 
@@ -120,6 +123,31 @@ def _check(root: YNode | None, diags: Diagnostics) -> None:
         if activities is not None:
             for i, item in enumerate(activities.items):
                 _check_activity(item, f"activities[{i}]", diags)
+            _check_activity_ids(activities, diags)
+
+
+def _check_activity_ids(activities: YSeq, diags: Diagnostics) -> None:
+    """An activity `id` identifies one activity within one document (§6.9).
+
+    Only replenishments carry one, and it is the only thing that identifies them --
+    every other kind is matched by the workflow element it serves -- so a repeat
+    would silently merge two refills on a replan.
+    """
+    seen: set[str] = set()
+    for i, item in enumerate(activities.items):
+        if not isinstance(item, YMap):
+            continue
+        node = item.get("id")
+        if not (isinstance(node, YScalar) and node.is_str):
+            continue
+        if node.value in seen:
+            diags.error(
+                errors.DUPLICATE_ACTIVITY_ID,
+                f"duplicate activity id {node.value!r}",
+                f"activities[{i}].id",
+                at=node,
+            )
+        seen.add(node.value)
 
 
 def _check_time(node: YNode | None, diags: Diagnostics) -> None:
@@ -262,6 +290,7 @@ def _check_activity(node: YNode, base: str, diags: Diagnostics) -> None:
         "processing": PROCESSING_KEYS,
         "transport": TRANSPORT_KEYS,
         "relay": RELAY_KEYS,
+        "replenishment": REPLENISHMENT_KEYS,
     }[kind]
     shape.unknown_keys(amap, allowed, base, diags)
     _check_status(amap.get("status"), base, diags)
@@ -271,6 +300,8 @@ def _check_activity(node: YNode, base: str, diags: Diagnostics) -> None:
         _check_processing(amap, base, diags)
     elif kind == "transport":
         _check_transport(amap, base, diags)
+    elif kind == "replenishment":
+        _check_replenishment(amap, base, diags)
     else:
         _check_relay(amap, base, diags)
 
@@ -382,6 +413,53 @@ def _check_transport(amap: YMap, base: str, diags: Diagnostics) -> None:
         _check_arc(arc, shape.join(base, "arc"), diags)
     # Optional chain position (§6.6); a single-leg transport omits it.
     shape.nonneg_int(amap.get("seq"), shape.join(base, "seq"), diags)
+
+
+def _check_replenishment(amap: YMap, base: str, diags: Diagnostics) -> None:
+    """A replenishment activity (§6.9): `id`, `device`, `replenisher`, `amounts`.
+
+    Shape only. That the device and replenisher exist, and that the amounts name
+    resources it holds, needs the environment and is the execution layer's job
+    (§9.3). `amounts` keys are **bare** resource names -- `device` already says
+    whose stock it is -- unlike a mode's `consumption`, which must qualify because a
+    mode may name several devices.
+    """
+    for key in ("id", "device", "replenisher"):
+        node = shape.require(amap, key, base, diags)
+        if node is None:
+            continue
+        path = shape.join(base, key)
+        if not (isinstance(node, YScalar) and node.is_str):
+            diags.error(errors.WRONG_TYPE, f"{key} must be a string", path, at=node)
+        elif not is_identifier(node.value):
+            diags.error(errors.INVALID_IDENTIFIER, f"invalid {key} {node.value!r}", path, at=node)
+
+    amounts = shape.require(amap, "amounts", base, diags)
+    path = shape.join(base, "amounts")
+    amap_amounts = shape.as_map(amounts, path, diags)
+    if amap_amounts is None:
+        return
+    if not amap_amounts.entries:
+        # A refill that adds nothing would hold two machines for no reason.
+        diags.error(errors.EMPTY_AMOUNTS, "amounts must not be empty", path, at=amap_amounts)
+        return
+    for entry in amap_amounts.entries:
+        entry_path = shape.join(path, entry.key)
+        if not is_identifier(entry.key):
+            diags.error(
+                errors.INVALID_IDENTIFIER,
+                f"invalid resource name {entry.key!r}",
+                entry_path,
+                at=entry.value or amap_amounts,
+            )
+            continue
+        value = entry.value
+        if not (isinstance(value, YScalar) and value.is_int):
+            diags.error(errors.WRONG_TYPE, "amount must be an integer", entry_path, at=value)
+        elif value.value <= 0:
+            diags.error(
+                errors.NONPOSITIVE_VALUE, "amount must be positive", entry_path, at=value
+            )
 
 
 def _check_relay(amap: YMap, base: str, diags: Diagnostics) -> None:

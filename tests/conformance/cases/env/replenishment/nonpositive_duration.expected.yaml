@@ -1,0 +1,7 @@
+outcome: invalid
+match: exact
+errors:
+- {code: nonpositive_duration}
+notes: >-
+  A refill is real work, so its duration is positive -- the rule a
+  device-occupying processing mode follows; spec §5.7, §9.1.

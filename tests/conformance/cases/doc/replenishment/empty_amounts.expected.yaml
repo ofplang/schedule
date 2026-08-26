@@ -1,0 +1,7 @@
+outcome: invalid
+match: exact
+errors:
+- {code: empty_amounts}
+notes: >-
+  A refill that adds nothing would hold two machines for no reason;
+  spec §6.9, §9.2.

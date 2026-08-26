@@ -92,6 +92,13 @@ def _build(data: dict) -> Environment:
         assert parsed is not None
         objective = parsed
 
+    # Replenishers and the (replenisher, device) -> duration table (§5.6, §5.7),
+    # both optional in exactly the way transporters and transports are.
+    replenishers = tuple(r["id"] for r in data.get("replenishers", []))
+    replenishments: dict[tuple[str, str], int] = {}
+    for entry in data.get("replenishments", []):
+        replenishments[(entry["replenisher"], entry["device"])] = entry["duration"]
+
     return Environment(
         time_unit=time_unit,
         devices=devices,
@@ -99,4 +106,6 @@ def _build(data: dict) -> Environment:
         transports=transports,
         processes=processes,
         objective=objective,
+        replenishers=replenishers,
+        replenishments=replenishments,
     )

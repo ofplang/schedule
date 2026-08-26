@@ -1,0 +1,8 @@
+outcome: invalid
+match: exact
+errors:
+- {code: unknown_key}
+notes: >-
+  A replenishment is not derived from the workflow (spec §4.2), so `node` is simply
+  not one of its keys -- which `unknown_key` already says, in the right place. It
+  carries an `id` instead.

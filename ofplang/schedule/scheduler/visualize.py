@@ -115,6 +115,7 @@ def _device_layout(activities):
     on transporter (solid) + source/destination devices (ghost)."""
     devices: set[str] = set()
     transporters: set[str] = set()
+    replenishers: set[str] = set()
     for a in activities:
         if a.get("kind") == "processing":
             devices.update(a.get("devices") or [])
@@ -123,16 +124,24 @@ def _device_layout(activities):
             devices.add(_device_of(a.get("to_spot")))
             if a.get("transporter"):
                 transporters.add(a["transporter"])
+        elif a.get("kind") == "replenishment":
+            devices.add(a.get("device") or "")
+            if a.get("replenisher"):
+                replenishers.add(a["replenisher"])
     devices.discard("")
 
-    lane_labels = [f"{d}" for d in sorted(devices)] + [
-        f"{t} (transporter)" for t in sorted(transporters)
-    ]
+    lane_labels = (
+        [f"{d}" for d in sorted(devices)]
+        + [f"{t} (transporter)" for t in sorted(transporters)]
+        + [f"{r} (replenisher)" for r in sorted(replenishers)]
+    )
     index = {}
     for d in sorted(devices):
         index[("dev", d)] = len(index)
     for t in sorted(transporters):
         index[("tr", t)] = len(index)
+    for r in sorted(replenishers):
+        index[("rp", r)] = len(index)
 
     bars: list[_Bar] = []
     for a in activities:
@@ -151,7 +160,24 @@ def _device_layout(activities):
             for d in (src, dst):
                 if d and ("dev", d) in index:
                     bars.append(_Bar(index[("dev", d)], s, e, "", "xfer-ghost"))
+        elif kind == "replenishment":
+            # Two machines, drawn the way a transport's are: solid on the machine
+            # doing the work, ghosted on the one it is done to.
+            label = _refill_label(a)
+            replenisher = a.get("replenisher")
+            if replenisher and ("rp", replenisher) in index:
+                bars.append(_Bar(index[("rp", replenisher)], s, e, label, "xfer"))
+            device = a.get("device")
+            if device and ("dev", device) in index:
+                bars.append(_Bar(index[("dev", device)], s, e, "", "xfer-ghost"))
     return lane_labels, bars, []
+
+
+def _refill_label(a) -> str:
+    """`+2 dye` — what the visit put in, which is the only thing about a refill a
+    reader cannot get from the lane it sits on."""
+    amounts = a.get("amounts") or {}
+    return " ".join(f"+{v} {k}" for k, v in sorted(amounts.items()))
 
 
 def _workflow_layout(activities):
