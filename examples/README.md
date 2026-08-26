@@ -74,7 +74,7 @@ An Object-bearing entry input with no `interface` binding is an error
   **capacity** of 6 (SPEC §5.2), the `assay` mode declares
   `consumption: { reader.reagent: 2 }` (SPEC §5.5, qualified because a mode may
   name several devices), and `dispenser` can refill the reader (SPEC §5.6, §5.7).
-- `consumable.document.yaml` — `inventories.initial` (SPEC §6.10): what the run
+- `consumable.document.yaml` — `inventories.levels` (SPEC §6.10): what the run
   **starts** with, here nothing at all.
 
 Capacity is what the device can ever hold; the starting level is a property of the
@@ -99,7 +99,7 @@ Delete `replenishers` and `replenishments` and the same document is `infeasible`
 that is the honest answer for a stock nothing can refill, and a legitimate
 environment to write (an operator tops it up outside the schedule). Drop the
 `inventories` section instead and it is `missing_inventories` — some invoked mode
-consumes, so the document has to say what the run began with; `initial: {}` is how
+consumes, so the document has to say what the run began with; `levels: {}` is how
 to say every stock starts empty. Declaring `resources` that no invoked mode draws
 on demands nothing: a stock nothing consumes constrains nothing.
 

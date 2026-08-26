@@ -140,7 +140,7 @@ def test_a_resource_sharing_a_machine_id_is_only_a_warning():
 def _document(initial=None, activities=None):
     doc: dict = {"activities": activities if activities is not None else []}
     if initial is not None:
-        doc["inventories"] = {"initial": initial}
+        doc["inventories"] = {"levels": initial}
     return doc
 
 
@@ -203,7 +203,7 @@ def test_the_plan_carries_the_starting_levels_through():
     # `inventories` says what the run started with, so it round-trips unchanged and
     # the plan can be fed back as the next document.
     plan = _plan().plan
-    assert plan["inventories"] == {"initial": {"reader": {"reagent": 0}}}
+    assert plan["inventories"] == {"levels": {"reader": {"reagent": 0}}}
 
 
 def test_the_plan_is_itself_a_valid_document():
@@ -282,7 +282,7 @@ def test_a_completed_activity_draws_down_the_stock():
 
     # With only 3 to begin with there is nothing left for the second assay, and
     # nothing here can refill it.
-    doc["inventories"] = {"initial": {"reader": {"reagent": 3}}}
+    doc["inventories"] = {"levels": {"reader": {"reagent": 3}}}
     assert _plan(env=_env_no_refills(), document=doc).plan is None
 
 
@@ -308,7 +308,7 @@ def test_the_echo_survives_the_mode_being_withdrawn():
 def test_a_history_that_contradicts_the_environment_is_rejected():
     doc = _replan_document(initial=4)
     # One completed assay drew 2, but the run is said to have started with none.
-    doc["inventories"] = {"initial": {"reader": {"reagent": 0}}}
+    doc["inventories"] = {"levels": {"reader": {"reagent": 0}}}
     report = _plan(document=doc)
     assert report.plan is None
     assert "status_inventory_inconsistent" in [d.code for d in report.diagnostics]
@@ -350,7 +350,7 @@ def test_switching_off_adds_nothing_a_resource_free_reader_cannot_read():
 def test_switching_off_still_echoes_what_the_caller_supplied():
     # `inventories` is the caller's own input; dropping it would lose it from the
     # document rather than leave the plan unmarked.
-    assert _off().plan["inventories"] == {"initial": {"reader": {"reagent": 0}}}
+    assert _off().plan["inventories"] == {"levels": {"reader": {"reagent": 0}}}
 
 
 def test_switching_off_does_not_change_the_schedule_it_finds():
@@ -483,7 +483,7 @@ def test_a_started_refill_is_carried_back_out_as_history():
 def test_a_new_refill_does_not_reuse_an_id_the_history_holds():
     # Drain the stock so more refills are needed alongside the one in the history.
     doc = _replan_after_refill()
-    doc["inventories"] = {"initial": {"reader": {"reagent": 0}}}
+    doc["inventories"] = {"levels": {"reader": {"reagent": 0}}}
     for entry in doc["activities"]:
         if entry.get("process") == "assay":
             entry["consumption"] = {"reader.reagent": 6}

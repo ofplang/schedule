@@ -86,7 +86,7 @@ Codes are compared as **sets** (order- and duplicate-insensitive).
 | `shape/`         | unknown/missing keys, wrong value kinds, duplicate mapping keys |
 | `activity/`      | kind, status, missing start, ordering, negative times |
 | `processing/`    | required fields, node-path shape, the `consumption` echo (§6.3) |
-| `inventories/`   | `inventories.initial` shape and section closure (§6.10) |
+| `inventories/`   | `inventories.levels` shape and section closure (§6.10) |
 | `transport/`     | required fields, arc shape, qualified spots |
 | `relay/`         | required fields, `seq`, zero duration, a valid relayed chain |
 | `interface/`     | port names, qualified spots, section shape (§6.8) |

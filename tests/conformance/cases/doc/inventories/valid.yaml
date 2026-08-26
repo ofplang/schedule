@@ -6,5 +6,5 @@ activities:
   mode: fast
   node: [assay]
 inventories:
-  initial:
+  levels:
     reader_0: {dye: 4}

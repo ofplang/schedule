@@ -168,7 +168,7 @@ Resources and replenishment:
   $c_{\ell,g}$ (SPEC §4.7.1 — the environment is rejected otherwise). Transport and
   replenishment activities consume nothing.
 - $v^{0}_{\ell,g} \in \mathbb{Z}_{\ge 0}$: the level of $(\ell,g)$ at the **start of
-  the run** (`inventories.initial`, SPEC §6.10), with $v^{0}_{\ell,g} \le c_{\ell,g}$.
+  the run** (`inventories.levels`, SPEC §6.10), with $v^{0}_{\ell,g} \le c_{\ell,g}$.
   An unstated resource is $0$.
 - $\rho_{t,\ell} \in \mathbb{Z}_{>0}$: duration for replenisher $t \in
   L^{\mathrm{rp}}$ to refill device $\ell$ (SPEC §5.7). A missing entry means $t$

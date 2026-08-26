@@ -263,7 +263,7 @@ run however it is arranged, and is rejected (`consumption_exceeds_capacity`, §1
 
 A resource's level at a given moment is **derived**, never supplied as a current
 reading. The execution document gives the levels the run *started* with
-(`inventories.initial`, §6.10) and the scheduler replays the history against them:
+(`inventories.levels`, §6.10) and the scheduler replays the history against them:
 every started processing activity has already taken its `consumption`, and every
 finished replenishment has already added its `amounts`. A replenishment that is
 still running has not landed yet — it is a fixed increase at its end.
@@ -370,7 +370,7 @@ spots.
   - `capacity` — the largest level this device can hold of that resource, a
     **positive** YAML integer. There is no `initial` here: what the device holds at
     the start of a run is not a property of the device but of the run, and is given
-    in the execution document (`inventories.initial`, §6.10).
+    in the execution document (`inventories.levels`, §6.10).
 
 ### 5.3 `transporters`
 
@@ -605,8 +605,8 @@ environment.
   inputs and final outputs (a planning constraint, §3). **Required** for every
   Object-bearing entry input; optional per output. Supplied for the initial plan
   and carried through replans; echoed in the plan output.
-- `inventories` (§6.10) — the resource levels the run started with (a planning
-  constraint, §3, like `interface`). **Required** whenever the resource model is in
+- `inventories` (§6.10) — consumable resource levels as of the start of the run (a
+  planning constraint, §3, like `interface`). **Required** whenever the resource model is in
   effect (§9.3, `missing_inventories`); forbidden nowhere. Supplied for the initial
   plan and carried through replans unchanged; echoed in the plan output. With
   resources disabled (§4.7.3) it is not read, but it is still echoed — it is the
@@ -978,32 +978,40 @@ pending work (§6.2), so their identifiers are not expected to survive.
   status: completed
 ```
 
-### 6.10 Inventories (initial resource levels)
+### 6.10 Inventories (resource levels)
 
-`inventories` states the consumable resource levels the run **started** with. It is
-a planning constraint (§3), the inventory counterpart of `interface`: supplied for
-the initial plan, echoed in the plan output, and carried through replans unchanged.
-It is required whenever the resource model is in effect (§6.1).
+`inventories` states consumable resource levels **as of one moment**. It is a
+planning constraint (§3), the inventory counterpart of `interface`: supplied for the
+initial plan, echoed in the plan output, and carried through replans unchanged. It is
+required whenever the resource model is in effect (§6.1).
 
-- `initial` (required) — a mapping from device id to a mapping from bare resource
+- `levels` (required) — a mapping from device id to a mapping from bare resource
   name to a **non-negative** integer level.
 
 ```yaml
 inventories:
-  initial:
+  levels:
     reader_0: { dye: 20 }
 ```
 
+**The moment is the start of the run.** v0 defines no way to say otherwise, so
+`inventories` is always read as the levels the run began with, and every later level
+is derived by replaying the history against them (§4.7.2). That is why this section
+does not change from one replan to the next.
+
 Each device and resource named must be declared in the environment (§5.2). A
-declared resource that is *not* named is level `0`; an empty `initial` therefore
+declared resource that is *not* named is level `0`; an empty `levels` therefore
 means every stock starts empty, and is how a run that begins with nothing on hand is
 written. No level may exceed its resource's `capacity`.
 
-The levels at any later moment are **not** given here — they are derived by replaying
-the history against these (§4.7.2), which is why this section does not change from
-one replan to the next. The nesting under `initial` is deliberate: it leaves room for
-a future revision to state a level *measured* at a later time, which v0 cannot
-express.
+The nesting under `levels` is what leaves room for that to change. A later revision
+able to state a level *measured* part-way through a run would add the moment as a
+sibling — `at`, defaulting to `0` — and every document written today would keep its
+meaning unchanged, because omitting the moment is exactly what they do. The container
+is named for what it holds rather than for when it holds true, so it does not become
+a misnomer the day the moment can be something other than the start. A section that
+carries one moment carries the *latest* one worth knowing; anything earlier is
+history, and history is what the activities already record.
 
 ## 7. Execution status
 
@@ -1081,7 +1089,7 @@ follow the v0 rules for those positions.
 - **resource** — a resource name is unique within its device. The globally unique
   resource id is the qualified form `<device>.<resource>`, used by a mode's
   `consumption` (§5.5) for the same reason spots are qualified there. Where the
-  device is already named by the surrounding structure — `inventories.initial`
+  device is already named by the surrounding structure — `inventories.levels`
   (§6.10), a replenishment's `amounts` (§6.9) — the bare name is used.
 - **No two machines may share an id** — this is an **error**. Devices,
   transporters and replenishers are all machines, and at execution time a machine
@@ -1311,7 +1319,7 @@ leg is pinned like any committed leg; a pending one is re-derived).
   Started replenishments are pinned from their reported `device` / `replenisher` /
   `amounts` and, like every fixed part, are not re-validated against the current
   environment.
-- **Resource levels replay**: the level of each resource is `inventories.initial`
+- **Resource levels replay**: the level of each resource is `inventories.levels`
   less what every started processing consumed, plus what every finished
   replenishment added (§4.7.2). A started processing's consumption comes from its
   `consumption` echo (§6.3), falling back to the current environment's mode of the
@@ -1342,7 +1350,7 @@ top level and its `time` / device / transporter / transport / process / mode /
 `objective` / `interface` / activity mappings (§9.2). They are **not** interpreted
 inside the open name/port maps whose keys are user-chosen — `processes`,
 `input_spots` / `output_spots`, `interface.inputs` / `outputs`, a device's
-`resources`, a mode's `consumption`, `inventories.initial` and the per-device maps
+`resources`, a mode's `consumption`, `inventories.levels` and the per-device maps
 under it, and a replenishment's `amounts` — where an `x-`-prefixed key is an
 ordinary (badly named) entry, not an extension. (Mirrors the workflow `x-`
 convention, ofplang-spec §26.) Each *resource definition* under `resources` is a
@@ -1444,13 +1452,13 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `interface_duplicate_spot` | two bindings on one side (two inputs, or two outputs) bind the same spot |
 | `interface_input_missing` | an Object-bearing entry input has no `interface` binding (§6.8) |
 | `missing_inventories` | the resource model is in effect but the document has no `inventories` (§6.10). An empty `initial` is the way to say every stock starts empty |
-| `inventory_exceeds_capacity` | an `inventories.initial` level is above its resource's `capacity` |
+| `inventory_exceeds_capacity` | an `inventories.levels` level is above its resource's `capacity` |
 | `objective_in_environment_deprecated` | the environment declares `objective`, which belongs to the execution document (§5.8). Honoured while the document says nothing, so environments written before the move keep working (*warning*) |
 | `resources_ignored` | the resource model was disabled (§4.7.3) where it would otherwise have been in effect, so nothing was applied. Not raised for an environment that merely declares a stock nothing draws on — switching that off changes nothing (*warning*) |
 | `infeasible` | the solver proved the instance has no feasible schedule |
 
 `unknown_device` and `unknown_resource` (§10.2) are reused here for an
-`inventories.initial` entry that names something the environment does not declare,
+`inventories.levels` entry that names something the environment does not declare,
 as `unknown_device` / `unknown_spot` already are for `interface`. There is no
 "unreachable replenishment" code: unlike an arc, a refill is never required, so a
 device no replenisher can reach is a legitimate environment (§5.7) and running out
@@ -1467,6 +1475,6 @@ status (§7) against the instance:
 | `status_mode_unknown` | a fixed processing cannot be pinned — its `mode` has no echo and the current env does not offer it |
 | `status_time_inconsistent` | a `completed` activity ends after `now`, or a `running` activity starts after `now` |
 | `status_duplicate` | two status entries fix the same processing (`node`), the same transport leg (`arc` + `seq`), or the same replenishment (`id`) |
-| `status_inventory_inconsistent` | replaying the history against `inventories.initial` drives a resource outside `[0, capacity]` (§9.3) |
+| `status_inventory_inconsistent` | replaying the history against `inventories.levels` drives a resource outside `[0, capacity]` (§9.3) |
 | `broken_transport_chain` | a committed transport leg's source is not completed, or a leg does not continue the previous leg's arrival spot |
 | `terminal_status_not_replannable` | a replan input carries a `failed` / `cancelled` (terminal) activity; a stopped run has no remaining work to plan |

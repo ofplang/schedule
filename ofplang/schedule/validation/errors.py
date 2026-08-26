@@ -102,7 +102,7 @@ INFEASIBLE = "infeasible"
 # on constrains nothing and demands nothing of a document.
 # The document does not say what the run started with, so no level can be derived.
 MISSING_INVENTORIES = "missing_inventories"
-# An `inventories.initial` level is above the capacity its device declares.
+# An `inventories.levels` level is above the capacity its device declares.
 INVENTORY_EXCEEDS_CAPACITY = "inventory_exceeds_capacity"
 # A replanning input carries a `pending` replenishment. Pending refills are not
 # carried over: the scheduler decides how many to run and re-derives the candidates
@@ -170,7 +170,7 @@ BROKEN_TRANSPORT_CHAIN = "broken_transport_chain"
 # is a valid execution-document shape, but a run that has failed is not replannable
 # (v0 stops the whole run on any failure), so it cannot be fed to the scheduler.
 TERMINAL_STATUS_NOT_REPLANNABLE = "terminal_status_not_replannable"
-# Replaying the history against `inventories.initial` drives a resource outside
+# Replaying the history against `inventories.levels` drives a resource outside
 # [0, capacity]: the reported history and the environment disagree (§9.3).
 STATUS_INVENTORY_INCONSISTENT = "status_inventory_inconsistent"
 

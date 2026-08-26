@@ -7,5 +7,5 @@ activities:
   node: [assay]
 inventories:
   at: 120
-  initial:
+  levels:
     reader_0: {dye: 4}

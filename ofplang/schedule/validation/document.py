@@ -29,7 +29,7 @@ DOC_TOP = {
     "activities",
     "meta",
 }
-INVENTORIES_KEYS = {"initial"}
+INVENTORIES_KEYS = {"levels"}
 OUTCOMES = {"optimal", "feasible", "infeasible", "unknown"}
 # `failed` / `cancelled` are terminal statuses (§6.2): a run stops on any failure,
 # so they only ever appear in a final status, never fed back to the scheduler (a
@@ -207,12 +207,12 @@ def _check_inventories(node: YNode | None, diags: Diagnostics) -> None:
     if imap is None:
         return
     shape.unknown_keys(imap, INVENTORIES_KEYS, "inventories", diags)
-    initial = shape.require(imap, "initial", "inventories", diags)
-    dmap = shape.as_map(initial, "inventories.initial", diags)
+    initial = shape.require(imap, "levels", "inventories", diags)
+    dmap = shape.as_map(initial, "inventories.levels", diags)
     if dmap is None:
         return
     for entry in dmap.entries:
-        path = shape.join("inventories.initial", entry.key)
+        path = shape.join("inventories.levels", entry.key)
         if not is_identifier(entry.key):
             diags.error(
                 errors.INVALID_IDENTIFIER,

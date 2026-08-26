@@ -367,7 +367,7 @@ def _derive_levels(
         diags.error(
             errors.MISSING_INVENTORIES,
             "the environment's modes consume resources, so the document must say "
-            "what the run started with (inventories.initial); an empty `initial` "
+            "what the run started with (inventories.levels); an empty `levels` "
             "means every stock starts empty",
             "inventories",
             at=root,
@@ -401,14 +401,14 @@ def _derive_levels(
                 errors.STATUS_INVENTORY_INCONSISTENT,
                 f"replaying the history leaves {device}.{resource} at {level}, "
                 f"outside [0, {capacity}]",
-                f"inventories.initial.{device}.{resource}",
+                f"inventories.levels.{device}.{resource}",
                 at=root,
             )
     return levels
 
 
 def _initial_levels(node: YNode, env, diags: Diagnostics) -> dict[tuple[str, str], int]:
-    """`inventories.initial` resolved against the environment (§9.3).
+    """`inventories.levels` resolved against the environment (§9.3).
 
     A resource the environment declares but the document does not name starts at 0,
     so the map is filled from the environment first and then overwritten. Naming
@@ -421,13 +421,13 @@ def _initial_levels(node: YNode, env, diags: Diagnostics) -> dict[tuple[str, str
         for device_id, device in env.devices.items()
         for resource in device.resources
     }
-    initial = node.get("initial") if isinstance(node, YMap) else None
+    initial = node.get("levels") if isinstance(node, YMap) else None
     if not isinstance(initial, YMap):
         return levels
 
     for entry in initial.entries:
         device_id = entry.key
-        path = f"inventories.initial.{device_id}"
+        path = f"inventories.levels.{device_id}"
         device = env.devices.get(device_id)
         if device is None:
             diags.error(errors.UNKNOWN_DEVICE, f"unknown device {device_id!r}", path, at=entry)
