@@ -230,3 +230,24 @@ def test_schedule_no_validate_expands_import(tmp_path):
         ["schedule", str(wf), "--env", str(EXAMPLES / "simple.env.yaml"), "--no-validate"]
     )
     assert code == cli.EXIT_OK
+
+
+def test_schedule_ignore_resources_warns_on_stderr(capsys):
+    # A warning says a feature was accepted and then not applied, which changes what
+    # the plan means. A *successful* schedule is exactly the case where nothing else
+    # would ever mention it, so it has to go out even though the command succeeded.
+    code = cli.main(
+        [
+            "schedule",
+            str(EXAMPLES / "consumable.workflow.yaml"),
+            "--env",
+            str(EXAMPLES / "consumable.env.yaml"),
+            "--document",
+            str(EXAMPLES / "consumable.document.yaml"),
+            "--ignore-resources",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "warning resources_ignored" in captured.err
+    assert "consumption" not in captured.out

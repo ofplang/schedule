@@ -100,6 +100,12 @@ INVENTORY_EXCEEDS_CAPACITY = "inventory_exceeds_capacity"
 # best-effort preferences an implementation may ignore -- so the section is dropped
 # when the composite is flattened. Emitted so the ignored feature is visible.
 SCHEDULING_POLICIES_IGNORED = "scheduling_policies_ignored"
+# Warning (not an error): the resource model was switched off (§4.7.3) on an
+# environment whose modes do consume, so consumption, the starting levels and every
+# check over them were left unapplied. Emitted only where the model would otherwise
+# have been in effect -- switching off a stock nothing draws on changes nothing and
+# is not worth saying.
+RESOURCES_IGNORED = "resources_ignored"
 
 # Interface / boundary conditions (§6.8, §9.3). An `interface` binding pins a
 # workflow boundary port (entry input / final output) to a spot.
@@ -149,8 +155,10 @@ TERMINAL_STATUS_NOT_REPLANNABLE = "terminal_status_not_replannable"
 # [0, capacity]: the reported history and the environment disagree (§9.3).
 STATUS_INVENTORY_INCONSISTENT = "status_inventory_inconsistent"
 
-# The `cross_kind_id_coincidence` code is the only warning; everything else is an
-# error. The runner and CLI use this to check severity.
+# The schema validators' one warning; every other code they emit is an error.
+# (`scheduling_policies_ignored` and `resources_ignored` are warnings too, but the
+# execution layer raises them, not a schema validator, so they are outside the two
+# sets below -- which exist to bound what a conformance case may name.)
 WARNING_CODES = frozenset({CROSS_KIND_ID_COINCIDENCE})
 
 ERROR_CODES = frozenset(

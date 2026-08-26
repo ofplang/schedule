@@ -96,6 +96,14 @@ document has to say what the run began with. `initial: {}` is how to say every
 stock starts empty. Declaring `resources` that no invoked mode draws on demands
 nothing — a stock nothing consumes constrains nothing.
 
+`--ignore-resources` switches the model off (SPEC §4.7.3): the declarations are
+still checked for shape, but nothing is applied, and the plan carries no
+`consumption` echo — so a reader that knows nothing of resources can still take it.
+Off is a relaxation, so the 3-unit case above plans happily with it. It is total,
+though: what is switched off is not checked either, so a mistake in `inventories`
+goes unreported. The command says it switched something off
+(`warning resources_ignored`) whenever the model would otherwise have been in effect.
+
 ## `simple` — minimal source → target
 
 - `simple.workflow.yaml` — the v0 workflow.

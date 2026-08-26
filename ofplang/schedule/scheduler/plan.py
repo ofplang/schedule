@@ -30,8 +30,14 @@ def render_plan(
     now: int | None = None,
     interface: dict | None = None,
     inventories: dict | None = None,
+    ignore_resources: bool = False,
 ) -> dict:
-    """Build the execution-document dict for `solution`."""
+    """Build the execution-document dict for `solution`.
+
+    `inventories` is echoed either way -- it is the caller's own input, and dropping
+    it would lose the round trip -- but with `ignore_resources` no activity carries a
+    `consumption` echo, so a plan adds nothing a reader that predates resources
+    cannot read (§4.7.3)."""
     activities: list[dict] = []
 
     for p in solution.processing:
@@ -78,10 +84,16 @@ def render_plan(
             entry["input_spots"] = dict(p.mode.input_spots)
         if p.mode.output_spots:
             entry["output_spots"] = dict(p.mode.output_spots)
-        # Always echoed where the mode consumes something (§6.3): a later replan may
+        # Echoed where the mode consumes something (§6.3): a later replan may
         # withdraw this mode from the environment, and a fixed activity is not read
         # back against it, so the amount has to be here to be recoverable.
-        if p.mode.consumption:
+        #
+        # Not with the model switched off (§4.7.3). The echo exists to make history
+        # replayable and nothing replays it here, and it is the one thing that would
+        # otherwise leave the plan shaped unlike one from an environment that never
+        # declared a resource -- which is the whole point of switching off, since a
+        # reader that predates resources rejects the key outright.
+        if p.mode.consumption and not ignore_resources:
             entry["consumption"] = dict(p.mode.consumption)
         activities.append(entry)
 

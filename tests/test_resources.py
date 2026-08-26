@@ -292,3 +292,71 @@ def test_a_history_that_contradicts_the_environment_is_rejected():
     report = _plan(document=doc)
     assert report.plan is None
     assert "status_inventory_inconsistent" in [d.code for d in report.diagnostics]
+
+
+# --- switching the model off (§4.7.3) ------------------------------------
+
+
+def _off(document=None, env=None):
+    return schedule(
+        EXAMPLES / "consumable.workflow.yaml",
+        env if env is not None else EXAMPLES / "consumable.env.yaml",
+        document_path=document if document is not None else EXAMPLES / "consumable.document.yaml",
+        ignore_resources=True,
+    )
+
+
+def test_switching_off_is_a_relaxation():
+    # A stock too small to cover the work is infeasible with the model on, and
+    # simply not looked at with it off. Off can never lose a schedule.
+    assert _plan(document=_document({"reader": {"reagent": 3}})).plan is None
+    assert _off(document=_document({"reader": {"reagent": 3}})).plan is not None
+
+
+def test_switching_off_needs_no_starting_levels():
+    report = _off(document=_document())
+    assert report.plan is not None, [d.code for d in report.diagnostics]
+
+
+def test_switching_off_adds_nothing_a_resource_free_reader_cannot_read():
+    # The point of the switch: what the scheduler *adds* must not betray that the
+    # environment declared a resource, so a consumer predating them still reads it.
+    plan = _off().plan
+    assert not any("consumption" in a for a in plan["activities"])
+    assert plan["objective"] == {"kind": "makespan", "value": 32}
+
+
+def test_switching_off_still_echoes_what_the_caller_supplied():
+    # `inventories` is the caller's own input; dropping it would lose it from the
+    # document rather than leave the plan unmarked.
+    assert _off().plan["inventories"] == {"initial": {"reader": {"reagent": 4}}}
+
+
+def test_switching_off_does_not_change_the_schedule_it_finds():
+    on = _plan().plan
+    off = _off().plan
+    assert off["objective"] == on["objective"]
+
+
+def test_switching_off_stops_checking_what_it_stopped_applying():
+    # What is switched off is not checked: a level above its capacity, or a device
+    # the environment does not declare, is simply not looked at.
+    for initial in ({"reader": {"reagent": 99}}, {"freezer": {"reagent": 1}}):
+        report = _off(document=_document(initial))
+        assert report.plan is not None, [d.code for d in report.diagnostics]
+
+
+def test_switching_off_says_so():
+    assert [d.code for d in _off().diagnostics] == ["resources_ignored"]
+
+
+def test_switching_off_a_stock_nobody_draws_on_says_nothing():
+    # Nothing was in effect, so nothing was ignored. A warning here would fire on
+    # environments that merely describe what a device holds.
+    env = _env()
+    del _assay_mode(env)["consumption"]
+    assert [d.code for d in _off(env=env, document=_document()).diagnostics] == []
+
+
+def test_a_plan_made_with_resources_off_is_a_valid_document():
+    assert _doc_codes(_off().plan) == []

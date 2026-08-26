@@ -97,6 +97,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="safety margin: a running activity's fixed end is clamped up to now + N (default: 0)",
     )
     s.add_argument(
+        "--ignore-resources",
+        action="store_true",
+        help="switch off consumable resources: the environment's declarations are "
+        "still checked for shape but nothing is applied, and the plan is shaped as "
+        "it would be from an environment that never declared one (a relaxation, so "
+        "it never turns a solvable instance unsolvable)",
+    )
+    s.add_argument(
         "--seed",
         type=int,
         default=None,
@@ -327,12 +335,24 @@ def _cmd_schedule(args) -> int:
             document_path=doc,
             running_task_margin=args.running_margin,
             random_seed=args.seed,
+            ignore_resources=args.ignore_resources,
             workflow_source=args.workflow,
         )
     except yaml.YAMLError as exc:
         # Malformed workflow / environment / document YAML is an input error.
         print(f"ofp-schedule: cannot parse input: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    # Warnings go out whether or not a plan came of it. They say a feature was
+    # accepted and then not applied -- `scheduling_policies_ignored`,
+    # `resources_ignored` -- which changes what the plan means, and a *successful*
+    # schedule is precisely the case where nothing else would ever mention it.
+    for diag in report.diagnostics:
+        if diag.severity == ERROR:
+            continue
+        locator = diag.location or diag.path or "<input>"
+        message = f"  {diag.message}" if diag.message else ""
+        print(f"{locator}: warning {diag.code}{message}", file=sys.stderr)
+
     if not report.ok:
         # Surface every error diagnostic (missing location falls back to a path).
         for diag in report.diagnostics:

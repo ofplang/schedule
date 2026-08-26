@@ -71,6 +71,7 @@ def schedule(
     running_task_margin: int = 0,
     max_time_seconds: float | None = None,
     random_seed: int | None = None,
+    ignore_resources: bool = False,
     workflow_source: str | None = None,
     environment_source: str | None = None,
     document_source: str | None = None,
@@ -83,6 +84,14 @@ def schedule(
     display paths recorded as the plan's `meta` provenance: a caller that passes an
     in-memory document (so nothing is read from disk here) can still name the
     original file, instead of the plan showing `<in-memory>`.
+
+    `ignore_resources` switches the consumable model off (§4.7.3): the environment's
+    resource declarations are still shape-checked, but nothing is applied and the
+    plan is shaped as it would be from an environment that never declared one. It is
+    a relaxation, so it never turns a solvable instance unsolvable. This is how a
+    resource-bearing environment can drive a consumer that does not know about
+    resources -- though such a caller has to pass it, so driving `ofplang.run` this
+    way is not possible until run does.
 
     In-memory documents are read, never written to."""
     diagnostics: list[Diagnostic] = []
@@ -137,7 +146,9 @@ def schedule(
     if base is None:
         return ScheduleReport(None, None, None, diagnostics)
 
-    instance, fixation, norm_diags = normalize(base, root, env)
+    instance, fixation, norm_diags = normalize(
+        base, root, env, ignore_resources=ignore_resources
+    )
     diagnostics += norm_diags.items
     if instance is None or fixation is None:
         return ScheduleReport(None, None, None, diagnostics)
@@ -174,5 +185,6 @@ def schedule(
         now=fixation.now if had_now else None,
         interface=interface,
         inventories=inventories,
+        ignore_resources=ignore_resources,
     )
     return ScheduleReport(solution.outcome, solution.makespan, plan, diagnostics)

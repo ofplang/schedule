@@ -288,9 +288,19 @@ The whole resource model can be switched off. It is then treated the way v0
 features this scheduler does not implement are treated (§2): the declarations are
 still checked for shape, but nothing is applied — no consumption, no capacity, no
 replenishment activity, and the `replenishment_count` objective stage is dropped.
-The plan then has exactly the shape it would have had had resources never been
-declared, which is what lets a consumer that cannot execute replenishments still be
-driven from a resource-bearing environment.
+
+Switching off is **total**, and that is a bargain rather than a free choice: the
+execution-layer checks over resources do not run either, so a document that names a
+device no environment declares, or a level above its capacity, is simply not looked
+at. What is switched off is not checked.
+
+Nothing the scheduler *adds* to a plan then betrays that resources were declared: no
+replenishment activity, no `consumption` echo (§6.3), and the scalar objective form.
+A resource-bearing environment can therefore drive a consumer that knows nothing of
+resources — although that consumer has to ask for it, so this is only available where
+the caller passes the switch. What the caller itself supplied is still echoed:
+`inventories` round-trips like any other planning input (§6.10), since dropping it
+would lose it from the document rather than leave the plan unmarked.
 
 Switching resources off never makes a schedule harder to find: the disabled model is
 a relaxation of the enabled one. Started replenishment activities in a replanning
@@ -585,9 +595,10 @@ environment.
   and carried through replans; echoed in the plan output.
 - `inventories` (§6.10) — the resource levels the run started with (a planning
   constraint, §3, like `interface`). **Required** whenever the resource model is in
-  effect (§9.3, `missing_inventories`); forbidden nowhere, and ignored when
-  resources are disabled. Supplied for the initial plan and carried through replans
-  unchanged; echoed in the plan output.
+  effect (§9.3, `missing_inventories`); forbidden nowhere. Supplied for the initial
+  plan and carried through replans unchanged; echoed in the plan output. With
+  resources disabled (§4.7.3) it is not read, but it is still echoed — it is the
+  caller's own input, and a plan that dropped it would lose it from the document.
 - `outcome` (optional) — the solver result: `optimal`, `feasible`, `infeasible`,
   or `unknown` (`unknown` = feasible but optimality unproven, e.g. on timeout).
   Present on a plan; absent on a status input.
@@ -1415,7 +1426,7 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `interface_input_missing` | an Object-bearing entry input has no `interface` binding (§6.8) |
 | `missing_inventories` | the resource model is in effect but the document has no `inventories` (§6.10). An empty `initial` is the way to say every stock starts empty |
 | `inventory_exceeds_capacity` | an `inventories.initial` level is above its resource's `capacity` |
-| `resources_ignored` | the environment declares resources but they were disabled (§4.7.3), so nothing was applied (*warning*) |
+| `resources_ignored` | the resource model was disabled (§4.7.3) where it would otherwise have been in effect, so nothing was applied. Not raised for an environment that merely declares a stock nothing draws on — switching that off changes nothing (*warning*) |
 | `infeasible` | the solver proved the instance has no feasible schedule |
 
 `unknown_device` and `unknown_resource` (§10.2) are reused here for an

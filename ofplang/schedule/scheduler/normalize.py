@@ -84,10 +84,14 @@ class _Leg:
 
 
 def normalize(
-    base: Instance, root: YNode | None, env
+    base: Instance, root: YNode | None, env, *, ignore_resources: bool = False
 ) -> tuple[Instance | None, Fixation | None, Diagnostics]:
     """Build the augmented instance and fixation from `base` (the workflow
-    instance, built with `check_reachability=False`) and the status `root`."""
+    instance, built with `check_reachability=False`) and the status `root`.
+
+    `ignore_resources` switches the consumable model off (§4.7.3): no levels are
+    derived, so nothing constrains the solve and nothing about `inventories` is
+    checked."""
     diags = Diagnostics()
     # `root` is the execution document, or None for an initial plan (no document).
     # An initial plan is the degenerate case of a replan with empty history and
@@ -170,7 +174,7 @@ def normalize(
     instance = Instance(env, base.time_unit, tuple(activities), tuple(arcs), base.precedence)
 
     # 3. Consumable levels at `now`, replayed from what the run started with (§4.7.2).
-    levels = _derive_levels(instance, act_fix, root, env, diags)
+    levels = _derive_levels(instance, act_fix, root, env, diags, ignore_resources)
     if _has_error(diags):
         return None, None, diags
 
@@ -178,8 +182,8 @@ def normalize(
     return instance, fixation, diags
 
 
-def _resource_model_in_effect(instance: Instance) -> bool:
-    """Whether consumables constrain this instance (§9.3).
+def _resource_model_declared(instance: Instance) -> bool:
+    """Whether consumables would constrain this instance (§9.3).
 
     Some mode of some *invoked* process must declare `consumption`. Declaring
     `resources` on a device is deliberately not enough: a stock nothing draws on
@@ -195,6 +199,7 @@ def _derive_levels(
     root: YNode | None,
     env,
     diags: Diagnostics,
+    ignore_resources: bool = False,
 ) -> dict[tuple[str, str], int]:
     """The level of each `(device, resource)` at `now`.
 
@@ -204,8 +209,24 @@ def _derive_levels(
     start, and the activity has started -- so the sum over the fixed activities is
     subtracted from the initial levels. (There is nothing to add back yet;
     replenishment is specified but not implemented.)
+
+    With `ignore_resources` the model is switched off (§4.7.3) and this returns no
+    levels, which is what makes the solver's constraint vanish. Switching off is
+    total: the checks below do not run either, so a mistake in `inventories` goes
+    unreported -- the same bargain as any feature accepted and not applied (§2).
+    Off is always a relaxation, so no schedule is lost by it.
     """
-    if not _resource_model_in_effect(instance):
+    declared = _resource_model_declared(instance)
+    if ignore_resources:
+        if declared:
+            diags.warning(
+                errors.RESOURCES_IGNORED,
+                "the resource model is switched off, so consumption, the starting "
+                "levels and the checks over them are not applied",
+                "",
+            )
+        return {}
+    if not declared:
         return {}
 
     inventories = root.get("inventories") if isinstance(root, YMap) else None
