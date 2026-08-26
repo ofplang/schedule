@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ofplang.schedule.core import objective as objective_stages
+
 # Layout constants (px).
 _LEFT = 200          # label gutter width
 _RIGHT = 24
@@ -79,7 +81,7 @@ def _svg_markup(plan: dict, view: str, theme: str) -> str:
     activities = plan.get("activities") or []
     now = plan.get("now")
     unit = (plan.get("time") or {}).get("unit")
-    makespan = (plan.get("objective") or {}).get("value")
+    makespan = _makespan_of(plan.get("objective"))
 
     if view == "workflow":
         lanes, bars, arrows = _workflow_layout(activities)
@@ -575,6 +577,27 @@ def _xfer_label(a: dict) -> str:
     node = to.get("node") or []
     # ASCII prefix (">") keeps output printable on any console encoding.
     return "> " + ("/".join(str(x) for x in node) if node else "transport")
+
+
+def _makespan_of(objective):
+    """The makespan out of a plan's `objective` (§6.1), or None.
+
+    `kind` may name one stage or several, and `value` has the matching shape, so
+    the makespan is read by position rather than assumed to be the whole of
+    `value`. Anything unexpected returns None and the caller falls back to the
+    latest activity end — a chart should still draw for a hand-written document.
+    """
+    if not isinstance(objective, dict):
+        return None
+    kind = objective.get("kind")
+    value = objective.get("value")
+    if kind == objective_stages.MAKESPAN:
+        return value
+    if isinstance(kind, list) and isinstance(value, list) and len(kind) == len(value):
+        for name, reached in zip(kind, value, strict=False):
+            if name == objective_stages.MAKESPAN:
+                return reached
+    return None
 
 
 def _max_end(activities) -> float:

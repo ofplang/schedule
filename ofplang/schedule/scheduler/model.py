@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from ofplang.schedule.core import objective as objective_stages
+
 # A node path (SPECIFICATIONS.md §6.3): node ids from the entry composite's body
 # down to the atomic invocation. Single-level workflows yield a one-tuple. It is
 # the stable identity of a processing activity.
@@ -61,6 +63,10 @@ class Environment:
     # (transporter, from_spot, to_spot) -> duration, both spots qualified.
     transports: dict[tuple[str, str, str], int]
     processes: dict[str, ProcessCapability]
+    # The objective's stages in lexicographic order (§5.8). Defaulted, because an
+    # environment that omits the section means exactly this and a hand-built
+    # Environment should not have to say so.
+    objective: tuple[str, ...] = objective_stages.DEFAULT
 
     def transport_duration(self, transporter: str, frm: str, to: str) -> int | None:
         """Duration for one transporter to move `frm` -> `to`, or None if it

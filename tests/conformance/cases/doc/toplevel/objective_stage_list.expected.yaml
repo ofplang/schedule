@@ -1,0 +1,4 @@
+outcome: valid
+notes: >-
+  A multi-stage `objective`: `value` is a list of the achieved stage values in the
+  same order as `kind`; spec §6.1, §9.2.

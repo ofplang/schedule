@@ -15,6 +15,7 @@ from typing import Any
 
 import yaml
 
+from ofplang.schedule.core import objective as objective_stages
 from ofplang.schedule.scheduler.cpsat import Solution
 from ofplang.schedule.scheduler.instance import Instance
 
@@ -110,7 +111,12 @@ def render_plan(
     if interface:
         doc["interface"] = interface
     doc["outcome"] = solution.outcome
-    doc["objective"] = {"kind": "makespan", "value": solution.makespan}
+    # `value` takes the shape of its `kind` (§6.1): a scalar for one stage, a list
+    # for several. A plan is only rendered when a solve succeeded, so every stage
+    # has a value.
+    doc["objective"] = objective_stages.render(
+        solution.objective_kind, solution.objective_values
+    )
     doc["activities"] = activities
     meta = {}
     if workflow is not None:

@@ -14,6 +14,7 @@ collection it keeps, so it never aliases the caller's dict.
 
 from __future__ import annotations
 
+from ofplang.schedule.core import objective as objective_stages
 from ofplang.schedule.core import yamlnode
 from ofplang.schedule.core.diagnostics import ValidationResult
 from ofplang.schedule.scheduler.model import (
@@ -75,12 +76,22 @@ def _build(data: dict) -> Environment:
         )
         processes[name] = ProcessCapability(name, modes)
 
-    # `objective.kind` is validated to be "makespan" (the only supported objective),
-    # so it carries no information the model uses -- it is not loaded here.
+    # The objective's stages (§5.8). The validator has already established that
+    # `kind` names v0 stages, so `normalize` cannot fail here; an absent `objective`
+    # means the default. This is the one place that reads where the objective is
+    # *declared*, which is what will move when it moves to the execution document.
+    declared = (data.get("objective") or {}).get("kind")
+    objective = objective_stages.DEFAULT
+    if declared is not None:
+        parsed = objective_stages.normalize(declared)
+        assert parsed is not None
+        objective = parsed
+
     return Environment(
         time_unit=time_unit,
         devices=devices,
         transporters=transporters,
         transports=transports,
         processes=processes,
+        objective=objective,
     )

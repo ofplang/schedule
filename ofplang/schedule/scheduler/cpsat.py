@@ -2,7 +2,8 @@
 
 Mode selection, spot/device occupancy, and transport are expressed with optional
 intervals whose presence is the mode/route selector, exactly as the FORMULATION
-CP-SAT notes describe. Only makespan is minimised.
+CP-SAT notes describe. The objective is a lexicographic stage list (§4.8) of which
+only `makespan` is realisable so far, so what is actually minimised is c_max.
 
 Occupancy bookkeeping mirrors FORMULATION §6/§7: a processing activity holds its
 mode's spots and devices over its run interval; a transport holds the source spot
@@ -17,6 +18,7 @@ from dataclasses import dataclass
 
 from ortools.sat.python import cp_model
 
+from ofplang.schedule.core import objective as objective_stages
 from ofplang.schedule.core.identifiers import parse_qualified_spot
 from ofplang.schedule.scheduler.instance import (
     BoundaryInfo,
@@ -62,6 +64,13 @@ class Solution:
     makespan: int | None
     processing: tuple[ProcessingResult, ...]
     transport: tuple[TransportResult, ...]
+    # The objective actually minimised, and what each of its stages reached. These
+    # are the *effective* stages (`core.objective.effective`): a stage this
+    # instance cannot tell two schedules apart by is dropped, so a plan from an
+    # environment without resources reports the bare makespan it always did.
+    # Defaulted so the infeasible return below stays a four-argument call.
+    objective_kind: tuple[str, ...] = (objective_stages.MAKESPAN,)
+    objective_values: tuple[int, ...] = ()
 
 
 _STATUS = {
@@ -78,12 +87,19 @@ def solve(
     running_task_margin: int = 0,
     max_time_seconds: float | None = None,
     random_seed: int | None = None,
+    objective: tuple[str, ...] | None = None,
 ) -> Solution:
     """Build and solve the model. With a `fixation` (a replan), completed/running
     activities are pinned to their reported times, mode, and route, pending ones
     are held to start at or after `now`, and a running activity's end is clamped
     up to `now + running_task_margin` so an overrunning task is never fixed to a
     finish in the past (FORMULATION §9).
+
+    `objective` is the declared stage list (§4.8); it defaults to the
+    environment's. Taking it as an argument rather than reading
+    `instance.env.objective` here is deliberate: the declaration is on its way from
+    the environment definition to the execution document, and this parameter is the
+    seam that keeps the move a change at the caller.
 
     By default the solve is non-deterministic: CP-SAT runs a multi-worker
     portfolio that races on wall-clock time, so a fresh run may return a different
@@ -249,13 +265,25 @@ def solve(
     for intervals in transporter_iv.values():
         model.AddNoOverlap(intervals)
 
-    # --- objective: minimise makespan ---
+    # --- objective ---
     # c_max is the max over real activity ends and boundary-output deliveries
     # (make_ends); the output node's own end equals c_max and is not fed back.
     if make_ends:
         model.AddMaxEquality(c_max, make_ends)
     else:
         model.Add(c_max == 0)
+
+    # No replenishment activity exists yet (SPEC §4.7.1 is specified, not
+    # implemented), so `replenishment_count` cannot tell two schedules of this
+    # instance apart and `effective` drops it. Only makespan can remain, which is
+    # why the weighted encoding of FORMULATION "Objective" degenerates here to the
+    # plain minimisation this has always been. Adding replenishment means passing
+    # `replenishment_possible=True` and giving the weight its second term.
+    stages = objective_stages.effective(
+        instance.env.objective if objective is None else objective,
+        replenishment_possible=False,
+    )
+    assert stages == (objective_stages.MAKESPAN,)
     model.Minimize(c_max)
 
     solver = cp_model.CpSolver()
@@ -271,7 +299,7 @@ def solve(
     outcome = _STATUS.get(status, "unknown")
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return Solution(outcome, None, (), ())
+        return Solution(outcome, None, (), (), objective_kind=stages)
 
     act_fix = fixation.activities if fixation is not None else {}
     arc_fix = fixation.arcs if fixation is not None else {}
@@ -300,7 +328,14 @@ def solve(
         )
         for r, arc in enumerate(instance.arcs)
     )
-    return Solution(outcome, solver.Value(c_max), processing, transport)
+    return Solution(
+        outcome,
+        solver.Value(c_max),
+        processing,
+        transport,
+        objective_kind=stages,
+        objective_values=(solver.Value(c_max),),
+    )
 
 
 def _fixed_end(status: str, reported_end: int, now: int, margin: int) -> int:

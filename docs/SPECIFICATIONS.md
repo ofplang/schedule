@@ -473,10 +473,19 @@ Semantics:
 ### 5.8 `objective` (optional)
 
 - `kind` — the objective (§4.8). Either a single stage name as a scalar, or a list
-  of stage names minimised lexicographically. The defined stage names are
-  `makespan` and `replenishment_count`. When `objective` is omitted, the default is
-  `[makespan, replenishment_count]`, which is equivalent to `makespan` wherever no
-  replenishment can occur.
+  of stage names minimised lexicographically; a one-element list means the same as
+  the bare name. The defined stage names are `makespan` and `replenishment_count`.
+  A list must be **non-empty** (an empty one names nothing to minimise) and must
+  **not repeat** a stage (a repeat is minimised subject to its own optimum, so it
+  could never change the outcome). The order is the caller's: `[replenishment_count,
+  makespan]` is a different objective from `[makespan, replenishment_count]`, not a
+  malformed one. When `objective` is omitted, the default is `[makespan,
+  replenishment_count]`, which is equivalent to `makespan` wherever no replenishment
+  can occur.
+
+A plan reports the objective it actually minimised (§6.1), which is the **effective**
+stage list of §4.8 — so a declaration and the plan that answers it may differ where a
+stage dropped out.
 
 ### 5.9 Example
 
@@ -585,11 +594,17 @@ environment.
 - `objective` (optional) — `kind` (§5.8) and, optionally, `value`. `kind` may be a
   scalar stage name or a list of them; `value` takes the same shape as the `kind` it
   accompanies — a scalar for a scalar `kind`, a list of the achieved stage values in
-  the same order for a list. A plan output always carries `value`, but it is not
-  required: a document may give `kind` alone (e.g. to name the objective whose value
-  is to be computed), and there is no value to report when a solve is infeasible.
+  the same order for a list. A plan output always carries `value`; a status has no
+  value to report, and neither does a plan of an infeasible instance.
   A plan written where no replenishment can occur reports the scalar form, so a plan
   from a resource-free environment is shaped exactly as it always was.
+
+  This section **reports**, it does not instruct: the objective is declared in the
+  environment definition (§5.8), and an `objective` in a document handed to the
+  scheduler is ignored rather than obeyed. Keeping one declaration site is what
+  makes a plan mean the same thing when it is fed back as the next replanning input
+  (§6.2) — a document that could also *set* the objective would silently redirect
+  the next solve.
 - `activities` (required).
 - `meta` (optional) — provenance, e.g. `workflow` and `environment` source
   references.
@@ -1095,8 +1110,8 @@ given a valid v0 workflow.
   transport `duration` is a non-negative YAML integer, a replenishment `duration` is
   a positive YAML integer; a resource `capacity` is a positive YAML integer and a
   `consumption` amount a positive YAML integer; `time.unit` is a non-empty string;
-  if `objective` is present, its `kind` names only defined stages (§5.8), whether
-  given as a scalar or a list.
+  if `objective` is present, its `kind` names only defined stages (§5.8) — a scalar
+  name, or a non-empty list of distinct names.
 - Env-internal references: each `transports.transporter` is a defined transporter;
   each `replenishments.replenisher` is a defined replenisher and its `device` is a
   defined device that declares `resources`; every entry of a mode's `devices` is a
@@ -1133,9 +1148,11 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
   environment, so it is execution-layer, §9.3.)
 - `now` (if present) is a non-negative integer; `outcome` (if present) is one of
   `optimal` / `feasible` / `infeasible` / `unknown`; `objective` (if present) has a
-  `kind` naming only defined stages (§5.8) as a scalar or a list, and a `value` of
-  the matching shape — a non-negative integer, or a list of them of the same length
-  as `kind`.
+  `kind` accepted exactly as the environment's is (§9.1) — the two documents must
+  agree on it, since a plan is fed back as the next input (§6.2) — and a `value` of
+  the shape that `kind` implies: a non-negative integer for a single stage, a list
+  of them of the same length for several. Where `kind` itself is malformed, `value`
+  is checked as a scalar and no second diagnostic is raised for the same field.
 - `inventories` (if present): `initial` is required and is a map of device id to a
   map of resource name to a non-negative integer. (That the devices and resources
   exist, and that no level exceeds its capacity, is execution-layer, §9.3.)
@@ -1307,7 +1324,7 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `invalid_identifier` | an id does not match `[A-Za-z_][A-Za-z0-9_]*` |
 | `malformed_qualified_spot` | a spot is not in `<device>.<spot>` form (exactly one `.`) |
 | `malformed_qualified_resource` | a resource is not in `<device>.<resource>` form (exactly one `.`) |
-| `unknown_objective_kind` | `objective.kind` names a stage v0 does not define (§5.8) |
+| `unknown_objective_kind` | `objective.kind` is not a set of stages (§5.8): it names a stage v0 does not define, names none at all, repeats one, or is neither a name nor a list of names |
 | `negative_value` | an integer that must be non-negative is negative |
 | `duplicate_key` | a mapping key repeats (§9; not reported inside an `x-` payload, §9.4) |
 
@@ -1358,9 +1375,12 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `duplicate_activity_id` | two activities in one document share an `id` |
 
 Absent `process` / `mode` / `from_spot` and similar use the shared
-`missing_required_field`; type violations use `wrong_type`. When `time` is
-present, its `unit` is validated as in the environment (§5.1): absent →
-`missing_required_field`, empty / non-string → `empty_time_unit`.
+`missing_required_field`; type violations use `wrong_type` — including an
+`objective.value` whose shape does not match its `kind` (a scalar where the stages
+are a list, or a list of the wrong length), which is a shape mismatch rather than a
+kind of its own. When `time` is present, its `unit` is validated as in the
+environment (§5.1): absent → `missing_required_field`, empty / non-string →
+`empty_time_unit`.
 
 ### 10.4 Execution layer (§9.3)
 

@@ -10,8 +10,8 @@ from ofplang.schedule.core import yamlnode
 from ofplang.schedule.core.diagnostics import Diagnostics, ValidationResult
 from ofplang.schedule.core.identifiers import is_identifier, parse_qualified_spot
 from ofplang.schedule.core.yamlnode import YMap, YNode, YScalar
+from ofplang.schedule.validation import _objective, errors
 from ofplang.schedule.validation import _shape as shape
-from ofplang.schedule.validation import errors
 from ofplang.schedule.validation.duplicates import check_duplicate_keys
 
 # Allowed keys per structure (unknown keys are errors; §9.1, strict).
@@ -490,13 +490,7 @@ def _check_objective(node: YNode | None, diags: Diagnostics) -> None:
             at=omap,
         )
         return
-    if not (isinstance(kind, YScalar) and kind.is_str and kind.value == "makespan"):
-        diags.error(
-            errors.UNKNOWN_OBJECTIVE_KIND,
-            "objective.kind must be makespan",
-            "objective.kind",
-            at=kind,
-        )
+    _objective.check_kind(kind, diags)
 
 
 def _scalar(node: YNode | None):

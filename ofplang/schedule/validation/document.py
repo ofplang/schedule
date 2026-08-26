@@ -11,8 +11,8 @@ from ofplang.schedule.core import yamlnode
 from ofplang.schedule.core.diagnostics import Diagnostics, ValidationResult
 from ofplang.schedule.core.identifiers import is_identifier, parse_qualified_spot
 from ofplang.schedule.core.yamlnode import YMap, YNode, YScalar, YSeq
+from ofplang.schedule.validation import _objective, errors
 from ofplang.schedule.validation import _shape as shape
-from ofplang.schedule.validation import errors
 from ofplang.schedule.validation.duplicates import check_duplicate_keys
 
 DOC_TOP = {"time", "now", "outcome", "objective", "interface", "activities", "meta"}
@@ -140,18 +140,14 @@ def _check_objective(node: YNode | None, diags: Diagnostics) -> None:
         return
     shape.unknown_keys(omap, OBJECTIVE_KEYS, "objective", diags)
     kind = omap.get("kind")
+    stages = None
     if kind is None:
         diags.error(
             errors.MISSING_REQUIRED_FIELD, "objective.kind is required", "objective.kind", at=omap
         )
-    elif not (isinstance(kind, YScalar) and kind.is_str and kind.value == "makespan"):
-        diags.error(
-            errors.UNKNOWN_OBJECTIVE_KIND,
-            "objective.kind must be makespan",
-            "objective.kind",
-            at=kind,
-        )
-    shape.nonneg_int(omap.get("value"), "objective.value", diags)
+    else:
+        stages = _objective.check_kind(kind, diags)
+    _objective.check_value(omap, stages, diags)
 
 
 def _check_interface(node: YNode | None, diags: Diagnostics) -> None:

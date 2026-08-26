@@ -1,0 +1,7 @@
+outcome: invalid
+match: exact
+errors:
+- {code: unknown_objective_kind}
+notes: >-
+  An empty `objective.kind` names nothing to minimise; spec §5.8, §9.1. It is the
+  same code as an unknown stage name -- both say "this is not a set of stages".

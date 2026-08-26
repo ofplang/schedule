@@ -1,0 +1,7 @@
+outcome: invalid
+match: exact
+errors:
+- {code: wrong_type}
+notes: >-
+  `objective.value` has fewer entries than `objective.kind` has stages, so it does
+  not say what each stage reached; spec §6.1, §9.2.

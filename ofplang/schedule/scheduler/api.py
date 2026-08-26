@@ -152,6 +152,11 @@ def schedule(
         running_task_margin=running_task_margin,
         max_time_seconds=max_time_seconds,
         random_seed=random_seed,
+        # Passed explicitly rather than left for `solve` to read off the
+        # environment: this is the single place that says where the objective was
+        # declared, and it is the line that changes when the declaration moves to
+        # the execution document.
+        objective=env.objective,
     )
     if solution.outcome not in ("optimal", "feasible"):
         diagnostics.append(Diagnostic(errors.INFEASIBLE, "no feasible schedule found"))

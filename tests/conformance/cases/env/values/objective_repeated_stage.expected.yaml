@@ -1,0 +1,7 @@
+outcome: invalid
+match: exact
+errors:
+- {code: unknown_objective_kind}
+notes: >-
+  A stage repeated in `objective.kind`; spec §5.8, §9.1. The second occurrence is
+  minimised subject to the first's optimum, so it could never change the outcome.
