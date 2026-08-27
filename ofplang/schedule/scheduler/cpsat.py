@@ -278,7 +278,9 @@ def solve(
     # other activity does -- by appending to `device_iv`. `AddNoOverlap` takes the list
     # it is given at the moment it is called, so anything appended afterwards is
     # unconstrained. Adding the refills first is what makes them occupy anything at all.
-    refills = _add_refills(model, instance, fixation, mode_lits, horizon, now, device_iv)
+    refills = _add_refills(
+        model, instance, fixation, mode_lits, horizon, now, device_iv, running_task_margin
+    )
     _add_resources(model, instance, fixation, mode_lits, starts, refills)
 
     # --- resource non-overlap ---
@@ -506,6 +508,7 @@ def _add_refills(
     horizon: int,
     now: int,
     device_iv: dict[str, list],
+    running_task_margin: int = 0,
 ) -> dict[str, _RefillVars]:
     """Build each refill candidate: whether it runs, when, on which replenisher, and
     how much it adds (FORMULATION §10).
@@ -574,12 +577,17 @@ def _add_refills(
 
         refills[candidate.id] = _RefillVars(present, start, end, amounts)
 
-    # A running refill still holds its two machines while it finishes.
+    # A running refill still holds its two machines while it finishes -- and, like any
+    # running activity, until at least `now + margin`. Pinning it to the end that was
+    # reported would let the next user of the device start the instant the report says
+    # it finished, which is exactly what a running report cannot promise: the reporter
+    # does not know the actual end yet, only the plan's estimate (FORMULATION §9).
     for identifier, fix in fixed_refills.items():
         if fix.status != "running":
             continue
+        end = _fixed_end(fix.status, fix.end, now, running_task_margin)
         interval = model.NewIntervalVar(
-            fix.start, max(fix.end - fix.start, 0), fix.end, f"rfix_{identifier}"
+            fix.start, max(end - fix.start, 0), end, f"rfix_{identifier}"
         )
         device_iv.setdefault(fix.device, []).append(interval)
         if fix.replenisher:
