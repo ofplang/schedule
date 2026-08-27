@@ -182,7 +182,12 @@ def _refill_label(a) -> str:
 
 def _workflow_layout(activities):
     """One lane per activity (time-ordered); arrows follow each arc from its
-    source processing activity through the transport to the destination."""
+    source processing activity through the transport to the destination.
+
+    Every kind is named below. A refill has no arc, so treating "not a processing"
+    as a transport gave it a lane labelled `> transport` -- present, and describing
+    something it is not.
+    """
     ordered = sorted(
         activities,
         key=lambda a: (float(a.get("start", 0)), float(a.get("end", 0)), a.get("kind", "")),
@@ -197,10 +202,18 @@ def _workflow_layout(activities):
         lane = len(lane_labels)
         s, e = float(a.get("start", 0)), float(a.get("end", 0))
         geom.append((s, e))
-        if a.get("kind") == "processing":
+        kind = a.get("kind")
+        if kind == "processing":
             lane_labels.append(_proc_label(a))
             bars.append(_Bar(lane, s, e, _proc_label(a), "proc"))
             proc_lane[tuple(a.get("node") or [])] = lane
+        elif kind == "replenishment":
+            # Its own lane, and no arrows: a refill connects nothing to anything.
+            # It is here because it takes time on machines the rest of the plan
+            # wants, which is the only reason this view shows anything.
+            label = _refill_label(a)
+            lane_labels.append(label)
+            bars.append(_Bar(lane, s, e, label, "xfer"))
         else:
             arc = a.get("arc") or {}
             src = tuple((arc.get("from") or {}).get("node") or [])
@@ -227,9 +240,17 @@ def _lane_layout(activities):
     feeding several successors) branches into a new lane per extra output; a
     merge (a step with several predecessors) rejoins to the lowest incoming lane.
     So extra lanes appear only where work runs in parallel. Transports ride the
-    lane of the branch they serve; arrows trace each arc through its transport."""
+    lane of the branch they serve; arrows trace each arc through its transport.
+
+    Refills sit in lanes of their own after the rest. They are not dataflow -- a
+    refill has no arc and no node, so there is no branch it belongs to -- but
+    leaving them out left the picture with an unexplained hole: the device they
+    fill is idle for their whole visit, and nothing said why. One lane per refill,
+    so two that overlap in a bigger plan stay readable.
+    """
     proc = [a for a in activities if a.get("kind") == "processing"]
     xfer = [a for a in activities if a.get("kind") == "transport"]
+    refills = [a for a in activities if a.get("kind") == "replenishment"]
     visible = {tuple(a.get("node") or []) for a in proc}
 
     # Predecessors / successors from the transport arcs.
@@ -310,8 +331,16 @@ def _lane_layout(activities):
             extra += 1
         xfer_info.append((lane, s, e, src, dst))
 
+    # Refills after the dataflow lanes, one each, in time order.
+    refill_lanes: list[int] = []
+    for _ in sorted(refills, key=lambda a: (float(a.get("start", 0)), a.get("id") or "")):
+        refill_lanes.append(extra)
+        extra += 1
+
     # Remap the lanes actually used to contiguous indices.
-    used = sorted({g[0] for g in proc_geom.values()} | {xi[0] for xi in xfer_info})
+    used = sorted(
+        {g[0] for g in proc_geom.values()} | {xi[0] for xi in xfer_info} | set(refill_lanes)
+    )
     remap = {lane: i for i, lane in enumerate(used)}
     labels = [f"lane {i + 1}" for i in range(len(used))]
 
@@ -329,6 +358,17 @@ def _lane_layout(activities):
         )
     for (lane, s, e, _src, _dst), t in zip(xfer_info, xfer, strict=False):
         bars.append(_Bar(remap[lane], s, e, _xfer_label(t), "xfer"))
+    ordered_refills = sorted(refills, key=lambda a: (float(a.get("start", 0)), a.get("id") or ""))
+    for lane, a in zip(refill_lanes, ordered_refills, strict=True):
+        bars.append(
+            _Bar(
+                remap[lane],
+                float(a.get("start", 0)),
+                float(a.get("end", 0)),
+                _refill_label(a),
+                "xfer",
+            )
+        )
 
     # Arrows: source proc -> transport -> destination proc.
     arrows: list[_Arrow] = []

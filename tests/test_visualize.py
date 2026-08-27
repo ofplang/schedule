@@ -125,3 +125,66 @@ def test_visualize_cli_rejects_non_document(tmp_path):
     bad = tmp_path / "env.yaml"
     bad.write_text("devices: []\n", encoding="utf-8")
     assert cli.main(["visualize", str(bad)]) == cli.EXIT_USAGE
+
+
+# -- refills, in every view --------------------------------------------------
+#
+# A refill is real work that occupies two machines, so every view has to account
+# for it. It reached only the device view: the lane view dropped it silently, and
+# the workflow view -- treating "not a processing" as a transport -- gave it a lane
+# labelled `> transport`, present and describing something it is not.
+
+
+def _refill_plan(count: int = 1) -> dict:
+    activities: list[dict] = [
+        {"kind": "processing", "start": 0, "end": 4, "process": "assay", "mode": "0",
+         "node": ["A"], "devices": ["reader"],
+         "input_spots": {"plate": "reader.stage"},
+         "consumption": {"reader.reagent": 2}},
+    ]
+    for i in range(count):
+        activities.append({
+            "kind": "replenishment", "id": f"replenishment_{i}",
+            "start": 10 + i * 5, "end": 14 + i * 5,
+            "device": "reader", "replenisher": f"dispenser_{i}",
+            "amounts": {"reagent": 6},
+        })
+    return {"activities": activities}
+
+
+def test_the_device_view_puts_a_refill_on_both_of_its_machines():
+    html = render_html(_refill_plan(), view="device")
+    assert "dispenser_0 (replenisher)" in html  # solid, the machine doing the work
+    assert "reader" in html  # ghosted, the machine it is done to
+    assert "+6 reagent" in html
+
+
+def test_the_lane_view_gives_a_refill_a_lane_of_its_own():
+    """Not dataflow -- a refill has no arc and no node -- but leaving it out left the
+    picture with an unexplained hole where the device it fills stands idle."""
+    html = render_html(_refill_plan(), view="lane")
+    assert "+6 reagent" in html
+
+
+def _lane_count(html: str) -> int:
+    return len(re.findall(r">lane \d+</text>", html))
+
+
+def test_the_lane_view_gives_each_refill_its_own_lane():
+    """Two that overlap in a bigger plan have to stay readable, so they do not share."""
+    # One dataflow lane for the assay, then one lane per refill.
+    assert _lane_count(render_html(_refill_plan(1), view="lane")) == 2
+    assert _lane_count(render_html(_refill_plan(2), view="lane")) == 3
+    assert render_html(_refill_plan(2), view="lane").count("+6 reagent") == 2
+
+
+def test_the_workflow_view_names_a_refill_for_what_it_is():
+    html = render_html(_refill_plan(), view="workflow")
+    assert "+6 reagent" in html
+    assert "&gt; transport" not in html and "> transport" not in html
+
+
+def test_a_refill_draws_no_arrows():
+    """It connects nothing to anything: there is no arc to trace."""
+    for view in ("device", "lane", "workflow"):
+        assert _MARKER not in render_html(_refill_plan(), view=view), view

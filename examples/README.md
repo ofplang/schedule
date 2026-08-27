@@ -114,9 +114,12 @@ full (32). A refill that appears to cost nothing is a refill that was laid over 
 device it was filling.
 
 - `outputs/consumable.plan.yaml` — the solved plan, with `outputs/consumable.device.svg`
-  and `outputs/consumable.lane.svg`. The device view is the one to look at: the
-  refill is drawn solid on `dispenser (replenisher)` and **ghosted on `reader`**,
-  which is how the chart says a refill holds two machines. The committed plan is
+  and `outputs/consumable.lane.svg`. The device view is the one that shows *why* the
+  refill costs a tick: it is drawn solid on `dispenser (replenisher)` and **ghosted on
+  `reader`**, which is how the chart says a refill holds two machines. The lane view
+  gives it a lane of its own after the dataflow ones — a refill is not dataflow, having
+  no arc and no node, but without it the picture has an unexplained hole where the
+  reader stands idle. The committed plan is
   checked for more than shape — `test_plan.py` replays its stock and requires it to
   stay in `[0, capacity]`, because a document can be perfectly valid and still take
   more out of a stock than it puts in.
