@@ -662,6 +662,20 @@ instead of arbitrarily among the many amount assignments the constraints admit. 
 selected candidate whose normalised amounts are all zero adds nothing and is dropped
 from the plan, which can only lower $N_{\mathrm{repl}}$.
 
+**What the soundness rests on, and what checks it.** "Totally ordered" is not free:
+it holds because every activity that touches a stock occupies the device holding it,
+and a device is exclusive (§4), so no two of them overlap. A refill therefore has to
+reach the non-overlap constraints like any other activity — while it did not, the
+events were unordered, the replay disagreed with the solved model, and it dropped a
+refill the solver was counting on, emitting a plan that took more than it added.
+
+Simultaneous events are the delicate remainder: a refill ending at exactly the
+instant a draw starts is how a schedule packs work, and the reservoir reads such
+changes *together*. The replay does the same. Because the argument above is an
+argument rather than a constraint, the rendered plan is replayed once more before it
+is handed out (`plan_inventory_inconsistent`, SPEC §10.4): a finding there is a
+defect in the implementation, reported instead of shipped.
+
 ## Objective
 
 The objective is a lexicographic sequence of stages (SPEC §4.8). v0 defines

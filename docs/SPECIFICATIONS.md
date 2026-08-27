@@ -1473,5 +1473,6 @@ status (§7) against the instance:
 | `status_time_inconsistent` | a `completed` activity ends after `now`, or a `running` activity starts after `now` |
 | `status_duplicate` | two status entries fix the same processing (`node`), the same transport leg (`arc` + `seq`), or the same replenishment (`id`) |
 | `status_inventory_inconsistent` | replaying the history against `inventories.levels` drives a resource outside `[0, capacity]` (§9.3) |
+| `plan_inventory_inconsistent` | a self-check on the way out: replaying the plan this scheduler just rendered drives a resource outside `[0, capacity]`, so the plan could not be executed. Not a judgement on any input — reaching it means the solved model and the rendered document disagree, which is a defect in the implementation. It is reported rather than handed out, because a plan that under-fills a stock schedules cleanly and runs dry later |
 | `broken_transport_chain` | a committed transport leg's source is not completed, or a leg does not continue the previous leg's arrival spot |
 | `terminal_status_not_replannable` | a replan input carries a `failed` / `cancelled` (terminal) activity; a stopped run has no remaining work to plan |

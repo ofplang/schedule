@@ -413,18 +413,60 @@ def test_one_refill_covers_work_that_fits_in_one_fill():
     assert len(_refills(_plan().plan)) == 1
 
 
+def _disjoint(a: dict, b: dict) -> bool:
+    return a["end"] <= b["start"] or b["end"] <= a["start"]
+
+
+def _touching(plan: dict, machine: str) -> list[dict]:
+    """Every activity in `plan` that holds `machine` -- a processing on it, a
+    transport onto or off one of its spots, or a refill of it or by it."""
+    held = []
+    for activity in plan["activities"]:
+        kind = activity.get("kind")
+        if kind == "processing":
+            devices = {s.split(".", 1)[0] for s in (activity.get("input_spots") or {}).values()}
+            devices |= {s.split(".", 1)[0] for s in (activity.get("output_spots") or {}).values()}
+            devices |= set(activity.get("devices") or [])
+            if machine in devices:
+                held.append(activity)
+        elif kind == "transport":
+            ends = {
+                str(activity.get(side, "")).split(".", 1)[0] for side in ("from_spot", "to_spot")
+            }
+            if machine in ends or machine == activity.get("transporter"):
+                held.append(activity)
+        elif kind == "replenishment":
+            if machine in (activity.get("device"), activity.get("replenisher")):
+                held.append(activity)
+    return held
+
+
 def test_a_refill_holds_both_machines_so_it_cannot_overlap_the_work_it_feeds():
+    """Not only the assays: a refill is exclusive on the device it fills *and* on the
+    replenisher that fills it (§4.7.1), against every other activity that holds
+    either. The model registers a refill's intervals like any other activity's, so
+    this is a check that they reach the non-overlap constraint at all -- they did not,
+    and a plan laid a refill straight over the reader it was filling."""
     plan = _plan().plan
-    refill = _refills(plan)[0]
-    for assay in [a for a in plan["activities"] if a.get("process") == "assay"]:
-        assert refill["end"] <= assay["start"] or assay["end"] <= refill["start"]
+    for refill in _refills(plan):
+        for machine in (refill["device"], refill["replenisher"]):
+            for other in _touching(plan, machine):
+                if other is refill:
+                    continue
+                assert _disjoint(refill, other), (
+                    f"{refill['id']} overlaps {other.get('kind')} "
+                    f"{other.get('node') or other.get('id')} on {machine}"
+                )
 
 
 def test_the_count_is_reported_as_a_second_objective_stage():
     plan = _plan().plan
+    # 33, not 32: the refill holds the reader while it works, so it cannot be laid
+    # over the assays that use it. 32 was what came out while refills occupied
+    # nothing -- a schedule no lab could run.
     assert plan["objective"] == {
         "kind": ["makespan", "replenishment_count"],
-        "value": [32, 1],
+        "value": [33, 1],
     }
 
 
@@ -514,3 +556,72 @@ def test_a_pending_refill_in_the_status_is_refused():
     report = _plan(document=doc)
     assert report.plan is None
     assert "pending_replenishment_in_status" in [d.code for d in report.diagnostics]
+
+
+# -- the plan must be executable, not merely optimal -------------------------
+#
+# The failure these guard is silent: a plan whose refills add less than its draws
+# take schedules cleanly, reports `optimal`, and runs dry in a real lab. It happened
+# -- refills reached no non-overlap constraint, so a stock's events were not totally
+# ordered, and the amount replay (which assumes they are) dropped a refill the solver
+# was counting on. One case below is the smallest environment that showed it.
+
+
+def _tight(capacity: int, draw: int):
+    """The consumable example with the stock tightened: two assays, each drawing
+    `draw` from a reader that holds `capacity`, starting empty."""
+    env = _env()
+    env["devices"][1]["resources"] = {"reagent": {"capacity": capacity}}
+    env["processes"]["assay"]["modes"][0]["consumption"] = {"reader.reagent": draw}
+    return env
+
+
+def _added_and_drawn(plan: dict) -> tuple[int, int]:
+    added = sum(v for a in _refills(plan) for v in a["amounts"].values())
+    drawn = sum(v for a in plan["activities"] for v in (a.get("consumption") or {}).values())
+    return added, drawn
+
+
+@pytest.mark.parametrize(
+    "capacity,draw",
+    [
+        (1, 1),  # one refill per assay; the smallest case that used to fail
+        (2, 1),
+        (2, 2),
+        (3, 2),
+        (4, 2),
+        (6, 2),  # what the shipped example declares
+    ],
+)
+def test_the_refills_a_plan_carries_cover_the_draws_it_carries(capacity, draw):
+    report = _plan(env=_tight(capacity, draw), document=_document({"reader": {"reagent": 0}}))
+    assert report.plan is not None, [d.code for d in report.diagnostics]
+    added, drawn = _added_and_drawn(report.plan)
+    assert added >= drawn, f"the plan adds {added} and takes {drawn}"
+
+
+@pytest.mark.parametrize("capacity,draw", [(1, 1), (2, 2), (3, 2)])
+def test_a_tight_stock_needs_more_than_one_refill(capacity, draw):
+    """The cases above are only worth having if they force a second refill: with one
+    refill per assay the plan has to carry two, which is what a single-refill plan
+    used to claim was enough."""
+    report = _plan(env=_tight(capacity, draw), document=_document({"reader": {"reagent": 0}}))
+    assert len(_refills(report.plan)) == 2
+
+
+def test_a_stock_never_exceeds_its_capacity_either():
+    """A refill fills to capacity, so the level touches the bound and must not pass
+    it -- the other half of `[0, capacity]`."""
+    report = _plan(env=_tight(2, 2), document=_document({"reader": {"reagent": 0}}))
+    plan = report.plan
+    level, capacity = 0, 2
+    events: dict[int, int] = {}
+    for activity in plan["activities"]:
+        if activity.get("kind") == "replenishment":
+            end = activity["end"]
+            events[end] = events.get(end, 0) + activity["amounts"]["reagent"]
+        for amount in (activity.get("consumption") or {}).values():
+            events[activity["start"]] = events.get(activity["start"], 0) - amount
+    for time in sorted(events):
+        level += events[time]
+        assert 0 <= level <= capacity, f"level {level} at time {time}"

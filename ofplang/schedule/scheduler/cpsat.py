@@ -272,6 +272,15 @@ def solve(
     for si, di in instance.precedence:
         model.Add(starts[di] >= ends[si])
 
+    # --- refills (FORMULATION §10) and the stocks they feed (§11) ---
+    # Before the non-overlap below, not after: a refill holds the device it fills and
+    # the replenisher that fills it (§4.7.1), and it registers those the same way every
+    # other activity does -- by appending to `device_iv`. `AddNoOverlap` takes the list
+    # it is given at the moment it is called, so anything appended afterwards is
+    # unconstrained. Adding the refills first is what makes them occupy anything at all.
+    refills = _add_refills(model, instance, fixation, mode_lits, horizon, now, device_iv)
+    _add_resources(model, instance, fixation, mode_lits, starts, refills)
+
     # --- resource non-overlap ---
     for intervals in spot_iv.values():
         model.AddNoOverlap(intervals)
@@ -279,10 +288,6 @@ def solve(
         model.AddNoOverlap(intervals)
     for intervals in transporter_iv.values():
         model.AddNoOverlap(intervals)
-
-    # --- refills (FORMULATION §10) and the stocks they feed (§11) ---
-    refills = _add_refills(model, instance, fixation, mode_lits, horizon, now, device_iv)
-    _add_resources(model, instance, fixation, mode_lits, starts, refills)
 
     # --- objective ---
     # c_max is the max over real activity ends and boundary-output deliveries

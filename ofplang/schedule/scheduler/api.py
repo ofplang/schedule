@@ -31,6 +31,7 @@ from ofplang.schedule.scheduler.envload import load_environment
 from ofplang.schedule.scheduler.instance import build_instance, report_unreachable
 from ofplang.schedule.scheduler.normalize import normalize
 from ofplang.schedule.scheduler.plan import render_plan
+from ofplang.schedule.scheduler.plancheck import check_plan_inventories
 from ofplang.schedule.scheduler.workflow import parse_workflow
 from ofplang.schedule.validation import errors
 from ofplang.schedule.validation.document import validate_document_node
@@ -209,4 +210,16 @@ def schedule(
         inventories=inventories,
         ignore_resources=ignore_resources,
     )
+
+    # 6. Check what is about to be handed out. The refill amounts in the document are
+    # derived from the solved model rather than read off it (§4.7.1), so the document
+    # is a second computation over the same answer -- and two computations that must
+    # agree are worth checking rather than arguing about. A finding is a defect here,
+    # not bad input, but it is reported instead of shipped: a plan that under-fills a
+    # stock schedules cleanly, says `optimal`, and runs dry in a real lab.
+    for message in check_plan_inventories(plan, env, inventories):
+        diagnostics.append(Diagnostic(errors.PLAN_INVENTORY_INCONSISTENT, message, "activities"))
+    if _has_error(diagnostics):
+        return ScheduleReport(solution.outcome, None, None, diagnostics)
+
     return ScheduleReport(solution.outcome, solution.makespan, plan, diagnostics)

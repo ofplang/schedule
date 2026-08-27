@@ -176,6 +176,12 @@ TERMINAL_STATUS_NOT_REPLANNABLE = "terminal_status_not_replannable"
 # Replaying the history against `inventories.levels` drives a resource outside
 # [0, capacity]: the reported history and the environment disagree (§9.3).
 STATUS_INVENTORY_INCONSISTENT = "status_inventory_inconsistent"
+# A self-check on the way out, not a judgement on the input: replaying the plan this
+# scheduler just rendered against the levels it started from drives a resource outside
+# [0, capacity], so the plan could not be executed. Reaching it means the solver's
+# answer and the rendered document disagree -- a defect here, reported rather than
+# handed out, because a plan that quietly under-fills a stock runs dry in a real lab.
+PLAN_INVENTORY_INCONSISTENT = "plan_inventory_inconsistent"
 
 # The schema validators' one warning; every other code they emit is an error.
 # (`scheduling_policies_ignored` and `resources_ignored` are warnings too, but the
@@ -256,6 +262,7 @@ ERROR_CODES = frozenset(
         BROKEN_TRANSPORT_CHAIN,
         TERMINAL_STATUS_NOT_REPLANNABLE,
         STATUS_INVENTORY_INCONSISTENT,
+        PLAN_INVENTORY_INCONSISTENT,
     }
 )
 
