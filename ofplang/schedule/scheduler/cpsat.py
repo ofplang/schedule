@@ -368,7 +368,9 @@ def solve(
         )
         for r, arc in enumerate(instance.arcs)
     )
-    replenishment = _refill_results(solver, instance, fixation, refills, processing)
+    replenishment = _refill_results(
+        solver, instance, fixation, refills, processing, running_task_margin
+    )
     values = {
         objective_stages.MAKESPAN: solver.Value(c_max),
         # Counted from what survives normalisation, not from the solver's own count:
@@ -390,7 +392,12 @@ def solve(
 
 
 def _refill_results(
-    solver, instance: Instance, fixation: Fixation | None, refills, processing
+    solver,
+    instance: Instance,
+    fixation: Fixation | None,
+    refills,
+    processing,
+    running_task_margin: int = 0,
 ) -> tuple[RefillResult, ...]:
     """The refills of a solved model, with their amounts normalised to a fill.
 
@@ -409,11 +416,17 @@ def _refill_results(
     A refill left adding nothing -- an earlier one having already filled the stock --
     is dropped rather than reported: it would hold two machines and change no level.
 
-    Started refills are carried through untouched. Their amounts are what was
-    reported, not what a fill would have been (§6.9): a refill that only half filled
-    a bottle is history, not a figure to correct.
+    Started refills keep their **amounts**: those are what was reported, not what a
+    fill would have been (§6.9) -- a refill that only half filled a bottle is history,
+    not a figure to correct. A *running* one's `end` is another matter, and is reported
+    as the clamped one the model was built on (`now + margin` at the earliest, §9). The
+    two differ because the amounts are a fact the reporter knows and the end is one it
+    does not: `running` means the actual end is still unknown, so the plan reports the
+    same estimate it scheduled around. Reporting the raw one instead would put a
+    document out saying a machine was free at a time the schedule assumed it busy.
     """
     fixed = fixation.replenishments if fixation is not None else {}
+    now = fixation.now if fixation is not None else 0
     results = [
         RefillResult(
             identifier,
@@ -421,7 +434,7 @@ def _refill_results(
             fix.replenisher,
             dict(fix.amounts),
             fix.start,
-            fix.end,
+            _fixed_end(fix.status, fix.end, now, running_task_margin),
             fix.status,
         )
         for identifier, fix in sorted(fixed.items())

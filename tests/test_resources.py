@@ -625,3 +625,79 @@ def test_a_stock_never_exceeds_its_capacity_either():
     for time in sorted(events):
         level += events[time]
         assert 0 <= level <= capacity, f"level {level} at time {time}"
+
+
+# -- a running refill and the margin ----------------------------------------
+#
+# A report of `running` carries the plan's *estimate* of the end, not the actual one:
+# the reporter does not know that yet. So a running refill is held to at least
+# `now + margin` like any other running activity (FORMULATION §9) -- and the plan says
+# so, rather than repeating an estimate it did not schedule around.
+
+
+def _running_refill(now: int, end: int) -> dict:
+    return {
+        "time": {"unit": "second"},
+        "now": now,
+        "inventories": {"levels": {"reader": {"reagent": 0}}},
+        "activities": [
+            {
+                "kind": "replenishment",
+                "id": "replenishment_0",
+                "status": "running",
+                "start": 0,
+                "end": end,
+                "device": "reader",
+                "replenisher": "dispenser",
+                "amounts": {"reagent": 6},
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize("margin", [0, 1, 3, 10])
+def test_a_running_refill_holds_its_device_until_now_plus_margin(margin):
+    """The failure this prevents is real and was hit on a real backend: the refill's
+    child process was still running when the plan said the reader was free, and the run
+    stopped with `device busy`."""
+    report = schedule(
+        EXAMPLES / "consumable.workflow.yaml", _env(), document_path=_running_refill(now=4, end=4),
+        running_task_margin=margin,
+    )
+    assert report.plan is not None, [d.code for d in report.diagnostics]
+    assays = [a for a in report.plan["activities"] if a.get("process") == "assay"]
+    assert assays
+    assert min(a["start"] for a in assays) >= 4 + margin
+
+
+@pytest.mark.parametrize("margin,expected", [(0, 4), (1, 5), (3, 7)])
+def test_the_plan_reports_the_end_it_scheduled_around(margin, expected):
+    report = schedule(
+        EXAMPLES / "consumable.workflow.yaml", _env(), document_path=_running_refill(now=4, end=4),
+        running_task_margin=margin,
+    )
+    refill = next(a for a in report.plan["activities"] if a["kind"] == "replenishment")
+    assert refill["end"] == expected
+    assert refill["status"] == "running"
+
+
+def test_a_refill_that_has_not_overrun_keeps_its_reported_end():
+    report = schedule(
+        EXAMPLES / "consumable.workflow.yaml", _env(), document_path=_running_refill(now=4, end=9),
+        running_task_margin=0,
+    )
+    refill = next(a for a in report.plan["activities"] if a["kind"] == "replenishment")
+    assert refill["end"] == 9
+
+
+def test_a_completed_refill_keeps_its_end_whatever_the_margin():
+    """A completed end is a fact the reporter does know, so the margin has no business
+    with it -- as with the amounts, which are history either way."""
+    document = _running_refill(now=9, end=4)
+    document["activities"][0]["status"] = "completed"
+    report = schedule(
+        EXAMPLES / "consumable.workflow.yaml", _env(),
+        document_path=document, running_task_margin=5,
+    )
+    refill = next(a for a in report.plan["activities"] if a["kind"] == "replenishment")
+    assert (refill["end"], refill["amounts"]) == (4, {"reagent": 6})
