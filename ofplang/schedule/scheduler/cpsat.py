@@ -225,7 +225,14 @@ def solve(
             assert src_parsed is not None and dst_parsed is not None
             src_device, dst_device = src_parsed[0], dst_parsed[0]
             add(device_iv, src_device, body)
-            add(device_iv, dst_device, body)
+            # A move between two spots of the *same* device occupies that device
+            # once, not twice. Registering the same interval twice puts it in the
+            # device's non-overlap set against itself, which no positive duration
+            # can satisfy -- so every such environment came out infeasible however
+            # simple it was. (A same-*spot* no-op escaped that only because a
+            # zero-length interval overlaps nothing.)
+            if dst_device != src_device:
+                add(device_iv, dst_device, body)
             # A same-spot no-op route carries no transporter (opt.transporter is
             # None), so it occupies no transporter resource.
             if opt.transporter is not None:
