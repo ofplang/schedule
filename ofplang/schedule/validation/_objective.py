@@ -1,9 +1,11 @@
-"""The `objective` checks shared by the two schema validators (§5.8, §6.1, §9).
+"""The `objective` checks (§6.1, §9.2).
 
-Both validators accept the same `kind`: the environment *declares* the objective
-and the execution document *reports* it, and §6.2 lets a plan be fed straight back
-in as the next input -- so a shape one accepts and the other rejects would break
-that round trip. Only `value` differs, and only because the environment has none.
+One declaration site: the execution document. It was two until 0.2.1 -- the
+environment declared the objective and the document reported it -- which is why
+these live apart from `document.py` rather than inside it. They stay here because
+the split they guarded is the reason the checks are shaped the way they are, and
+because a second reader (§6.2 lets a plan be fed back in as the next input) would
+land on exactly this module again.
 """
 
 from __future__ import annotations

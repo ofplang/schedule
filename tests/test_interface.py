@@ -67,7 +67,6 @@ processes:
         duration: 10
         input_spots:  { plate: rack.slot_b }
         output_spots: { out: rack.slot_b }
-objective: { kind: makespan }
 """
 
 
@@ -235,7 +234,6 @@ processes:
         duration: 5
         input_spots:  { a: rack.slot_a, b: rack.slot_b }
         output_spots: { out: rack.slot_a }
-objective: { kind: makespan }
 """
 
 
@@ -286,7 +284,6 @@ processes:
     modes:
       - { id: at_a, devices: [rack], duration: 10, output_spots: { out: rack.slot_a } }
       - { id: at_b, devices: [rack], duration: 10, output_spots: { out: rack.slot_b } }
-objective: { kind: makespan }
 """
 
 
@@ -411,7 +408,6 @@ processes:
   after:
     modes:
       - { devices: [dev_a], duration: 5, output_spots: { done: dev_a.slot_a } }
-objective: { kind: makespan }
 """
 
 

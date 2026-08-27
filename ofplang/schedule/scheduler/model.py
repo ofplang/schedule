@@ -72,12 +72,9 @@ class Environment:
     # (transporter, from_spot, to_spot) -> duration, both spots qualified.
     transports: dict[tuple[str, str, str], int]
     processes: dict[str, ProcessCapability]
-    # The objective's stages in lexicographic order, or None where this environment
-    # does not declare them (§5.8). None rather than the default because the two
-    # differ now: declaring the objective here is **deprecated** -- it belongs to the
-    # execution document, which says how *this run* is to be optimised, not to the
-    # description of the lab. Only a real declaration is worth warning about.
-    objective: tuple[str, ...] | None = None
+    # No `objective` here. How a run is to be optimised is a property of that run,
+    # not of the lab, so it is declared in the execution document (§6.1); this
+    # environment was the second declaration site until 0.2.1.
     # Replenishers (§5.6) and the (replenisher, device) -> duration table (§5.7).
     # Like transporters and transports, and absent for the same kind of reason:
     # an environment where nothing is refilled needs neither.

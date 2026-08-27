@@ -68,7 +68,6 @@ processes:
   compute:
     modes:
       - { id: mean_v1, duration: 0 }
-objective: { kind: makespan }
 """
 
 DOCUMENT = "interface:\n  inputs: { sample: loader.stage }\nactivities: []\n"

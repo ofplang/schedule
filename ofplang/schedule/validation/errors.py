@@ -121,10 +121,13 @@ SCHEDULING_POLICIES_IGNORED = "scheduling_policies_ignored"
 # have been in effect -- switching off a stock nothing draws on changes nothing and
 # is not worth saying.
 RESOURCES_IGNORED = "resources_ignored"
-# Warning (not an error): the environment declares `objective`, which now belongs to
-# the execution document (§5.8). Still honoured where the document says nothing, so
-# environments written before the move keep working while they are updated.
-OBJECTIVE_IN_ENVIRONMENT_DEPRECATED = "objective_in_environment_deprecated"
+
+# The environment declares `objective`, which belongs to the execution document
+# (§6.1): how a run is to be optimised is a property of that run, not of the lab.
+# A code of its own rather than `unknown_key`, because "this key moved" and "this
+# key means nothing here" are different things to be told, and only the first can
+# say where to put it.
+OBJECTIVE_IN_ENVIRONMENT = "objective_in_environment"
 
 # Interface / boundary conditions (§6.8, §9.3). An `interface` binding pins a
 # workflow boundary port (entry input / final output) to a spot.
@@ -236,6 +239,7 @@ ERROR_CODES = frozenset(
         MODE_PORTS_INCOMPLETE,
         ARC_UNREACHABLE,
         INFEASIBLE,
+        OBJECTIVE_IN_ENVIRONMENT,
         MISSING_INVENTORIES,
         INVENTORY_EXCEEDS_CAPACITY,
         PENDING_REPLENISHMENT_IN_STATUS,

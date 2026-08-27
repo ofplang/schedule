@@ -14,7 +14,6 @@ collection it keeps, so it never aliases the caller's dict.
 
 from __future__ import annotations
 
-from ofplang.schedule.core import objective as objective_stages
 from ofplang.schedule.core import yamlnode
 from ofplang.schedule.core.diagnostics import ValidationResult
 from ofplang.schedule.scheduler.model import (
@@ -81,14 +80,6 @@ def _build(data: dict) -> Environment:
         )
         processes[name] = ProcessCapability(name, modes)
 
-    # The objective's stages, if this environment still declares them (§5.8,
-    # deprecated). The validator has already established that `kind` names v0
-    # stages, so `normalize` cannot fail here. Absent stays None: the caller
-    # distinguishes "declared here" from "not declared" to know whether to warn.
-    declared = (data.get("objective") or {}).get("kind")
-    objective = None if declared is None else objective_stages.normalize(declared)
-    assert declared is None or objective is not None
-
     # Replenishers and the (replenisher, device) -> duration table (§5.6, §5.7),
     # both optional in exactly the way transporters and transports are.
     replenishers = tuple(r["id"] for r in data.get("replenishers", []))
@@ -102,7 +93,6 @@ def _build(data: dict) -> Environment:
         transporters=transporters,
         transports=transports,
         processes=processes,
-        objective=objective,
         replenishers=replenishers,
         replenishments=replenishments,
     )

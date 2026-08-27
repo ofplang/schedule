@@ -60,7 +60,7 @@ minimising the objective the document declares (§4.8; makespan, then the number
 refills). A `--document` (execution document, §6) supplies the `interface` boundary
 constraint (§6.8, where a workflow's entry inputs / final outputs sit), the
 `inventories` a run starts with (§6.10) where devices hold consumables, the
-`objective` (§5.8) and, when it sets `now`, the prior status to replan from (§7) —
+`objective` (§6.1, now its only declaration site) and, when it sets `now`, the prior status to replan from (§7) —
 emitting the full timeline (fixed history + re-optimised future) that round-trips
 as the next status input. By default the solve is non-deterministic
 (a multi-worker search that may return a different equally-optimal schedule each

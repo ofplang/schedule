@@ -1,0 +1,9 @@
+outcome: invalid
+match: exact
+errors:
+- {code: objective_in_environment}
+notes: >-
+  The environment declares `objective`, which belongs to the execution document
+  (spec §6.1): how a run is to be optimised is a property of that run, not of the
+  lab. A code of its own rather than `unknown_key`, so the message can say where
+  the section went; the environment read it until 0.2.1.

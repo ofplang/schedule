@@ -54,7 +54,6 @@ transports: []
 processes:
   make: { modes: [ { devices: [dev], duration: 1, output_spots: { w: dev.slot } } ] }
   use: { modes: [ { devices: [dev], duration: 1, input_spots: { w: dev.slot } } ] }
-objective: { kind: makespan }
 """
 
 

@@ -16,7 +16,4 @@ processes:
       input_spots: {plate: reader_0.stage}
       output_spots: {plate: reader_0.stage}
       x-labcode: {calib: 3}
-objective:
-  kind: makespan
-  x-labcode: {}
 x-labcode: {version: 1}

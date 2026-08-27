@@ -110,8 +110,8 @@ def _doc(text: str):
 def test_both_validators_reject_a_duplicate_key():
     """And report nothing else for it: the repeated section is itself well-formed,
     so the duplicate is the whole finding."""
-    env = _env(_ENV + """objective: {kind: makespan}
-objective: {kind: makespan}
+    env = _env(_ENV + """transporters: [{id: arm}]
+transporters: [{id: arm}]
 """)
     assert not env.ok
     assert [d.code for d in env.diagnostics] == ["duplicate_key"]

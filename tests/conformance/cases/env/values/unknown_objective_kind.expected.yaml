@@ -1,5 +1,0 @@
-outcome: invalid
-match: exact
-errors:
-- {code: unknown_objective_kind}
-notes: '`objective.kind` names no defined stage; spec §5.8, §9.1.'

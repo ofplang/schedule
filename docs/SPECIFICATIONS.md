@@ -316,7 +316,7 @@ defines two stages.
   replenishments included, so a refill can never be parked after the work.
 - `replenishment_count` — how many replenishment activities the plan contains.
 
-`makespan` alone stays the common case and may be written as a bare scalar (§5.8).
+`makespan` alone stays the common case and may be written as a bare scalar (§6.1).
 When the objective is omitted the default is `[makespan, replenishment_count]`;
 wherever replenishment is not in play `replenishment_count` is identically zero and
 that default is equivalent to `[makespan]`.
@@ -325,8 +325,9 @@ Minimising the number of replenishments matters as soon as replenishment is enab
 A refill that delays nothing is otherwise free, so without this stage a plan may
 carry refills that serve no purpose.
 
-The objective is declared in the execution document (§6.1); an environment may
-still declare one while §5.8 is deprecated. There is no command-line override.
+The objective is declared in the execution document (§6.1), and only there. An
+environment that declares one is rejected (`objective_in_environment`, §10.2); it
+was the other declaration site until 0.2.1. There is no command-line override.
 
 ### 4.9 Replanning
 
@@ -340,10 +341,12 @@ revised estimates.
 
 The execution environment definition is a YAML document with the following
 top-level sections. `time`, `devices`, and `processes` are required; `transporters`,
-`transports`, `replenishers`, `replenishments`, and `objective` are optional
+`transports`, `replenishers`, and `replenishments` are optional
 (`transporters` / `transports` may be omitted when the workflow has no
 Object-bearing arcs; `replenishers` / `replenishments` when nothing is refilled).
-Durations are YAML integers.
+Durations are YAML integers. `objective` is **not** a section here: it says how a
+run is to be optimised, which belongs to the execution document (§6.1). It was read
+here until 0.2.1 and is now rejected (`objective_in_environment`, §10.2).
 
 ### 5.1 `time`
 
@@ -479,35 +482,21 @@ Semantics:
 - The duration does not depend on which resources are refilled or by how much. One
   visit refills the device.
 
-### 5.8 `objective` (optional, **deprecated**)
+### 5.8 `objective` — removed
 
-The objective is declared in the **execution document** (§6.1). It says how *this
-run* is to be optimised, which is a property of the run and not of the lab — the
-same reason `interface` and `inventories` live there. An environment describes
-equipment, and equipment has no opinion about what a schedule should be good at.
+The objective is declared in the **execution document** (§6.1), and nowhere else.
+It says how *this run* is to be optimised, which is a property of the run and not
+of the lab — the same reason `interface` and `inventories` live there. An
+environment describes equipment, and equipment has no opinion about what a schedule
+should be good at.
 
-- `kind` — accepted here for now, and used when the document declares no objective,
-  so an environment written before the move keeps working. It raises
-  `objective_in_environment_deprecated` (§10.4) and will be removed.
+An environment declaring `objective` is rejected with `objective_in_environment`
+(§10.2) — a code of its own rather than `unknown_key`, so the message can say where
+the section went. Its shape is not checked: there is no point reporting a malformed
+stage list in a section nothing reads. This section number is kept rather than
+reused, so a reference to §5.8 from an older document still lands here.
 
-Both documents accept the same `kind`, and must: a plan is fed back as the next
-input (§6.2), so a shape one accepted and the other rejected would break the round
-trip.
-
-- Either a single stage name as a scalar, or a list of stage names minimised
-  lexicographically; a one-element list means the same as the bare name. The
-  defined stage names are `makespan` and `replenishment_count`. A list must be
-  **non-empty** (an empty one names nothing to minimise) and must **not repeat** a
-  stage (a repeat is minimised subject to its own optimum, so it could never change
-  the outcome). The order is the caller's: `[replenishment_count, makespan]` is a
-  different objective from `[makespan, replenishment_count]`, not a malformed one.
-  When neither document declares one, the default is `[makespan,
-  replenishment_count]`, which is equivalent to `makespan` wherever no replenishment
-  can occur.
-
-A plan reports the objective it actually minimised (§6.1), which is the **effective**
-stage list of §4.8 — so a declaration and the plan that answers it may differ where a
-stage dropped out.
+The stage vocabulary and the default are in §6.1.
 
 ### 5.9 Example
 
@@ -560,9 +549,6 @@ processes:
     modes:
       - id: mean_v1
         duration: 5
-
-objective:
-  kind: [makespan, replenishment_count]   # also the default when omitted
 ```
 
 ## 6. Execution document (plan and status)
@@ -614,8 +600,19 @@ environment.
 - `outcome` (optional) — the solver result: `optimal`, `feasible`, `infeasible`,
   or `unknown` (`unknown` = feasible but optimality unproven, e.g. on timeout).
   Present on a plan; absent on a status input.
-- `objective` (optional) — `kind` (§5.8) and, optionally, `value`. `kind` may be a
-  scalar stage name or a list of them; `value` takes the same shape as the `kind` it
+- `objective` (optional) — `kind` and, optionally, `value`.
+
+  `kind` is either a single stage name as a scalar, or a list of stage names
+  minimised lexicographically; a one-element list means the same as the bare name.
+  The defined stage names are `makespan` and `replenishment_count` (§4.8). A list
+  must be **non-empty** (an empty one names nothing to minimise) and must **not
+  repeat** a stage (a repeat is minimised subject to its own optimum, so it could
+  never change the outcome). The order is the caller's: `[replenishment_count,
+  makespan]` is a different objective from `[makespan, replenishment_count]`, not a
+  malformed one. Omitted, the default is `[makespan, replenishment_count]`, which is
+  equivalent to `makespan` wherever no replenishment can occur.
+
+  `value` takes the same shape as the `kind` it
   accompanies — a scalar for a scalar `kind`, a list of the achieved stage values in
   the same order for a list. A plan output always carries `value`; a status has no
   value to report, and neither does a plan of an infeasible instance.
@@ -1150,9 +1147,9 @@ given a valid v0 workflow.
   transport `duration` is a non-negative YAML integer, a replenishment `duration` is
   a positive YAML integer (`nonpositive_duration`); a resource `capacity` and a
   `consumption` amount are positive YAML integers (`nonpositive_value`);
-  `time.unit` is a non-empty string;
-  if `objective` is present, its `kind` names only defined stages (§5.8) — a scalar
-  name, or a non-empty list of distinct names.
+  `time.unit` is a non-empty string.
+- Retired sections: `objective` is rejected with `objective_in_environment` (§5.8),
+  its shape unchecked.
 - Env-internal references: each `transports.transporter` is a defined transporter;
   each `replenishments.replenisher` is a defined replenisher and its `device` is a
   defined device that declares `resources`; every entry of a mode's `devices` is a
@@ -1345,8 +1342,8 @@ the document, not of the payload.
 
 Extension keys are admitted only at **closed mapping positions** — the same
 positions where the schema otherwise enforces a fixed key set: the environment
-top level and its `time` / device / transporter / transport / process / mode /
-`objective` mappings (§9.1); and the execution-document top level and its `time` /
+top level and its `time` / device / transporter / transport / process / mode
+mappings (§9.1); and the execution-document top level and its `time` /
 `objective` / `interface` / activity mappings (§9.2). They are **not** interpreted
 inside the open name/port maps whose keys are user-chosen — `processes`,
 `input_spots` / `output_spots`, `interface.inputs` / `outputs`, a device's
@@ -1372,7 +1369,8 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `invalid_identifier` | an id does not match `[A-Za-z_][A-Za-z0-9_]*` |
 | `malformed_qualified_spot` | a spot is not in `<device>.<spot>` form (exactly one `.`) |
 | `malformed_qualified_resource` | a resource is not in `<device>.<resource>` form (exactly one `.`) |
-| `unknown_objective_kind` | `objective.kind` is not a set of stages (§5.8): it names a stage v0 does not define, names none at all, repeats one, or is neither a name nor a list of names |
+| `objective_in_environment` | the environment declares `objective`, which belongs to the execution document (§6.1). A code of its own rather than `unknown_key`, so the message can name where the section went; the environment was read until 0.2.1 |
+| `unknown_objective_kind` | `objective.kind` is not a set of stages (§6.1): it names a stage v0 does not define, names none at all, repeats one, or is neither a name nor a list of names |
 | `negative_value` | an integer that must be non-negative is negative |
 | `nonpositive_value` | an integer that must be positive is zero or negative — a resource `capacity`, a `consumption` amount (a resource a mode does not draw on is left out, not written as `0`) |
 | `duplicate_key` | a mapping key repeats (§9; not reported inside an `x-` payload, §9.4) |
@@ -1453,7 +1451,6 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `interface_input_missing` | an Object-bearing entry input has no `interface` binding (§6.8) |
 | `missing_inventories` | the resource model is in effect but the document has no `inventories` (§6.10). An empty `initial` is the way to say every stock starts empty |
 | `inventory_exceeds_capacity` | an `inventories.levels` level is above its resource's `capacity` |
-| `objective_in_environment_deprecated` | the environment declares `objective`, which belongs to the execution document (§5.8). Honoured while the document says nothing, so environments written before the move keep working (*warning*) |
 | `resources_ignored` | the resource model was disabled (§4.7.3) where it would otherwise have been in effect, so nothing was applied. Not raised for an environment that merely declares a stock nothing draws on — switching that off changes nothing (*warning*) |
 | `infeasible` | the solver proved the instance has no feasible schedule |
 

@@ -4,9 +4,9 @@ document and reported in the plan.
 Two things these tests exist to hold. A run that cannot replenish reports the bare
 `makespan` it always did, whatever stage list was declared -- that is what lets a
 v0-era plan and a plan written today be the same document, and it is easy to lose
-the moment a second stage becomes reachable. And an environment that still declares
-an objective keeps working while §5.8 is deprecated, saying so rather than silently
-being ignored.
+the moment a second stage becomes reachable. And there is exactly one declaration
+site: an environment that declares an objective is refused, by a code that says
+where the section went rather than one that says the key means nothing.
 """
 
 from __future__ import annotations
@@ -128,14 +128,28 @@ def _env_errors(kind):
     return [d.code for d in validate_environment(env).errors]
 
 
-@pytest.mark.parametrize("kind", ["makespan", ["makespan", "replenishment_count"]])
-def test_environment_accepts_both_forms(kind):
-    assert _env_errors(kind) == []
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "makespan",  # what an environment written before the move says
+        ["makespan", "replenishment_count"],
+        "latency",  # malformed, but that is not the finding
+        [],
+        5,
+    ],
+)
+def test_an_environment_declaring_an_objective_is_refused_whatever_it_says(kind):
+    """One code for every shape: the section is not read, so there is no point
+    telling an author their stage list is malformed in a place nothing looks."""
+    assert _env_errors(kind) == ["objective_in_environment"]
 
 
-@pytest.mark.parametrize("kind", ["latency", [], ["makespan", "makespan"], 5])
-def test_environment_reports_one_code_for_any_malformed_kind(kind):
-    assert _env_errors(kind) == ["unknown_objective_kind"]
+def test_the_refusal_says_where_the_section_went():
+    """`unknown_key` would be true and useless -- it cannot name the document."""
+    env = yaml.safe_load((EXAMPLES / "interface_load.env.yaml").read_text(encoding="utf-8"))
+    env["objective"] = {"kind": "makespan"}
+    message = validate_environment(env).errors[0].message
+    assert "execution document" in message
 
 
 def _doc_errors(objective):
@@ -172,9 +186,9 @@ def test_a_malformed_kind_does_not_also_fault_its_value():
 # --- where the objective is declared -------------------------------------
 #
 # It says how *this run* is to be optimised, so it belongs with the run's other
-# planning inputs rather than with the description of the lab. The environment is
-# still read while §5.8 is deprecated, so environments written before the move keep
-# working -- these pin that fallback, and that it says so.
+# planning inputs rather than with the description of the lab. The environment was
+# the other declaration site until 0.2.1 -- first the only one, then a deprecated
+# fallback. These pin that there is now one.
 
 
 def _report(env_kind=None, doc_kind=None):
@@ -200,20 +214,19 @@ def test_the_document_declares_the_objective():
     assert _codes(report) == []
 
 
-def test_an_environment_that_still_declares_one_is_honoured_and_warned():
+def test_an_environment_that_declares_one_stops_the_schedule():
     report = _report(env_kind="makespan")
-    assert report.plan is not None, _codes(report)
-    assert _codes(report) == ["objective_in_environment_deprecated"]
+    assert report.plan is None
+    assert _codes(report) == ["objective_in_environment"]
 
 
-def test_the_document_wins_over_the_environment():
-    # Both present: the document is the declaration site, and the warning says the
-    # environment's was not the one used.
+def test_the_environment_is_refused_even_when_the_document_declares_one_too():
+    # There is nothing to fall back to any more, so "the document said it as well"
+    # does not make the environment's declaration harmless -- it makes it a second
+    # answer to a question with one place to answer it.
     report = _report(env_kind=["replenishment_count", "makespan"], doc_kind="makespan")
-    assert report.plan is not None, _codes(report)
-    assert _codes(report) == ["objective_in_environment_deprecated"]
-    message = report.diagnostics[0].message
-    assert "the document's is used" in message
+    assert report.plan is None
+    assert _codes(report) == ["objective_in_environment"]
 
 
 def test_declaring_it_nowhere_is_the_default_and_says_nothing():

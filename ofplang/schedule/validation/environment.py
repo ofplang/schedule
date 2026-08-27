@@ -14,8 +14,8 @@ from ofplang.schedule.core.identifiers import (
     parse_qualified_spot,
 )
 from ofplang.schedule.core.yamlnode import YMap, YNode, YScalar
-from ofplang.schedule.validation import _objective, errors
 from ofplang.schedule.validation import _shape as shape
+from ofplang.schedule.validation import errors
 from ofplang.schedule.validation.duplicates import check_duplicate_keys
 
 # Allowed keys per structure (unknown keys are errors; §9.1, strict).
@@ -27,8 +27,12 @@ ENV_TOP = {
     "replenishers",
     "replenishments",
     "processes",
-    "objective",
 }
+# Keys this format used to define and no longer reads. They are excluded from the
+# unknown-key check and reported on their own, because "this moved" and "this means
+# nothing here" are different things to tell an author, and only the first can say
+# where the section went.
+ENV_RETIRED = {"objective"}
 REQUIRED_SECTIONS = ("time", "devices", "processes")
 TIME_KEYS = {"unit"}
 DEVICE_KEYS = {"id", "spots", "resources"}
@@ -39,7 +43,6 @@ REPLENISHMENT_KEYS = {"replenisher", "device", "duration"}
 PROCESS_KEYS = {"modes"}
 MODE_KEYS = {"id", "devices", "duration", "input_spots", "output_spots", "consumption"}
 RESOURCE_KEYS = {"capacity"}
-OBJECTIVE_KEYS = {"kind"}
 
 
 def validate_environment(source) -> ValidationResult:
@@ -77,7 +80,7 @@ def _check(root: YNode | None, diags: Diagnostics) -> None:
     # have several independent problems.
     check_duplicate_keys(root, diags)
 
-    shape.unknown_keys(root, ENV_TOP, "", diags)
+    shape.unknown_keys(root, ENV_TOP | ENV_RETIRED, "", diags)
     for section in REQUIRED_SECTIONS:
         if section not in root:
             diags.error(errors.MISSING_REQUIRED_SECTION, f"{section} is required", section, at=root)
@@ -90,7 +93,7 @@ def _check(root: YNode | None, diags: Diagnostics) -> None:
     _check_transports(root.get("transports"), devices, transporters, diags)
     _check_replenishments(root.get("replenishments"), devices, resources, replenishers, diags)
     _check_processes(root.get("processes"), devices, resources, diags)
-    _check_objective(root.get("objective"), diags)
+    _check_retired(root, diags)
 
 
 def _check_time(node: YNode | None, diags: Diagnostics) -> None:
@@ -789,21 +792,26 @@ def _resolve_spot(
         )
 
 
-def _check_objective(node: YNode | None, diags: Diagnostics) -> None:
-    omap = shape.as_map(node, "objective", diags)
-    if omap is None:
+def _check_retired(root: YMap, diags: Diagnostics) -> None:
+    """Report a section this format used to define (§5, ENV_RETIRED).
+
+    `objective` was read here until 0.2.1, where the document's declaration was
+    honoured first and this one warned. It says how *this run* is to be optimised,
+    which is a property of the run rather than of the lab -- the same argument that
+    put `interface` and `inventories` in the execution document -- so it is read
+    there and nowhere else now. Its shape is not checked: there is no point telling
+    an author their stage list is malformed in a section that is not read at all.
+    """
+    node = root.get("objective")
+    if node is None:
         return
-    shape.unknown_keys(omap, OBJECTIVE_KEYS, "objective", diags)
-    kind = omap.get("kind")
-    if kind is None:
-        diags.error(
-            errors.MISSING_REQUIRED_FIELD,
-            "objective.kind is required",
-            "objective.kind",
-            at=omap,
-        )
-        return
-    _objective.check_kind(kind, diags)
+    diags.error(
+        errors.OBJECTIVE_IN_ENVIRONMENT,
+        "the objective belongs to the execution document, which says how this run "
+        "is to be optimised; it is no longer read from the environment",
+        "objective",
+        at=node,
+    )
 
 
 def _scalar(node: YNode | None):

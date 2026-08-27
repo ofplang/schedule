@@ -1,4 +1,0 @@
-outcome: valid
-notes: >-
-  `objective.kind` may be a list of stages minimised lexicographically, not only a
-  bare stage name; spec §5.8, §9.1.

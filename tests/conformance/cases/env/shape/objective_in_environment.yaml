@@ -9,4 +9,4 @@ processes:
       duration: 45
       input_spots: {plate: reader_0.stage}
       output_spots: {plate: reader_0.stage}
-objective: {kind: []}
+objective: {kind: makespan}

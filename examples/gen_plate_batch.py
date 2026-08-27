@@ -217,7 +217,6 @@ def build_env(branches: int, thermal_cycler_pool: int = _DEFAULT_THERMAL_CYCLER_
         "transporters": [{"id": "transport"}],
         "transports": transports,
         "processes": processes,
-        "objective": {"kind": "makespan"},
     }
 
 

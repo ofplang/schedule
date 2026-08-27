@@ -1,14 +1,14 @@
-"""Objective stages (SPECIFICATIONS.md §4.8, §5.8).
+"""Objective stages (SPECIFICATIONS.md §4.8, §6.1).
 
 The objective is a sequence of **stages** minimised lexicographically. v0 defines
-two of them, and three places have to agree on what a stage list means: the two
-schema validators (is this `kind` well formed?), the solver (what am I
+two of them, and three places have to agree on what a stage list means: the
+document schema validator (is this `kind` well formed?), the solver (what am I
 minimising?), and the plan renderer (what shape does `objective` take?). That
 agreement lives here.
 
-Keeping it in one module is also what makes the eventual move of `objective` from
-the environment definition to the execution document a local change: only the
-*caller* that reads the declaration has to move.
+Keeping it in one module is what made moving `objective` out of the environment
+definition and into the execution document a local change: only the *caller* that
+read the declaration had to move (0.2.1).
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ REPLENISHMENT_COUNT = "replenishment_count"
 # legitimate lexicographic order too (minimise refills first, then time).
 STAGES: tuple[str, ...] = (MAKESPAN, REPLENISHMENT_COUNT)
 
-# The objective when the declaration is omitted (§5.8). Wherever replenishment
+# The objective when the declaration is omitted (§6.1). Wherever replenishment
 # cannot occur this is equivalent to `[makespan]`, which is what `effective` below
 # makes true rather than something the reader has to remember.
 DEFAULT: tuple[str, ...] = STAGES

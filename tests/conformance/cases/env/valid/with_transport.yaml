@@ -20,4 +20,3 @@ transporters:
 transports:
 - {transporter: arm_0, from: incubator_0.slot_0, to: reader_0.stage, duration: 20}
 - {transporter: arm_1, from: incubator_0.slot_0, to: reader_0.stage, duration: 15}
-objective: {kind: makespan}
