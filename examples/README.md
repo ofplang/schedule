@@ -18,8 +18,12 @@ snapshot is reproducible rather than whichever equal-makespan optimum the search
 raced to:
 
 ```sh
-ofp-schedule schedule examples/consumable.workflow.yaml     --env examples/consumable.env.yaml     --document examples/consumable.document.yaml     --seed 0 -o examples/outputs/consumable.plan.yaml
-ofp-schedule visualize examples/outputs/consumable.plan.yaml     --view device -o examples/outputs/consumable.device.svg
+ofp-schedule schedule examples/consumable.workflow.yaml \
+    --env examples/consumable.env.yaml \
+    --document examples/consumable.document.yaml \
+    --seed 0 -o examples/outputs/consumable.plan.yaml
+ofp-schedule visualize examples/outputs/consumable.plan.yaml \
+    --view device -o examples/outputs/consumable.device.svg
 ```
 
 ## `plate_batch` — a parametric generator (workflow + environment)
