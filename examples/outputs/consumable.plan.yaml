@@ -1,0 +1,161 @@
+time:
+  unit: second
+inventories:
+  levels:
+    reader:
+      reagent: 0
+outcome: optimal
+objective:
+  kind:
+  - makespan
+  - replenishment_count
+  value:
+  - 33
+  - 1
+activities:
+- kind: processing
+  start: 0
+  end: 3
+  process: make_plate
+  mode: slot_b
+  node:
+  - MakeB
+  devices:
+  - bench
+  output_spots:
+    plate: bench.slot_b
+- kind: replenishment
+  id: replenishment_0
+  start: 0
+  end: 4
+  device: reader
+  replenisher: dispenser
+  amounts:
+    reagent: 6
+- kind: transport
+  start: 4
+  end: 6
+  from_spot: bench.slot_b
+  to_spot: reader.stage
+  transporter: arm
+  arc:
+    from:
+      node:
+      - MakeB
+      port: plate
+    to:
+      node:
+      - AssayB
+      port: plate
+- kind: processing
+  start: 6
+  end: 9
+  process: make_plate
+  mode: slot_b
+  node:
+  - MakeA
+  devices:
+  - bench
+  output_spots:
+    plate: bench.slot_b
+- kind: processing
+  start: 6
+  end: 16
+  process: assay
+  mode: '0'
+  node:
+  - AssayB
+  devices:
+  - reader
+  input_spots:
+    plate: reader.stage
+  output_spots:
+    out: reader.stage
+  consumption:
+    reader.reagent: 2
+- kind: transport
+  start: 16
+  end: 18
+  from_spot: reader.stage
+  to_spot: bin.chute
+  transporter: arm
+  arc:
+    from:
+      node:
+      - AssayB
+      port: out
+    to:
+      node:
+      - DropB
+      port: plate
+- kind: processing
+  start: 18
+  end: 19
+  process: discard
+  mode: '0'
+  node:
+  - DropB
+  devices:
+  - bin
+  input_spots:
+    plate: bin.chute
+- kind: transport
+  start: 18
+  end: 20
+  from_spot: bench.slot_b
+  to_spot: reader.stage
+  transporter: arm
+  arc:
+    from:
+      node:
+      - MakeA
+      port: plate
+    to:
+      node:
+      - AssayA
+      port: plate
+- kind: processing
+  start: 20
+  end: 30
+  process: assay
+  mode: '0'
+  node:
+  - AssayA
+  devices:
+  - reader
+  input_spots:
+    plate: reader.stage
+  output_spots:
+    out: reader.stage
+  consumption:
+    reader.reagent: 2
+- kind: transport
+  start: 30
+  end: 32
+  from_spot: reader.stage
+  to_spot: bin.chute
+  transporter: arm
+  arc:
+    from:
+      node:
+      - AssayA
+      port: out
+    to:
+      node:
+      - DropA
+      port: plate
+- kind: processing
+  start: 32
+  end: 33
+  process: discard
+  mode: '0'
+  node:
+  - DropA
+  devices:
+  - bin
+  input_spots:
+    plate: bin.chute
+meta:
+  workflow: examples/consumable.workflow.yaml
+  environment: examples/consumable.env.yaml
+  status: examples/consumable.document.yaml

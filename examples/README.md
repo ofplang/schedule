@@ -9,7 +9,18 @@ plan (`<name>.plan.yaml`, §6) and a rendered `device`-view chart
 (`<name>.device.svg`), plus the `plate_batch` generator's produced workflow and
 environment. The committed plans are a saved snapshot of one optimal solve (the
 concrete schedule among equal-makespan optima is not unique); each is a valid
-execution document (checked by `test_plan.py`).
+execution document (checked by `test_plan.py`), and each example's optimal makespan
+is pinned in `test_example_makespans.py` so a change that was not meant to move a
+schedule is caught when it does.
+
+Regenerate one with the same commands a reader would run, adding `--seed 0` so the
+snapshot is reproducible rather than whichever equal-makespan optimum the search
+raced to:
+
+```sh
+ofp-schedule schedule examples/consumable.workflow.yaml     --env examples/consumable.env.yaml     --document examples/consumable.document.yaml     --seed 0 -o examples/outputs/consumable.plan.yaml
+ofp-schedule visualize examples/outputs/consumable.plan.yaml     --view device -o examples/outputs/consumable.device.svg
+```
 
 ## `plate_batch` — a parametric generator (workflow + environment)
 
@@ -91,9 +102,20 @@ ofp-schedule schedule consumable.workflow.yaml --env consumable.env.yaml \
 The reader starts empty, so nothing can be assayed until the dispenser has been.
 The plan carries **one** refill: a refill fills to capacity, 6 covers the 4 the two
 assays need, and the second objective stage (`replenishment_count`, the default)
-is what stops a second one appearing. It is placed early enough to cost nothing —
-the makespan is the same as if the reader had started full — but it *holds* the
-reader while it works, so it can never overlap the assays it feeds.
+is what stops a second one appearing. It is placed as early as it can be, at time
+0 alongside the first plate being made — but it is not free: it *holds* the reader
+while it works, so it can never overlap the assays it feeds. That is the whole
+difference between the makespan here (33) and the same run on a reader that started
+full (32). A refill that appears to cost nothing is a refill that was laid over the
+device it was filling.
+
+- `outputs/consumable.plan.yaml` — the solved plan, with `outputs/consumable.device.svg`
+  and `outputs/consumable.lane.svg`. The device view is the one to look at: the
+  refill is drawn solid on `dispenser (replenisher)` and **ghosted on `reader`**,
+  which is how the chart says a refill holds two machines. The committed plan is
+  checked for more than shape — `test_plan.py` replays its stock and requires it to
+  stay in `[0, capacity]`, because a document can be perfectly valid and still take
+  more out of a stock than it puts in.
 
 Delete `replenishers` and `replenishments` and the same document is `infeasible`:
 that is the honest answer for a stock nothing can refill, and a legitimate

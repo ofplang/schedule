@@ -22,19 +22,45 @@ ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = ROOT / "examples"
 OUTPUTS = EXAMPLES / "outputs"
 
-# (name, workflow, environment, expected optimal makespan as of 2026-07-14).
+# (name, workflow, environment, execution document or None, expected optimal
+# makespan as of 2026-07-14; consumable added 2026-08-27).
 CASES = [
-    ("simple", EXAMPLES / "simple.workflow.yaml", EXAMPLES / "simple.env.yaml", 5),
-    ("reformatter", EXAMPLES / "reformatter.workflow.yaml", EXAMPLES / "reformatter.env.yaml", 88),
+    ("simple", EXAMPLES / "simple.workflow.yaml", EXAMPLES / "simple.env.yaml", None, 5),
+    (
+        "reformatter",
+        EXAMPLES / "reformatter.workflow.yaml",
+        EXAMPLES / "reformatter.env.yaml",
+        None,
+        88,
+    ),
     # two_arms: two independent jobs on a two-transporter fleet. Parallel transport
     # gives 20; a single transporter would serialise the two moves for 30.
-    ("two_arms", EXAMPLES / "two_arms.workflow.yaml", EXAMPLES / "two_arms.env.yaml", 20),
-    ("plate_batch", OUTPUTS / "plate_batch.workflow.yaml", OUTPUTS / "plate_batch.env.yaml", 50),
+    ("two_arms", EXAMPLES / "two_arms.workflow.yaml", EXAMPLES / "two_arms.env.yaml", None, 20),
+    (
+        "plate_batch",
+        OUTPUTS / "plate_batch.workflow.yaml",
+        OUTPUTS / "plate_batch.env.yaml",
+        None,
+        50,
+    ),
+    # consumable: the reader starts empty, so a document is required (it says what
+    # the run starts with) and one refill covers both assays. 33 rather than 32
+    # because the refill holds the reader while it works and cannot be laid over the
+    # assays it feeds -- 32 was the makespan while refills occupied nothing.
+    (
+        "consumable",
+        EXAMPLES / "consumable.workflow.yaml",
+        EXAMPLES / "consumable.env.yaml",
+        EXAMPLES / "consumable.document.yaml",
+        33,
+    ),
 ]
 
 
-@pytest.mark.parametrize("name,workflow,env,expected", CASES, ids=[c[0] for c in CASES])
-def test_example_makespan_is_stable(name, workflow, env, expected):
-    report = schedule(workflow, env)
+@pytest.mark.parametrize(
+    "name,workflow,env,document,expected", CASES, ids=[c[0] for c in CASES]
+)
+def test_example_makespan_is_stable(name, workflow, env, document, expected):
+    report = schedule(workflow, env, document_path=document)
     assert report.outcome == "optimal", f"{name}: outcome={report.outcome}"
     assert report.makespan == expected, f"{name}: makespan={report.makespan}, expected {expected}"
