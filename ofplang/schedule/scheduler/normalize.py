@@ -340,8 +340,9 @@ def _derive_levels(
     started with and the history says what has been drawn since. Every started
     processing activity has already taken its consumption -- it is taken at the
     start, and the activity has started -- so the sum over the fixed activities is
-    subtracted from the initial levels. (There is nothing to add back yet;
-    replenishment is specified but not implemented.)
+    subtracted from the initial levels. A refill puts stock back the other way: a
+    completed one has landed and is added here, while a running one has not and
+    reaches the solver as a fixed increase at its end instead (§4.7.2).
 
     With `ignore_resources` the model is switched off (§4.7.3) and this returns no
     levels, which is what makes the solver's constraint vanish. Switching off is
