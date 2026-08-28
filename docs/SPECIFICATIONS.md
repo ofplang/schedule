@@ -231,6 +231,20 @@ another's start. At such a point the replenishment is applied **before** the
 consumption, so a refill that ends exactly when the work it feeds begins does feed
 it.
 
+The `[0, capacity]` bound is checked once that instant has been applied in full —
+not between the two changes. The level to check is the one the instant leaves
+behind, `level + added - drawn`; the figure between the refill and the draw is not
+a state anything observes, and the schedule is not required to keep it within the
+bound. Applying the refill first is what makes the lower bound hold there (the
+draw has the refill to spend); checking after both is what makes the upper bound
+mean something an operator could see.
+
+That matters for a refill landing on a stock that is momentarily full: it fills
+the room the simultaneous draw makes, rather than finding the stock full and
+adding nothing. Reading it the other way — filling to capacity, then checking
+before subtracting the draw — makes what a refill adds depend on that unobserved
+figure, and refuses schedules that run perfectly well.
+
 #### 4.7.1 Replenishment activities
 
 A replenishment activity occupies **two machines** for its whole interval: the
@@ -248,9 +262,12 @@ that needs it; refilling early is allowed.
 A **planned** replenishment fills every resource declared on its device to that
 resource's `capacity`. The amount added is therefore derived, not chosen: v0 does
 not select refill quantities, so a plan never depends on how much of a refill was
-"worth" doing. A replenishment that is already running or finished is different —
-its reported `amounts` are what actually went in, which need not reach capacity
-(§6.9).
+"worth" doing. "To capacity" is measured at the point §4.7 checks the level: where a draw starts
+exactly as the refill ends, the amount added is what leaves the level at `capacity`
+once that draw has been taken. It is still bounded by the capacity — one visit
+cannot put in more than the device can hold. A
+replenishment that is already running or finished is different — its reported
+`amounts` are what actually went in, which need not reach capacity (§6.9).
 
 Filling to capacity is also what bounds the search: one refill per consuming
 activity then suffices for any schedule that is possible at all, so the scheduler

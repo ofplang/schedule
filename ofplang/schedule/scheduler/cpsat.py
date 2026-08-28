@@ -410,10 +410,18 @@ def _refill_results(
 
     §4.7.1 says a planned refill fills each resource to `capacity`, but the reservoir
     offers no level *variable* to write that against, so the amounts are left free in
-    the model and settled here. With times and selections known, each stock's events
-    are totally ordered -- every activity that touches a stock occupies its device,
-    and a device is exclusive -- so replaying them in time order gives each refill
-    exactly the room it has: `capacity` minus the level immediately before.
+    the model and settled here. With times and selections known, replaying a stock's
+    events gives each refill exactly the room it has.
+
+    Where a refill's end meets a draw's start, it fills to the level **that instant
+    leaves behind**. The refill goes in first, as §4.7 says, but the level checked
+    against `capacity` is the one after the draw as well: the figure in between is
+    not a state anything observes, and it is not what the reservoir this is settling
+    -- or `plancheck`, which replays the finished plan -- is written against either.
+    So "the level immediately before" is not a thing to fill against where the two
+    meet. A refill landing on a stock that is momentarily full has to add the room
+    the simultaneous draw makes; read the other way it appears to have no room, is
+    dropped as adding nothing, and the plan fails its own inventory check.
 
     Sound and free: raising an amount only raises later levels, so the lower bound
     slackens while the upper is met with equality. Times and selections are
@@ -475,16 +483,37 @@ def _refill_results(
     for key, entries in events.items():
         level = (fixation.levels.get(key, 0) if fixation is not None else 0)
         capacity = _capacity_of(instance, key[0], key[1])
-        # A refill first among simultaneous events: sort planned refills ahead of
-        # draws at the same instant.
-        for _time, change, refill_id in sorted(entries, key=lambda e: (e[0], e[2] is None)):
-            if refill_id is None:
-                level += change
-                continue
-            added = capacity - level
-            level = capacity
-            if added > 0:
-                amounts[refill_id][key[1]] = added
+        # Group by instant. The refill still goes in before the draw (§4.7); what
+        # the grouping decides is *where the level is read* -- after the whole
+        # instant, not between the two changes. `plancheck` replays a finished plan
+        # the same way ("applies every change at one time point before looking at
+        # the level"), and the reservoir this is settling amounts for is written
+        # against the same point. Filling to capacity before the simultaneous draw
+        # is subtracted instead makes a refill landing on a full stock look as if
+        # there were no room for it, and the fill it was chosen to provide is then
+        # rounded away to nothing.
+        at_time: dict[int, list[tuple[int, str | None]]] = {}
+        for time, change, refill_id in entries:
+            at_time.setdefault(time, []).append((change, refill_id))
+        for time in sorted(at_time):
+            group = at_time[time]
+            draws = sum(change for change, rid in group if rid is None)
+            # A device is exclusive and a refill holds it, so at most one refill of
+            # a given stock can land at any one instant; the loop is written for a
+            # list only so that a second one would take what the first left rather
+            # than double-count.
+            for _change, refill_id in group:
+                if refill_id is None:
+                    continue
+                # Room to fill: what it takes to leave this instant at `capacity`,
+                # never more than the stock can hold in one visit (the model bounds
+                # each amount by `capacity`, so a larger figure here would be one
+                # the solver never proved).
+                added = min(capacity - level - draws, capacity)
+                if added > 0:
+                    amounts[refill_id][key[1]] = added
+                    level += added
+            level += draws
 
     for candidate in selected:
         if not amounts[candidate.id]:

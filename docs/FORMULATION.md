@@ -650,9 +650,21 @@ a planned refill fills each resource to `capacity`, but the constraint above off
 no level *variable* to write $level = c_{\ell,g}$ against — the running sum is an
 expression, and a reservoir formulation (the intended implementation) does not
 expose the level at all. So the amounts are left free above and normalised once the
-solution is known: with times and selections fixed, each $(\ell,g)$'s events are
-totally ordered, and replaying them in time order sets each selected
-$\Delta_{\omega,g}$ to $c_{\ell,g}$ minus the level immediately before.
+solution is known: with times and selections fixed, replaying each $(\ell,g)$'s
+events sets every selected $\Delta_{\omega,g}$ to the amount that leaves its instant
+at $c_{\ell,g}$, capped by $c_{\ell,g}$ itself.
+
+**Where a refill's end meets a draw's start, the replay fills to the level that
+instant leaves behind.** The refill is applied first, as SPEC §4.7 says, but the
+level checked against $c_{\ell,g}$ is the one after the draw as well — the figure
+in between is not a state anything observes, and is not what the reservoir
+constraint being normalised is written against either. So "the level immediately
+before" is not well defined where the two meet, and filling against it sets
+$\Delta_{\omega,g}$ from that unobserved figure. Concretely: a refill landing on a
+full stock at the instant a draw empties it must add $c_{\ell,g}$, not $0$. Setting
+it to $0$ drops the refill (an all-zero candidate is dropped, below) and the plan
+then fails its own inventory check — which is what made every instance needing two
+or more refills unplannable until this was corrected.
 
 This is sound and costs nothing. Raising an amount raises every later level, so the
 lower bound only slackens; the upper bound is met with equality by construction. The
