@@ -225,25 +225,29 @@ that falls when work consumes it and rises when a replenishment refills it.
   `[0, capacity]`.
 
 Because a device is exclusive (§4.4) and every activity that touches a device's
-resources occupies that device, the events on one `<device>.<resource>` are totally
-ordered in time: no two of them can coincide except where one activity's end meets
-another's start. At such a point the replenishment is applied **before** the
-consumption, so a refill that ends exactly when the work it feeds begins does feed
-it.
+resources occupies that device, the events on one `<device>.<resource>` are ordered
+in time: no two of them can coincide except where one activity's end meets another's
+start.
 
-The `[0, capacity]` bound is checked once that instant has been applied in full —
-not between the two changes. The level to check is the one the instant leaves
-behind, `level + added - drawn`; the figure between the refill and the draw is not
-a state anything observes, and the schedule is not required to keep it within the
-bound. Applying the refill first is what makes the lower bound hold there (the
-draw has the refill to spend); checking after both is what makes the upper bound
-mean something an operator could see.
+At such a shared instant, **the completion is applied before the start**. This is
+not a rule about resources: it is how a shared instant works throughout the model.
+A spot hand-off reads the same way — the producing activity ends and releases the
+spot, then the consuming one begins and takes it, and the two touch without
+overlapping (§4.4, §4.5). A replenishment's effect landing at its `end` and a
+draw taken at another activity's `start` are the resource-level instance of it, so
+a refill that ends exactly when the work it feeds begins does feed it.
 
-That matters for a refill landing on a stock that is momentarily full: it fills
-the room the simultaneous draw makes, rather than finding the stock full and
-adding nothing. Reading it the other way — filling to capacity, then checking
-before subtracting the draw — makes what a refill adds depend on that unobserved
-figure, and refuses schedules that run perfectly well.
+**Each of those changes is a point at which the level is checked.** Applying the
+completion gives a level, and it must lie within `[0, capacity]`; applying the
+start gives another, and so must that. There is no netting: a refill that would
+take a stock past its capacity is not excused by a draw at the same instant. The
+level a refill leaves behind is what the device is holding when the refill
+finishes — it has to fit in the device, whatever happens next. Likewise a draw may
+not take a stock below zero even if a refill lands later in the same instant, which
+is exactly what "the completion first" gives it.
+
+So at an instant carrying both, a refill fills to `capacity` from the level it
+finds *before* the draw, and the draw is then taken from what that leaves.
 
 #### 4.7.1 Replenishment activities
 
@@ -262,10 +266,11 @@ that needs it; refilling early is allowed.
 A **planned** replenishment fills every resource declared on its device to that
 resource's `capacity`. The amount added is therefore derived, not chosen: v0 does
 not select refill quantities, so a plan never depends on how much of a refill was
-"worth" doing. "To capacity" is measured at the point §4.7 checks the level: where a draw starts
-exactly as the refill ends, the amount added is what leaves the level at `capacity`
-once that draw has been taken. It is still bounded by the capacity — one visit
-cannot put in more than the device can hold. A
+"worth" doing. "To capacity" is measured at the moment the refill completes (§4.7), before any
+draw sharing that instant is taken: the amount added is `capacity` minus the level
+it finds. A refill completing onto a stock that is already full therefore adds
+nothing at all, and is not worth scheduling — it would hold two machines and change
+no level. A
 replenishment that is already running or finished is different — its reported
 `amounts` are what actually went in, which need not reach capacity (§6.9).
 

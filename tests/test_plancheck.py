@@ -87,18 +87,27 @@ def test_a_refill_may_take_a_stock_to_exactly_its_capacity():
     assert _check([_fill(4, 6)], reagent=0, capacity=6) == []
 
 
-def test_simultaneous_changes_are_read_together():
+def test_a_completion_and_a_start_at_one_instant_are_checked_in_turn():
     """A refill ending exactly when a draw starts is how a schedule packs work: a
     device is released at one end and taken at the next start, at the same instant.
-    The reservoir reads such changes together, so this must too -- serialising them
-    would report a violation the solver was right to allow."""
-    # Capacity 2, empty. The fill lands at 5 and the draw takes 2 at 5: netted, the
-    # level never leaves [0, 2]. Refill-then-draw would also pass here; the case that
-    # distinguishes them is the next one.
+    The completion is applied first and the level checked, then the start (§4.7) --
+    the same order the solver was built under, so this replay agrees with it."""
+    # Capacity 2, empty. The fill lands at 5 and the draw takes 2 at 5. Filling
+    # first reaches 2 (the capacity, allowed) and the draw takes it back to 0.
     assert _check([_fill(5, 2), _draw(5, 2)], reagent=0, capacity=2) == []
-    # Full, capacity 2. A fill of 2 at the same instant as a draw of 2 nets to 0, so
-    # the level stays at 2. Serialised fill-first it would reach 4 and be reported.
-    assert _check([_fill(5, 2), _draw(5, 2)], reagent=2, capacity=2) == []
+    # And the refill is what makes the draw possible: without it the draw at 5 would
+    # take an empty stock negative.
+    assert _check([_draw(5, 2)], reagent=0, capacity=2) != []
+
+
+def test_a_refill_onto_a_full_stock_is_caught_even_with_a_draw_at_that_instant():
+    """The level a refill leaves behind is real -- it is what the device holds when
+    the refill finishes -- so it must fit in the device. A simultaneous draw does not
+    excuse it: netting the two would hide a plan that puts 4 units into a device
+    holding 2. Such a plan is a defect in this package, which is what this module is
+    here to catch."""
+    messages = _check([_fill(5, 2), _draw(5, 2)], reagent=2, capacity=2)
+    assert messages and "at 4" in messages[0] and "a refill" in messages[0]
 
 
 def test_no_consumption_anywhere_means_nothing_to_check():

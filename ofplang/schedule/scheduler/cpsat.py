@@ -483,37 +483,20 @@ def _refill_results(
     for key, entries in events.items():
         level = (fixation.levels.get(key, 0) if fixation is not None else 0)
         capacity = _capacity_of(instance, key[0], key[1])
-        # Group by instant. The refill still goes in before the draw (§4.7); what
-        # the grouping decides is *where the level is read* -- after the whole
-        # instant, not between the two changes. `plancheck` replays a finished plan
-        # the same way ("applies every change at one time point before looking at
-        # the level"), and the reservoir this is settling amounts for is written
-        # against the same point. Filling to capacity before the simultaneous draw
-        # is subtracted instead makes a refill landing on a full stock look as if
-        # there were no room for it, and the fill it was chosen to provide is then
-        # rounded away to nothing.
-        at_time: dict[int, list[tuple[int, str | None]]] = {}
-        for time, change, refill_id in entries:
-            at_time.setdefault(time, []).append((change, refill_id))
-        for time in sorted(at_time):
-            group = at_time[time]
-            draws = sum(change for change, rid in group if rid is None)
-            # A device is exclusive and a refill holds it, so at most one refill of
-            # a given stock can land at any one instant; the loop is written for a
-            # list only so that a second one would take what the first left rather
-            # than double-count.
-            for _change, refill_id in group:
-                if refill_id is None:
-                    continue
-                # Room to fill: what it takes to leave this instant at `capacity`,
-                # never more than the stock can hold in one visit (the model bounds
-                # each amount by `capacity`, so a larger figure here would be one
-                # the solver never proved).
-                added = min(capacity - level - draws, capacity)
-                if added > 0:
-                    amounts[refill_id][key[1]] = added
-                    level += added
-            level += draws
+        # Completions before starts at the same instant (§4.7), which is the order
+        # the model was solved under: its reservoir sees a refill's end at `2t` and
+        # a draw's start at `2t + 1`. The level is read after each of them, so a
+        # refill fills to `capacity` from the level it actually finds -- and where
+        # it lands on a stock that is already full there is genuinely no room, and
+        # the solver will not have placed one there.
+        for _time, change, refill_id in sorted(entries, key=lambda e: (e[0], e[2] is None)):
+            if refill_id is None:
+                level += change
+                continue
+            added = capacity - level
+            level = capacity
+            if added > 0:
+                amounts[refill_id][key[1]] = added
 
     for candidate in selected:
         if not amounts[candidate.id]:
@@ -712,23 +695,46 @@ def _add_resources(
         changes: list = []
         actives: list = []
 
-        # The starting level enters as a fixed change at time 0: the reservoir's own
-        # level always begins at 0, and its documentation names this as the way to
-        # state an initial state.
-        times.append(0)
+        # Event times are mapped onto a doubled axis: a **completion** lands at
+        # `2t`, a **start** at `2t + 1` (§4.7). Where a refill ends at the very
+        # instant a draw begins -- the ordinary way a schedule packs work -- the two
+        # would otherwise be one time point, and a reservoir reads changes at one
+        # time point together: the refill's addition and the draw's subtraction
+        # would net, and the level *after the refill and before the draw* would
+        # never be checked. That level is real (it is what the device holds when
+        # the refill finishes), so it has to stay within `[0, capacity]` like any
+        # other. Separating completions from starts by parity puts a reservoir
+        # check between them.
+        #
+        # This adds no variable and no case: `2t` and `2t + 1` are affine
+        # expressions over the same start/end variables, the two images are
+        # disjoint, and every order relation is preserved (`e <= s` maps to
+        # "completion first" either way, so `e == s` and `e < s` are not newly
+        # distinguished).
+        def completion(t):
+            return 2 * t
+
+        def start_of(t):
+            return 2 * t + 1
+
+        # The starting level is a fixed change before every event, so it sits below
+        # the lowest image (`2 * 0 = 0`) rather than at it.
+        times.append(-1)
         changes.append(levels.get(key, 0))
         actives.append(1)
 
+        # A draw takes its whole amount at the activity's **start** (§4.7).
         for amount, lit, start in draws.get(key, ()):
-            times.append(start)
+            times.append(start_of(start))
             changes.append(-amount)
             actives.append(lit)
 
+        # A refill's effect lands at its **end** (§4.7).
         for candidate in instance.replenishments:
             if candidate.device != device or resource not in candidate.resources:
                 continue
             vars_ = refills[candidate.id]
-            times.append(vars_.end)
+            times.append(completion(vars_.end))
             changes.append(vars_.amounts[resource])
             actives.append(vars_.present)
 
@@ -739,7 +745,7 @@ def _add_resources(
                 continue
             amount = fix.amounts.get(resource, 0)
             if amount:
-                times.append(fix.end)
+                times.append(completion(fix.end))
                 changes.append(amount)
                 actives.append(1)
 

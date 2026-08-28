@@ -650,21 +650,28 @@ a planned refill fills each resource to `capacity`, but the constraint above off
 no level *variable* to write $level = c_{\ell,g}$ against — the running sum is an
 expression, and a reservoir formulation (the intended implementation) does not
 expose the level at all. So the amounts are left free above and normalised once the
-solution is known: with times and selections fixed, replaying each $(\ell,g)$'s
-events sets every selected $\Delta_{\omega,g}$ to the amount that leaves its instant
-at $c_{\ell,g}$, capped by $c_{\ell,g}$ itself.
+solution is known: with times and selections fixed, each $(\ell,g)$'s events are
+totally ordered, and replaying them in that order sets each selected
+$\Delta_{\omega,g}$ to $c_{\ell,g}$ minus the level immediately before.
 
-**Where a refill's end meets a draw's start, the replay fills to the level that
-instant leaves behind.** The refill is applied first, as SPEC §4.7 says, but the
-level checked against $c_{\ell,g}$ is the one after the draw as well — the figure
-in between is not a state anything observes, and is not what the reservoir
-constraint being normalised is written against either. So "the level immediately
-before" is not well defined where the two meet, and filling against it sets
-$\Delta_{\omega,g}$ from that unobserved figure. Concretely: a refill landing on a
-full stock at the instant a draw empties it must add $c_{\ell,g}$, not $0$. Setting
-it to $0$ drops the refill (an all-zero candidate is dropped, below) and the plan
-then fails its own inventory check — which is what made every instance needing two
-or more refills unplannable until this was corrected.
+**Completions go before starts, on a doubled time axis.** "Totally ordered" holds
+only up to coincidence: a refill's end may meet a draw's start, which is the
+ordinary way a schedule packs work. SPEC §4.7 orders such an instant by applying the
+completion first and checking the level after *each* change. A reservoir cannot
+express that on its own — it checks its bounds between time points, so two changes
+at one time point are read as a single net change and the level between them is
+never checked. That level is real: it is what the device holds when the refill
+finishes, and §4.7 requires it to fit. So the events are handed to the reservoir on
+a doubled axis — a completion at $2t$, a start at $2t+1$ — and the bound is checked
+between them. Without the separation the solver admits a refill that takes a full
+stock past $c_{\ell,g}$ whenever a draw shares the instant, and the normalisation
+above (which fills from the level *before* the draw) then finds no room for it,
+drops it, and hands out a plan whose stock later goes negative.
+
+The doubling costs nothing. The time expressions are affine over the same
+start/end variables, so no variable is added; the two images are disjoint by parity,
+so every order relation is preserved and no case is newly distinguished
+($e \le s$ maps to "completion first" whether or not $e = s$).
 
 This is sound and costs nothing. Raising an amount raises every later level, so the
 lower bound only slackens; the upper bound is met with equality by construction. The

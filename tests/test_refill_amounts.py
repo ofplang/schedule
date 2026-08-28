@@ -7,16 +7,15 @@ the plan a **second computation over the same answer**, and the two have to agre
 about one thing in particular: what happens when a refill lands at the very instant
 a draw starts.
 
-The refill goes in **before** the draw (§4.7); what has to agree is *where the level
-is read*. §4.7 reads it after the whole instant, `plancheck` replays a finished plan
-that way deliberately (see its module docstring), and the reservoir is written
-against the same point. So the settling here must fill to the level the instant
-leaves behind. Filling to capacity first and subtracting the simultaneous draw after
-instead finds no room in a stock that is momentarily full, drops the refill the
-solver chose, and produces a plan whose stock later goes negative. That is not a
-hypothetical: it made every instance needing two or more refills unplannable.
+At an instant where a refill's end meets a draw's start, the **completion is applied
+first and the level checked, then the start** (§4.7) -- the general rule that a
+completion precedes a start at a shared instant, the same one the spot hand-offs of a
+transport follow. The model is solved under exactly that order (its reservoir sees
+completions at `2t` and starts at `2t + 1`, `_add_resources`), and `plancheck`
+replays a finished plan the same way. So the settling here fills each refill to
+`capacity` from the level it actually finds, and the three agree by construction.
 
-These tests drive the settling directly, because the situation is easy to state and
+These tests drive the settling directly, because the situations are easy to state and
 expensive to provoke through a solve.
 """
 
@@ -93,30 +92,40 @@ def _settle(capacity, start_level, draws, refill_ends):
 
 
 def _replay(capacity, start_level, draws, settled, refill_ends):
-    """The level after every instant, read the way the reservoir reads it."""
-    events: dict[int, int] = {}
-    for t, amount in draws:
-        events[t] = events.get(t, 0) - amount
-    for i, end in enumerate(refill_ends):
-        events[end] = events.get(end, 0) + settled.get(f"replenishment_{i}", 0)
+    """The level after each change, completions before starts at a shared instant.
+
+    Every one of those levels is checked, which is the point: the level a refill
+    leaves behind has to fit in the device just as the one a draw leaves behind has
+    to stay non-negative.
+    """
+    events = [(end, 0, settled.get(f"replenishment_{i}", 0))
+              for i, end in enumerate(refill_ends)]
+    events += [(t, 1, -amount) for t, amount in draws]
     level, trace = start_level, []
-    for t in sorted(events):
-        level += events[t]
+    for t, _phase, delta in sorted(events):
+        level += delta
         trace.append((t, level))
         assert 0 <= level <= capacity, f"level {level} at t={t} outside [0,{capacity}]"
     return trace
 
 
-def test_a_refill_landing_on_a_full_stock_at_a_draws_instant_still_fills():
-    # capacity 3, starts full, nothing drawn before t=40. The refill ends at 40,
-    # exactly when a draw starts, so at that instant the stock is still full.
-    # Filling "to capacity" before subtracting that draw finds no room, drops the
-    # refill -- and the later draw at 100 then has nothing to run on. Reading the
-    # instant as a whole, the refill is what keeps the stock at 3 across it.
-    draws, ends = [(40, 3), (100, 3)], [40]
-    settled = _settle(3, 3, draws, ends)
+def test_a_refill_landing_on_a_full_stock_has_no_room():
+    # capacity 3, starts full, nothing drawn before t=40. A refill ending at 40 --
+    # the instant a draw starts -- finds the stock full, and the level it would
+    # leave behind (6) does not fit in the device. There is genuinely nothing for
+    # it to add, so it is dropped. The solver will not place one here either: its
+    # reservoir checks that same level.
+    assert _settle(3, 3, [(40, 3), (100, 3)], [40]) == {}
+
+
+def test_a_refill_at_the_instant_of_a_draw_fills_what_the_stock_can_hold():
+    # The same instant, but the stock is empty when the refill lands: it fills to
+    # capacity, and the draw at that instant then spends it. This is what makes a
+    # refill ending exactly when the work it feeds begins actually feed it.
+    draws, ends = [(40, 3)], [40]
+    settled = _settle(3, 0, draws, ends)
     assert settled == {"replenishment_0": 3}
-    assert _replay(3, 3, draws, settled, ends) == [(40, 3), (100, 0)]
+    assert _replay(3, 0, draws, settled, ends) == [(40, 3), (40, 0)]
 
 
 def test_a_refill_never_adds_more_than_the_capacity():
@@ -143,10 +152,14 @@ def test_consecutive_refills_each_take_only_the_room_they_have():
 
 
 def test_three_refills_for_four_draws_all_survive():
-    # The shape that was unplannable: every refill is needed, and the last two land
-    # at the instant of a draw. Nothing may be rounded away.
-    draws = [(3, 3), (27, 3), (78, 3), (156, 3)]
-    ends = [27, 45, 78]
+    # Four draws of 3 on a capacity of 3: three refills are needed and every one of
+    # them must be reported. These are the times the solver actually picks for that
+    # instance (case study C4, capacity 3) -- each refill lands on an empty stock,
+    # which is where a refill can do any good.
+    draws = [(3, 3), (27, 3), (68, 3), (119, 3)]
+    ends = [24, 45, 86]
     settled = _settle(3, 3, draws, ends)
     assert settled == {"replenishment_0": 3, "replenishment_1": 3, "replenishment_2": 3}
-    assert _replay(3, 3, draws, settled, ends) == [(3, 0), (27, 0), (45, 3), (78, 3), (156, 0)]
+    assert _replay(3, 3, draws, settled, ends) == [
+        (3, 0), (24, 3), (27, 0), (45, 3), (68, 0), (86, 3), (119, 0),
+    ]

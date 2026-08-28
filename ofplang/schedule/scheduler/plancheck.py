@@ -20,13 +20,15 @@ a defect in this package. It is worth the cost anyway: the failure it guards is
 silent. A plan that under-fills a stock schedules cleanly, reports `optimal`, and
 runs dry in a real lab hours later.
 
-**Simultaneous events net.** A refill that ends exactly when a draw starts is the
+**Completions before starts.** A refill that ends exactly when a draw starts is the
 normal way a schedule packs work -- a device is released at one op's end and taken
-at the next op's start, at the same instant -- and the reservoir constraint reads
-such changes together. This replay does the same: it applies every change at one
-time point before looking at the level. Serialising them instead would report
-violations the solver was right to allow, which is exactly the disagreement this
-module exists to catch rather than to create.
+at the next op's start, at the same instant. At such an instant the completion is
+applied first and the level is checked, then the start (SPEC §4.7). Both levels are
+real and both are checked: the one the refill leaves behind must fit in the device
+(`<= capacity`), and the one the draw leaves behind must not be negative. This is
+the order the solver was built under -- its reservoir sees completions at `2t` and
+starts at `2t + 1` -- so this replay agrees with it by construction rather than by
+argument.
 """
 
 from __future__ import annotations
@@ -57,18 +59,26 @@ def _declared_levels(env, inventories: dict | None) -> dict[tuple[str, str], int
     return levels
 
 
-def _events(activities: list[dict]) -> dict[int, dict[tuple[str, str], int]]:
-    """Every level change the plan contains, summed per time and per stock.
+# Ordering key for one level change: the time it happens at, then whether it is a
+# completion (0) or a start (1). Completions go first at a shared instant (§4.7),
+# and the level is checked between them -- the same separation the solver's
+# reservoir gets from mapping completions to `2t` and starts to `2t + 1`.
+COMPLETION, START = 0, 1
+
+
+def _events(activities: list[dict]) -> dict[tuple[int, int], dict[tuple[str, str], int]]:
+    """Every level change the plan contains, summed per instant-phase and per stock.
 
     A processing draws its `consumption` echo at its `start` -- consumption is taken
     when the activity starts (§4.7.2). A refill adds its `amounts` at its `end` --
     stock that has not landed cannot be drawn on. Nothing else touches a stock.
     """
-    events: dict[int, dict[tuple[str, str], int]] = {}
+    events: dict[tuple[int, int], dict[tuple[str, str], int]] = {}
 
-    def change(time, key, delta):
-        events.setdefault(int(time), {})
-        events[int(time)][key] = events[int(time)].get(key, 0) + delta
+    def change(time, phase, key, delta):
+        at = (int(time), phase)
+        events.setdefault(at, {})
+        events[at][key] = events[at].get(key, 0) + delta
 
     for activity in activities:
         kind = activity.get("kind")
@@ -76,12 +86,12 @@ def _events(activities: list[dict]) -> dict[int, dict[tuple[str, str], int]]:
             for qualified, amount in (activity.get("consumption") or {}).items():
                 parsed = parse_qualified_resource(qualified)
                 if parsed is not None and isinstance(amount, int):
-                    change(activity.get("start", 0), parsed, -amount)
+                    change(activity.get("start", 0), START, parsed, -amount)
         elif kind == "replenishment":
             device = activity.get("device")
             for resource, amount in (activity.get("amounts") or {}).items():
                 if device is not None and isinstance(amount, int):
-                    change(activity.get("end", 0), (device, resource), amount)
+                    change(activity.get("end", 0), COMPLETION, (device, resource), amount)
     return events
 
 
@@ -101,10 +111,11 @@ def check_plan_inventories(plan: dict, env, inventories: dict | None) -> list[st
 
     levels = _declared_levels(env, inventories)
     reported: dict[tuple[str, str], str] = {}
-    for time in sorted(events):
-        for key, delta in events[time].items():
+    for at in sorted(events):
+        time, phase = at
+        for key, delta in events[at].items():
             levels[key] = levels.get(key, 0) + delta
-        for key in sorted(events[time]):
+        for key in sorted(events[at]):
             if key in reported:
                 continue
             device, resource = key
@@ -112,8 +123,9 @@ def check_plan_inventories(plan: dict, env, inventories: dict | None) -> list[st
             capacity = entry.resources.get(resource) if entry is not None else None
             level = levels.get(key, 0)
             if level < 0 or (capacity is not None and level > capacity):
+                what = "a refill" if phase == COMPLETION else "a draw"
                 reported[key] = (
-                    f"the plan leaves {device}.{resource} at {level} at time {time}, "
-                    f"outside [0, {capacity}]"
+                    f"the plan leaves {device}.{resource} at {level} after {what} "
+                    f"at time {time}, outside [0, {capacity}]"
                 )
     return [reported[key] for key in sorted(reported)]

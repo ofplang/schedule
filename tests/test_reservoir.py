@@ -88,3 +88,78 @@ def test_a_draw_no_fill_can_cover_is_infeasible():
     )
     _, status = _solve(model)
     assert status == cp_model.INFEASIBLE
+
+
+def test_changes_at_one_time_point_are_read_together():
+    """The property the doubled time axis exists to work around.
+
+    A reservoir checks its bounds *between* time points, so two changes at the same
+    time point are read as one: their sum is what has to fit. Here a +2 and a -2 at
+    t=5 leave a full stock at its capacity, and the level of 4 that the addition
+    alone would reach is never checked.
+
+    That is not what §4.7 says a schedule may do -- the level a refill leaves behind
+    is what the device is holding when it finishes, and it has to fit. So the
+    scheduler does not hand the reservoir a shared time point; see the next test.
+    """
+    model = cp_model.CpModel()
+    amount = model.NewIntVar(0, 2, "amount")
+    model.AddReservoirConstraintWithActive(
+        [model.NewConstant(0), model.NewConstant(5), model.NewConstant(5)],
+        [2, amount, -2],
+        [model.NewConstant(1)] * 3,
+        0,
+        2,
+    )
+    model.Maximize(amount)
+    solver, status = _solve(model)
+    assert status == cp_model.OPTIMAL
+    assert solver.Value(amount) == 2      # 2 + 2 - 2 = 2: the intermediate 4 is unseen
+
+
+def test_a_doubled_axis_separates_a_completion_from_a_start():
+    """Mapping a completion to `2t` and a start to `2t + 1` restores the check.
+
+    `_add_resources` relies on this: with the two changes at distinct time points
+    the reservoir checks the level between them, so a refill that would take a full
+    stock past its capacity cannot be placed there -- which is what §4.7 asks for.
+
+    The time expressions are affine over the same start/end variables, so this adds
+    no variable, and the two images are disjoint (even / odd), so no order relation
+    between a completion and a start is newly distinguished.
+    """
+    model = cp_model.CpModel()
+    amount = model.NewIntVar(0, 2, "amount")
+    end = model.NewIntVar(0, 100, "end")
+    model.Add(end == 5)
+    draw_at = model.NewConstant(5)
+    model.AddReservoirConstraintWithActive(
+        [model.NewConstant(-1), 2 * end, 2 * draw_at + 1],
+        [2, amount, -2],
+        [model.NewConstant(1)] * 3,
+        0,
+        2,
+    )
+    model.Maximize(amount)
+    solver, status = _solve(model)
+    assert status == cp_model.OPTIMAL
+    assert solver.Value(amount) == 0      # the stock is full when the refill lands
+
+
+def test_a_doubled_axis_still_lets_a_refill_feed_a_draw_at_that_instant():
+    """The separation must not break the case §4.7 exists to allow: a refill ending
+    exactly when the work it feeds begins does feed it. Empty stock, capacity 2, a
+    refill completing at t=5 and a draw of 2 starting at t=5."""
+    model = cp_model.CpModel()
+    amount = model.NewIntVar(0, 2, "amount")
+    end = model.NewConstant(5)
+    model.AddReservoirConstraintWithActive(
+        [model.NewConstant(-1), 2 * end, 2 * end + 1],
+        [0, amount, -2],
+        [model.NewConstant(1)] * 3,
+        0,
+        2,
+    )
+    solver, status = _solve(model)
+    assert status == cp_model.OPTIMAL
+    assert solver.Value(amount) == 2
