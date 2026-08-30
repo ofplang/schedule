@@ -42,7 +42,7 @@ class _Bar:
     start: float
     end: float
     label: str
-    css: str  # "proc" | "xfer" | "xfer-ghost"
+    css: str  # "proc" | "xfer" | "xfer-ghost" | "hold-ghost"
 
 
 @dataclass(frozen=True)
@@ -112,7 +112,9 @@ def _svg_markup(plan: dict, view: str, theme: str) -> str:
 
 def _device_layout(activities):
     """Device lanes then transporter lanes; processing on its devices, transport
-    on transporter (solid) + source/destination devices (ghost)."""
+    on transporter (solid) + source/destination devices (ghost). A non-accessing
+    processing activity (§4.4.2) is ghosted too: it is on the device but does not
+    hold it, which is exactly what a transport's endpoint bars already say."""
     devices: set[str] = set()
     transporters: set[str] = set()
     replenishers: set[str] = set()
@@ -149,8 +151,11 @@ def _device_layout(activities):
         s, e = float(a.get("start", 0)), float(a.get("end", 0))
         if kind == "processing":
             label = _proc_label(a)
+            # The echo is written only where it is False (§6.3), so anything else --
+            # absent, or an explicit true -- is an ordinary occupying activity.
+            css = "proc" if a.get("device_access") is not False else "hold-ghost"
             for d in a.get("devices") or []:
-                bars.append(_Bar(index[("dev", d)], s, e, label, "proc"))
+                bars.append(_Bar(index[("dev", d)], s, e, label, css))
         elif kind == "transport":
             src, dst = _device_of(a.get("from_spot")), _device_of(a.get("to_spot"))
             tr = a.get("transporter")
@@ -427,6 +432,7 @@ _ROLE: dict[str, tuple[str, str, dict[str, object]]] = {
     "xfer": ("fill", "xfer", {}),
     "ghost": ("fill", "ghost", {"op": "0.2"}),
     "barlabel-proc": ("fill", "proc_fg", {}),
+    "barlabel-hold": ("fill", "fg", {}),
     "barlabel-xfer": ("fill", "xfer_fg", {}),
     "arrow": ("stroke", "arrow", {"w": "1.3", "op": "0.8", "fillnone": True}),
     "arrowhead": ("fill", "arrow", {}),
@@ -439,6 +445,7 @@ _CLASS = {
     "grid": "grid", "lane": "lane", "now": "now",
     "proc": "bar proc", "xfer": "bar xfer", "ghost": "bar xfer-ghost",
     "barlabel-proc": "barlabel proc", "barlabel-xfer": "barlabel xfer",
+    "barlabel-hold": "barlabel hold",
     "arrow": "arrow", "arrowhead": "arrowhead",
 }
 
@@ -573,13 +580,21 @@ def _svg(lane_labels, bars, arrows, *, t_max: float, now, unit, view, makespan, 
         bx = x(b.start)
         bw = max(2.0, (b.end - b.start) * scale)
         by = lane_y(b.lane) + (_ROW - _BAR) / 2
-        role = "ghost" if b.css == "xfer-ghost" else b.css  # proc | xfer | ghost
+        # proc | xfer | ghost
+        role = "ghost" if b.css in ("xfer-ghost", "hold-ghost") else b.css
         parts.append(
             f'<rect {_attr(role, theme)} x="{bx:.1f}" y="{by:.1f}" '
             f'width="{bw:.1f}" height="{_BAR}" rx="3"/>'
         )
         if b.label and bw > 26:
-            lbl_role = "barlabel-xfer" if b.css == "xfer" else "barlabel-proc"
+            # A ghost bar is pale in both themes, so its label takes the ordinary
+            # foreground rather than the on-fill colour a solid bar uses.
+            if b.css == "xfer":
+                lbl_role = "barlabel-xfer"
+            elif b.css == "hold-ghost":
+                lbl_role = "barlabel-hold"
+            else:
+                lbl_role = "barlabel-proc"
             parts.append(
                 f'<text {_attr(lbl_role, theme)} x="{bx + 4:.1f}" '
                 f'y="{by + _BAR - 6:.1f}">{_esc(_clip(b.label, bw))}</text>'
@@ -614,6 +629,7 @@ _STYLE = """
   .bar.xfer { fill: var(--xfer); }
   .bar.xfer-ghost { fill: var(--ghost); }
   .barlabel.proc { fill: var(--proc-fg); }
+  .barlabel.hold { fill: var(--fg); }
   .barlabel.xfer { fill: var(--xfer-fg); }
   .arrow { stroke: var(--arrow); stroke-width: 1.3; fill: none; opacity: 0.8; }
   .arrowhead { fill: var(--arrow); }

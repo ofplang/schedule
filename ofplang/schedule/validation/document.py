@@ -49,6 +49,7 @@ PROCESSING_KEYS = {
     "input_spots",
     "output_spots",
     "consumption",
+    "device_access",
 }
 # A transport carries an optional `seq` (its position in a multi-leg chain that
 # serves one logical arc; absent on a single-leg transport). See §6.6.
@@ -342,6 +343,18 @@ def _check_processing(amap: YMap, base: str, diags: Diagnostics) -> None:
     node = shape.require(amap, "node", base, diags)
     _check_node_path(node, shape.join(base, "node"), diags)
     _check_consumption(amap.get("consumption"), shape.join(base, "consumption"), diags)
+    # The `device_access` echo (§6.3). Shape only: whether it agrees with the
+    # environment is not this validator's business (nothing here reads the
+    # environment), and a fixed activity is deliberately read from its echo rather
+    # than from the environment anyway (§7).
+    access = amap.get("device_access")
+    if access is not None and not (isinstance(access, YScalar) and access.is_bool):
+        diags.error(
+            errors.WRONG_TYPE,
+            "device_access must be a boolean",
+            shape.join(base, "device_access"),
+            at=access,
+        )
 
 
 def _check_consumption(node: YNode | None, path: str, diags: Diagnostics) -> None:

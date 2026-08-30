@@ -1,0 +1,5 @@
+outcome: valid
+notes: >-
+  A refrigerator holding two plates at once: each mode binds a slot and takes
+  real time, and `device_access: false` says the machine is not held meanwhile
+  (spec §4.4.2, §5.5). The device stays named -- it owns the spots.

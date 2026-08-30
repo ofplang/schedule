@@ -56,6 +56,14 @@ RESOURCE_DEVICE_NOT_IN_MODE = "resource_device_not_in_mode"
 # A mode draws more of a resource than its device can ever hold, so the work it
 # describes cannot run however the schedule is arranged (§4.7.1).
 CONSUMPTION_EXCEEDS_CAPACITY = "consumption_exceeds_capacity"
+# `device_access` (§5.5 / §4.4.2). It says whether the mode holds the devices it
+# names, so it is meaningless without devices; and a mode that holds neither a device
+# nor a spot is the Pure-Data-only case, written by omitting `devices` instead.
+DEVICE_ACCESS_WITHOUT_DEVICES = "device_access_without_devices"
+DEVICE_ACCESS_WITHOUT_SPOTS = "device_access_without_spots"
+# A non-accessing mode may not draw on a stock: §4.7's ordering of a stock's events
+# rests on every activity that touches it occupying the device that holds it.
+CONSUMPTION_WITHOUT_DEVICE_ACCESS = "consumption_without_device_access"
 
 # §10.3 Execution document
 MISSING_ACTIVITIES = "missing_activities"
@@ -224,6 +232,9 @@ ERROR_CODES = frozenset(
         SPOT_DEVICE_NOT_IN_MODE,
         RESOURCE_DEVICE_NOT_IN_MODE,
         CONSUMPTION_EXCEEDS_CAPACITY,
+        DEVICE_ACCESS_WITHOUT_DEVICES,
+        DEVICE_ACCESS_WITHOUT_SPOTS,
+        CONSUMPTION_WITHOUT_DEVICE_ACCESS,
         MISSING_ACTIVITIES,
         UNKNOWN_ACTIVITY_KIND,
         UNKNOWN_STATUS,

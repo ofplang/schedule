@@ -396,7 +396,11 @@ non-overlapping. A processing activity occupies its mode's devices $L_{i,m}$ ove
 $[s_i,e_i]$; a transport activity occupies $L_{r,m,n,t}$ over its transport
 interval $[a_r,b_r]$ (the conservative formulation: source device, destination
 device, and the chosen transporter are all held during transport). A boundary node
-has an **empty device set**, so it holds no device — only its spot(s) (§6). The
+has an **empty device set**, so it holds no device — only its spot(s) (§6). So does a
+**non-accessing** mode (SPEC §4.4.2): $L_{i,m} = \emptyset$ where the mode declares
+`device_access: false`, though it binds its spots in §6 like any other. The device the
+mode names still owns those spots; it is simply not held while the material rests in
+them. The
 boundary *transport* still holds a source device, a destination device (the ones
 owning the interface spot and the endpoint spot), and its transporter during
 $[a_r,b_r]$, exactly like any transport.

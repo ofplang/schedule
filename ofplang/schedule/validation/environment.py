@@ -41,7 +41,15 @@ TRANSPORT_KEYS = {"transporter", "from", "to", "duration"}
 REPLENISHER_KEYS = {"id"}
 REPLENISHMENT_KEYS = {"replenisher", "device", "duration"}
 PROCESS_KEYS = {"modes"}
-MODE_KEYS = {"id", "devices", "duration", "input_spots", "output_spots", "consumption"}
+MODE_KEYS = {
+    "id",
+    "devices",
+    "device_access",
+    "duration",
+    "input_spots",
+    "output_spots",
+    "consumption",
+}
 RESOURCE_KEYS = {"capacity"}
 
 
@@ -598,11 +606,54 @@ def _check_mode(
                 if dv.value not in devices:
                     diags.error(errors.UNKNOWN_DEVICE, f"unknown device {dv.value!r}", path, at=dv)
 
+    # Optional `device_access` (§5.5 / §4.4.2): whether running this mode holds the
+    # devices it names. It only means something for a mode that names devices, and a
+    # non-accessing mode must hold a spot (one that holds neither device nor spot is
+    # the Pure-Data-only mode, written by omitting `devices`) and must not consume
+    # (§4.4.2: a stock's events are ordered by the device exclusion its draws sit
+    # under). Each is reported once, from the declaration that is wrong.
+    access_node = mmap.get("device_access")
+    if access_node is not None:
+        if not (isinstance(access_node, YScalar) and access_node.is_bool):
+            diags.error(
+                errors.WRONG_TYPE,
+                "device_access must be a boolean",
+                shape.join(base, "device_access"),
+                at=access_node,
+            )
+        else:
+            if not mode_devices:
+                # One error per mistake: a mode with no devices is malformed more
+                # fundamentally than by what it holds, so the rules below -- which
+                # ask what a *non-accessing* mode must look like -- are not run.
+                diags.error(
+                    errors.DEVICE_ACCESS_WITHOUT_DEVICES,
+                    "device_access needs a mode that names devices",
+                    shape.join(base, "device_access"),
+                    at=access_node,
+                )
+            elif access_node.value is False:
+                if not _binds_a_spot(mmap):
+                    diags.error(
+                        errors.DEVICE_ACCESS_WITHOUT_SPOTS,
+                        "a non-accessing mode must bind at least one spot",
+                        shape.join(base, "device_access"),
+                        at=access_node,
+                    )
+                if mmap.get("consumption") is not None:
+                    diags.error(
+                        errors.CONSUMPTION_WITHOUT_DEVICE_ACCESS,
+                        "a non-accessing mode may not consume resources",
+                        shape.join(base, "consumption"),
+                        at=mmap.get("consumption"),
+                    )
+
     # Required integer duration. A mode that occupies a device must take positive
-    # time (a real operation is never instantaneous). A device-less Pure-Data-only
-    # mode (§5.5) holds nothing physical, so a zero duration is coherent -- like a
-    # relay or a same-spot transport (§5.4) -- and is allowed. A negative duration
-    # is always invalid.
+    # time (a real operation is never instantaneous), and so must a non-accessing
+    # mode, which names devices too -- material resting somewhere for no time is not
+    # a step (§5.5). A device-less Pure-Data-only mode (§5.5) holds nothing physical,
+    # so a zero duration is coherent -- like a relay or a same-spot transport (§5.4)
+    # -- and is allowed. A negative duration is always invalid.
     dur = shape.require(mmap, "duration", base, diags)
     if dur is not None:
         if not (isinstance(dur, YScalar) and dur.is_int):
@@ -649,6 +700,17 @@ def _check_mode(
         mode_devices,
         diags,
     )
+
+
+def _binds_a_spot(mmap: YMap) -> bool:
+    """Whether a mode declares any Object-bearing port -> spot binding. Read off the
+    raw maps rather than `_check_mode_spots`, which reports on the entries it finds
+    and returns nothing: what matters here is only that something was declared."""
+    for key in ("input_spots", "output_spots"):
+        node = mmap.get(key)
+        if isinstance(node, YMap) and node.entries:
+            return True
+    return False
 
 
 def _check_mode_consumption(

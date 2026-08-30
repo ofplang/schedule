@@ -1,0 +1,10 @@
+time: {unit: second}
+devices:
+- id: fridge_0
+  spots: [slot_1]
+processes:
+  wait:
+    modes:
+    - devices: [fridge_0]
+      device_access: false
+      duration: 180

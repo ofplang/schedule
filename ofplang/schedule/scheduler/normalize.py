@@ -710,13 +710,17 @@ def _frozen_processing_mode(entry: YMap, process: str, env, diags) -> Mode | Non
     out = to_plain(entry.get("output_spots"))
     devs = to_plain(entry.get("devices"))
     cons = to_plain(entry.get("consumption"))
+    # Absent reads as the default, exactly as in the environment (§6.3). Without it
+    # a running non-accessing activity would be pinned as one that occupies its
+    # devices, blocking them for the rest of its run.
+    access = to_plain(entry.get("device_access"))
     # `consumption` is part of the echo for the same reason the spots are: a replan
     # may withdraw the very mode this activity used -- that is how a re-route is
     # triggered -- and a fixed activity is never re-read against the current
     # environment (§7), so what it consumed has to travel with it (§6.3). It also
     # counts towards "there is an echo here": a hand-written status may state the
     # consumption and leave the spots out.
-    if inp or out or devs or cons:
+    if inp or out or devs or cons or access is not None:
         return Mode(
             mode_id,
             tuple(devs) if isinstance(devs, list) else (),
@@ -724,6 +728,7 @@ def _frozen_processing_mode(entry: YMap, process: str, env, diags) -> Mode | Non
             dict(inp) if isinstance(inp, dict) else {},
             dict(out) if isinstance(out, dict) else {},
             consumption=dict(cons) if isinstance(cons, dict) else {},
+            device_access=True if access is None else bool(access),
         )
     capability = env.processes.get(process)
     if capability is not None:

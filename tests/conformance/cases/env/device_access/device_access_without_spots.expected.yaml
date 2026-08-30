@@ -1,0 +1,8 @@
+outcome: invalid
+match: exact
+errors:
+- {code: device_access_without_spots}
+notes: >-
+  A non-accessing mode holds no device, so a spot is the only thing it does
+  hold; one that binds none occupies nothing at all and is the Pure-Data-only
+  mode instead (spec §5.5).

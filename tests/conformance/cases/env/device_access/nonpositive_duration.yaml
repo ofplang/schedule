@@ -1,0 +1,12 @@
+time: {unit: second}
+devices:
+- id: fridge_0
+  spots: [slot_1]
+processes:
+  chill:
+    modes:
+    - devices: [fridge_0]
+      device_access: false
+      duration: 0
+      input_spots: {plate: fridge_0.slot_1}
+      output_spots: {plate: fridge_0.slot_1}

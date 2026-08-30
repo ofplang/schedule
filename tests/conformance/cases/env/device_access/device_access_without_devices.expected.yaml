@@ -1,0 +1,8 @@
+outcome: invalid
+match: exact
+errors:
+- {code: device_access_without_devices}
+notes: >-
+  `device_access` says whether the mode holds the devices it names, so it means
+  nothing on a mode that names none; spec §5.5. A mode that holds neither a
+  device nor a spot is the Pure-Data-only case, written by omitting `devices`.

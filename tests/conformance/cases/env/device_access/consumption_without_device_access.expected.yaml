@@ -1,0 +1,8 @@
+outcome: invalid
+match: exact
+errors:
+- {code: consumption_without_device_access}
+notes: >-
+  Everything §4.7 concludes about a stock rests on every activity that touches
+  it occupying the device that holds it, so a draw taken without that occupation
+  would leave that stock's events unordered; spec §4.4.2, §5.5.

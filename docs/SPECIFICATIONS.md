@@ -148,6 +148,30 @@ occupies its source device, its destination device, and a transporter; §4.5). A
 processing mode may therefore declare more than one device (§5.5). Each occupied
 device is subject to the same non-overlap rule.
 
+#### 4.4.2 Holding without accessing
+
+Some work is a device **holding** material rather than accessing it: a plate resting
+in a refrigerator held at a fixed temperature, a rack waiting in a storage hotel.
+The material occupies a spot for the whole of it and the step takes real time, but
+the machine does nothing meanwhile — it is free for something else to access.
+
+A processing mode may therefore declare `device_access: false` (§5.5). Such a mode
+binds its spots exactly as any other and has a positive duration, but occupies **no
+device**: its interval enters no device's non-overlap constraint. Its device set is
+the empty one a boundary node has (§6.8), reached by a mode that still names the
+device owning its spots — which is what says *where* the material rests, and what
+makes the mode unavailable while that device is out of service.
+
+Putting the material in and taking it out are not lost. They are transport
+activities, and a transport occupies the source and destination devices over its own
+interval (§4.5). What a non-accessing mode drops is the occupation of the device
+*while the material rests there*, and nothing else.
+
+A non-accessing mode may **not** consume resources (§4.7). Everything §4.7 concludes
+about a stock rests on every activity that touches it occupying the device holding
+it, so a draw taken without that occupation would leave that stock's events
+unordered. The environment definition refuses it (§5.5, §10.2).
+
 ### 4.5 Transport
 
 Each **Object-bearing arc** (an Object flowing from one activity's output to
@@ -438,12 +462,24 @@ process:
   Usually one device, but a mode may occupy several. **Optional**: a
   Pure-Data-only process (e.g. a `python_script` step) may omit `devices` and
   declare only a `duration`, occupying no device and no spot.
+- `device_access` (optional, default `true`) — whether running this mode **accesses**
+  the devices it names. `false` says the material merely rests on them (§4.4.2): the
+  mode binds its spots as usual, but occupies no device, so anything else may access
+  those devices while it runs. The devices stay listed — they own the spots, and a
+  mode whose device is out of service is unavailable whether it accesses it or not.
+  Constraints, all refused in the environment definition (§10.2): the mode must name
+  at least one device (`device_access` on a mode that occupies nothing says nothing),
+  must bind at least one spot (a mode that holds neither a device nor a spot is the
+  Pure-Data-only case above, written by omitting `devices`), and must not declare
+  `consumption` (§4.4.2).
 - `duration` — the estimated processing time, an integer in `time.unit`. A mode
   that occupies a device must have a **positive** duration (a real operation is
-  never instantaneous). A **device-less Pure-Data-only mode** (see `devices`
-  above) may have a duration of **zero**: it holds no device and no spot, so an
-  instantaneous step is coherent, exactly as for a relay or a same-spot transport
-  (§5.4). A negative duration is always invalid.
+  never instantaneous), and so must a **non-accessing** mode (`device_access: false`):
+  it holds a spot, and material resting somewhere for no time is not a step. A
+  **device-less Pure-Data-only mode** (see `devices` above) may have a duration of
+  **zero**: it holds no device and no spot, so an instantaneous step is coherent,
+  exactly as for a relay or a same-spot transport (§5.4). A negative duration is
+  always invalid.
 - `input_spots` — a mapping from **Object-bearing** input port name to a spot,
   given in **qualified form** `<device>.<spot>` (§8). The qualified form is
   required because a mode may name more than one device, so a bare local spot name
@@ -696,6 +732,13 @@ environment.
   `[brew, heat]`); a single-level workflow yields a one-element list.
 - `devices`, `input_spots`, `output_spots` (optional) — derivable echo of the
   mode's devices and qualified spot mappings. A Pure-Data-only activity has none.
+- `device_access` (optional) — derivable echo of the mode's `device_access` (§5.5).
+  Written only where it is `false`; its absence reads as the default, exactly as in
+  the environment. It is part of the echo for the same reason `consumption` is: a
+  started activity is read back from the echo and never re-read against the current
+  environment (§7), and an activity that occupies nothing must not come back as one
+  that occupies its devices — a running hold would then block them for the rest of
+  its run.
 - `consumption` (optional) — derivable echo of the mode's `consumption` (§5.5),
   in the same qualified form. Absent where the mode consumes nothing.
 
@@ -1229,8 +1272,9 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
   are required non-negative integers with `end >= start`. Unknown keys are errors
   (reserved `x-` extension keys excepted, §9.4).
   - processing: `process`, `mode`, and `node` (a non-empty list of identifiers) are
-    required; `devices`, `input_spots`, `output_spots`, `consumption` are optional
-    (`consumption` is a map of qualified resource id to a positive integer).
+    required; `devices`, `input_spots`, `output_spots`, `consumption`,
+    `device_access` are optional (`consumption` is a map of qualified resource id to
+    a positive integer; `device_access` is a boolean, §6.3).
   - transport: `from_spot`, `to_spot` (qualified spots) and `arc` (`from` / `to`,
     each `{ node: <list>, port: <id> }`) are required; `transporter` is required
     unless the move is same-spot (`from_spot == to_spot`), where it may be omitted
@@ -1410,7 +1454,7 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `duplicate_spot_id` | a spot name repeats within a device |
 | `machine_id_conflict` | two machines share an id — a device, a transporter and a replenisher are all machines (§8.2) |
 | `cross_kind_id_coincidence` | a spot or resource name shares an id with a machine (*warning*) |
-| `nonpositive_duration` | a device-occupying processing mode `duration` is not positive, a replenishment `duration` is not positive, or any mode `duration` is negative (a device-less pure-data mode may be zero). A `capacity` or `consumption` that is not positive is `nonpositive_value` (§10.1) — the same rule, but this code names a duration |
+| `nonpositive_duration` | a device-occupying or non-accessing (§4.4.2) processing mode `duration` is not positive, a replenishment `duration` is not positive, or any mode `duration` is negative (a device-less pure-data mode may be zero). A `capacity` or `consumption` that is not positive is `nonpositive_value` (§10.1) — the same rule, but this code names a duration |
 | `empty_time_unit` | `time.unit` is empty or not a string |
 | `unknown_transporter` | `transports.transporter` is not a defined transporter |
 | `unknown_replenisher` | `replenishments.replenisher` is not a defined replenisher |
@@ -1424,6 +1468,9 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `output_spots_share_spot` | two output ports of a mode use the same spot |
 | `spot_device_not_in_mode` | a mode's spot is on a device not in that mode's `devices` |
 | `resource_device_not_in_mode` | a mode's `consumption` names a device not in that mode's `devices` |
+| `device_access_without_devices` | `device_access` on a mode that names no device (§5.5) |
+| `device_access_without_spots` | `device_access: false` on a mode that binds no spot (§5.5) |
+| `consumption_without_device_access` | a non-accessing mode declares `consumption` (§4.4.2) |
 | `consumption_exceeds_capacity` | a mode consumes more of a resource than its device can hold (§4.7.1) |
 
 ### 10.3 Execution document (§9.2)

@@ -14,7 +14,9 @@ status. The design is documented in [docs/SPECIFICATIONS.md](docs/SPECIFICATIONS
 > **Status:** the **schema validators** (environment definition and execution
 > document, spec §9) and the **scheduler** are implemented: it produces an optimal
 > plan for a single workflow with mode selection, spot/device occupancy, and
-> transport, pins a workflow's boundary material to spots via an `interface`
+> transport, lets a mode **hold a spot without holding its device** for storage and
+> incubation (`device_access: false`, spec §4.4.2), pins a workflow's boundary
+> material to spots via an `interface`
 > (spec §6.8), respects **device-local consumable resources** — what a mode draws
 > and what a **replenishment** puts back (spec §4.7) — and **replans** from an
 > execution document (`--document`) by fixing completed/running activities and

@@ -44,6 +44,20 @@ class Mode:
     # most modes consume nothing, and a Mode is built positionally in places that
     # predate resources.
     consumption: dict[str, int] = field(default_factory=dict)
+    # Whether running this mode **accesses** its devices (SPEC §4.4.2). False says
+    # the material merely rests on them -- a plate chilling in a refrigerator, a rack
+    # waiting in a hotel: the spots are bound as usual, but no device is held, so
+    # anything else may access them meanwhile. The devices stay listed because they
+    # own the spots and because a mode whose device is down is unavailable either
+    # way. Defaulted like `consumption`, so the positional constructions that
+    # predate it keep working.
+    device_access: bool = True
+
+    @property
+    def occupied_devices(self) -> tuple[str, ...]:
+        """The devices this mode holds -- empty for a non-accessing mode, which is
+        the empty device set a boundary node has (FORMULATION §7)."""
+        return self.devices if self.device_access else ()
 
 
 @dataclass(frozen=True)

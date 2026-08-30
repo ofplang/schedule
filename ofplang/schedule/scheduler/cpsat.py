@@ -8,7 +8,8 @@ only `makespan` is realisable so far, so what is actually minimised is c_max.
 Occupancy bookkeeping mirrors FORMULATION §6/§7: a processing activity holds its
 mode's spots and devices over its run interval; a transport holds the source spot
 over [e_src, b], the destination spot over [a, s_dst], and the source device,
-destination device, and transporter over its body interval [a, b]. NoOverlap is
+destination device, and transporter over its body interval [a, b] -- except a
+non-accessing processing mode (§4.4.2), which holds its spots and no device. NoOverlap is
 applied per spot, per device, and per transporter.
 """
 
@@ -168,7 +169,10 @@ def solve(
             iv = model.NewOptionalIntervalVar(s, size, e, present, f"pi{i}_{m}")
             for spot in set(mode.input_spots.values()) | set(mode.output_spots.values()):
                 add(spot_iv, spot, iv)
-            for device in mode.devices:
+            # A non-accessing mode holds no device (§4.4.2): its spots are bound
+            # above like any other mode's, but nothing here enters a device's
+            # NoOverlap, so the machine stays free while the material rests on it.
+            for device in mode.occupied_devices:
                 add(device_iv, device, iv)
         model.AddExactlyOne(lits)
         if boundary is not None:

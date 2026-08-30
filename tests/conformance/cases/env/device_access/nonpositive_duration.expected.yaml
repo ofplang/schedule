@@ -1,0 +1,8 @@
+outcome: invalid
+match: exact
+errors:
+- {code: nonpositive_duration}
+notes: >-
+  A non-accessing mode holds a spot, and material resting somewhere for no time
+  is not a step; only a mode that holds neither device nor spot may be zero
+  (spec §5.5).

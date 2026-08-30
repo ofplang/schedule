@@ -1,0 +1,8 @@
+outcome: invalid
+match: exact
+errors:
+- {code: wrong_type}
+notes: >-
+  `device_access` is a boolean (spec §5.5). A string is a shape error like any
+  other, and nothing further is read off it -- the mode is not then judged as
+  accessing or non-accessing.

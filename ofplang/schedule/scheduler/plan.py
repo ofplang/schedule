@@ -80,6 +80,15 @@ def render_plan(
         # Derivable echo of the selected mode (§6.3); omit when empty.
         if p.mode.devices:
             entry["devices"] = list(p.mode.devices)
+        # Written only where it is False, so a plan from an environment that never
+        # says `device_access` is shaped exactly as it always was (§6.3). It is part
+        # of the echo for the same reason `consumption` is: a started activity is
+        # read back from the echo, never re-read against the current environment
+        # (§7), and an activity that occupied nothing must not come back as one that
+        # occupies its devices -- a running hold would then block them for the rest
+        # of its run.
+        if not p.mode.device_access:
+            entry["device_access"] = False
         if p.mode.input_spots:
             entry["input_spots"] = dict(p.mode.input_spots)
         if p.mode.output_spots:

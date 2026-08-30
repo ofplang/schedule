@@ -75,6 +75,7 @@ def _build(data: dict) -> Environment:
                 input_spots=dict(m.get("input_spots", {})),
                 output_spots=dict(m.get("output_spots", {})),
                 consumption=dict(m.get("consumption", {})),
+                device_access=bool(m.get("device_access", True)),
             )
             for index, m in enumerate(proc["modes"])
         )
