@@ -52,7 +52,7 @@ def test_reformatter_plan_is_valid_document(tmp_path):
 
 # The plan YAML committed under outputs/ for each example (a saved solve result)
 # must be a valid execution document (§9.2), so the tracked artifacts stay honest.
-_COMMITTED_PLANS = ["simple", "reformatter", "two_arms", "plate_batch", "consumable"]
+_COMMITTED_PLANS = ["simple", "reformatter", "two_arms", "plate_batch", "consumable", "storage"]
 
 
 @pytest.mark.parametrize("name", _COMMITTED_PLANS)

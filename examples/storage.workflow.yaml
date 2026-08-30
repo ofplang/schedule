@@ -1,0 +1,58 @@
+# Cold storage — three plates, a refrigerator that holds two of them at once.
+#
+# The workflow says nothing about occupancy: `chill` is an ordinary atomic process
+# that takes a plate and gives it back. That chilling *holds a slot without holding
+# the machine* is a property of the device running it, so it lives in the
+# environment (storage.env.yaml, SPEC §4.4.2) — the same split `consumable` uses for
+# reagent.
+#
+#   ofp-schedule schedule storage.workflow.yaml --env storage.env.yaml
+spec_version: "0.0"
+
+types:
+  Plate:
+    domain: object
+
+processes:
+
+  prep:                                         # creates the plate on the bench
+    kind: atomic
+    outputs:
+      plate: { type: Plate, phase: data }
+    objects:
+      create:
+        - outputs.plate
+
+  chill:                                        # rests in the refrigerator
+    kind: atomic
+    inputs:
+      plate: { type: Plate, phase: data }
+    outputs:
+      out: { type: Plate, phase: data }
+    objects:
+      map:
+        outputs.out: inputs.plate
+
+  measure:                                      # reads it, and is done with it
+    kind: atomic
+    inputs:
+      plate: { type: Plate, phase: data }
+    objects:
+      consume:
+        - inputs.plate
+
+  main:
+    kind: composite
+    body:
+      nodes:
+        - { id: PrepA, process: prep }
+        - { id: PrepB, process: prep }
+        - { id: PrepC, process: prep }
+        - { id: ChillA, process: chill, state: { plate: { from: PrepA.plate } } }
+        - { id: ChillB, process: chill, state: { plate: { from: PrepB.plate } } }
+        - { id: ChillC, process: chill, state: { plate: { from: PrepC.plate } } }
+        - { id: ReadA, process: measure, state: { plate: { from: ChillA.out } } }
+        - { id: ReadB, process: measure, state: { plate: { from: ChillB.out } } }
+        - { id: ReadC, process: measure, state: { plate: { from: ChillC.out } } }
+
+entry: main

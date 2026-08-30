@@ -26,6 +26,34 @@ ofp-schedule visualize examples/outputs/consumable.plan.yaml \
     --view device -o examples/outputs/consumable.device.svg
 ```
 
+## `storage` — a refrigerator that holds three plates and is held by none
+
+- `storage.workflow.yaml` — three plates, each `prep → chill → measure`. The
+  workflow says nothing about occupancy: `chill` is an ordinary atomic process that
+  takes a plate and gives it back. That chilling holds a *slot* without holding the
+  *machine* is a property of the device, so it lives in the environment — the same
+  split `consumable` makes for reagent.
+- `storage.env.yaml` — `fridge` has two slots, and `chill` declares
+  **`device_access: false`** (SPEC §4.4.2): the mode binds its slot and takes its 180
+  seconds, but no device is held. The two slots therefore fill at once, and the arm
+  can reach into the fridge while a plate is resting in it. The device is still
+  named — it owns the spots, and a fridge out of service takes its `chill` modes
+  with it.
+
+What the example is for: **450 with the key, 650 without it.** Deleting
+`device_access` serialises the three chills on a machine that does nothing for 180
+seconds at a time; `test_hold.py` pins both numbers. Putting the plates in and
+taking them out are not modelled separately and need not be — they are transports,
+and a transport already occupies the source and destination devices over its own
+interval (§4.5). Three plates over two slots also shows the other half of the rule:
+the device is free, the *slot* is not, so the third plate waits for one to open.
+
+- `outputs/storage.plan.yaml` — the solved plan, with `outputs/storage.device.svg`.
+  The device view is where the feature is visible: the chills are **ghosted** on the
+  `fridge` lane, the same way a transport's endpoints are, which is how the chart
+  says "on this machine, not holding it" — three pale bars overlapping where a solid
+  bar could never overlap another.
+
 ## `plate_batch` — a parametric generator (workflow + environment)
 
 - `gen_plate_batch.py` — generates **both** a v0 workflow and a matching

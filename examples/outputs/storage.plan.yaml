@@ -1,0 +1,208 @@
+time:
+  unit: second
+outcome: optimal
+objective:
+  kind: makespan
+  value: 450
+activities:
+- kind: processing
+  start: 0
+  end: 20
+  process: prep
+  mode: bench_1
+  node:
+  - PrepC
+  devices:
+  - prep
+  output_spots:
+    plate: prep.bench_1
+- kind: transport
+  start: 20
+  end: 30
+  from_spot: prep.bench_1
+  to_spot: fridge.slot_1
+  transporter: arm
+  arc:
+    from:
+      node:
+      - PrepC
+      port: plate
+    to:
+      node:
+      - ChillC
+      port: plate
+- kind: processing
+  start: 30
+  end: 50
+  process: prep
+  mode: bench_2
+  node:
+  - PrepA
+  devices:
+  - prep
+  output_spots:
+    plate: prep.bench_2
+- kind: processing
+  start: 30
+  end: 210
+  process: chill
+  mode: slot_1
+  node:
+  - ChillC
+  devices:
+  - fridge
+  device_access: false
+  input_spots:
+    plate: fridge.slot_1
+  output_spots:
+    out: fridge.slot_1
+- kind: processing
+  start: 160
+  end: 180
+  process: prep
+  mode: bench_1
+  node:
+  - PrepB
+  devices:
+  - prep
+  output_spots:
+    plate: prep.bench_1
+- kind: transport
+  start: 180
+  end: 190
+  from_spot: prep.bench_1
+  to_spot: fridge.slot_2
+  transporter: arm
+  arc:
+    from:
+      node:
+      - PrepB
+      port: plate
+    to:
+      node:
+      - ChillB
+      port: plate
+- kind: processing
+  start: 190
+  end: 370
+  process: chill
+  mode: slot_2
+  node:
+  - ChillB
+  devices:
+  - fridge
+  device_access: false
+  input_spots:
+    plate: fridge.slot_2
+  output_spots:
+    out: fridge.slot_2
+- kind: transport
+  start: 210
+  end: 220
+  from_spot: fridge.slot_1
+  to_spot: reader.stage
+  transporter: arm
+  arc:
+    from:
+      node:
+      - ChillC
+      port: out
+    to:
+      node:
+      - ReadC
+      port: plate
+- kind: transport
+  start: 220
+  end: 230
+  from_spot: prep.bench_2
+  to_spot: fridge.slot_1
+  transporter: arm
+  arc:
+    from:
+      node:
+      - PrepA
+      port: plate
+    to:
+      node:
+      - ChillA
+      port: plate
+- kind: processing
+  start: 220
+  end: 250
+  process: measure
+  mode: '0'
+  node:
+  - ReadC
+  devices:
+  - reader
+  input_spots:
+    plate: reader.stage
+- kind: processing
+  start: 230
+  end: 410
+  process: chill
+  mode: slot_1
+  node:
+  - ChillA
+  devices:
+  - fridge
+  device_access: false
+  input_spots:
+    plate: fridge.slot_1
+  output_spots:
+    out: fridge.slot_1
+- kind: transport
+  start: 370
+  end: 380
+  from_spot: fridge.slot_2
+  to_spot: reader.stage
+  transporter: arm
+  arc:
+    from:
+      node:
+      - ChillB
+      port: out
+    to:
+      node:
+      - ReadB
+      port: plate
+- kind: processing
+  start: 380
+  end: 410
+  process: measure
+  mode: '0'
+  node:
+  - ReadB
+  devices:
+  - reader
+  input_spots:
+    plate: reader.stage
+- kind: transport
+  start: 410
+  end: 420
+  from_spot: fridge.slot_1
+  to_spot: reader.stage
+  transporter: arm
+  arc:
+    from:
+      node:
+      - ChillA
+      port: out
+    to:
+      node:
+      - ReadA
+      port: plate
+- kind: processing
+  start: 420
+  end: 450
+  process: measure
+  mode: '0'
+  node:
+  - ReadA
+  devices:
+  - reader
+  input_spots:
+    plate: reader.stage
+meta:
+  workflow: examples/storage.workflow.yaml
+  environment: examples/storage.env.yaml

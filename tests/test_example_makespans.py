@@ -47,6 +47,16 @@ CASES = [
     # the run starts with) and one refill covers both assays. 33 rather than 32
     # because the refill holds the reader while it works and cannot be laid over the
     # assays it feeds -- 32 was the makespan while refills occupied nothing.
+    # storage: three plates over a two-slot refrigerator whose `chill` mode does not
+    # access the device (§4.4.2). 450; the same instance is 650 when chilling holds
+    # the machine, which is what test_hold.py pins.
+    (
+        "storage",
+        EXAMPLES / "storage.workflow.yaml",
+        EXAMPLES / "storage.env.yaml",
+        None,
+        450,
+    ),
     (
         "consumable",
         EXAMPLES / "consumable.workflow.yaml",
