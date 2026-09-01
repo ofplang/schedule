@@ -31,8 +31,8 @@ processes:
       - inputs.plate_2
   peal:
     kind: atomic
-    traits:
-    - elidable_iso
+    behavior:
+    - object_identity_map
     inputs:
       plate:
         type: Plate
@@ -43,8 +43,8 @@ processes:
         phase: data
   dispense:
     kind: atomic
-    traits:
-    - elidable_iso
+    behavior:
+    - object_identity_map
     inputs:
       plate:
         type: Plate
@@ -55,8 +55,8 @@ processes:
         phase: data
   seal:
     kind: atomic
-    traits:
-    - elidable_iso
+    behavior:
+    - object_identity_map
     inputs:
       plate:
         type: Plate
@@ -67,8 +67,8 @@ processes:
         phase: data
   thermal_cycle:
     kind: atomic
-    traits:
-    - elidable_iso
+    behavior:
+    - object_identity_map
     inputs:
       plate:
         type: Plate
@@ -79,8 +79,8 @@ processes:
         phase: data
   rotate:
     kind: atomic
-    traits:
-    - elidable_iso
+    behavior:
+    - object_identity_map
     inputs:
       plate:
         type: Plate

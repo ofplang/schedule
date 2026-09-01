@@ -73,7 +73,7 @@ the device is free, the *slot* is not, so the third plate waits for one to open.
   than shared. Single-device stages (peal/dispense/seal/rotate) are contended
   across branches; `thermal_cycle` has a `--thermal-cycler-pool`-device pool (default 2,
   an environment-only knob) the scheduler spreads parallel branches over via mode
-  selection. Stages are `elidable_iso`
+  selection. Stages are `object_identity_map`
   (a single `plate` port passes through); the source creates each plate and the
   sink consumes it.
 - `outputs/plate_batch.{workflow,env}.yaml` — a sample pair generated with

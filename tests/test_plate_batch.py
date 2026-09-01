@@ -95,11 +95,11 @@ def test_thermal_cycler_pool_is_configurable(tmp_path):
         assert schedule(tmp_path / "wf.yaml", env_path).outcome == "optimal"
 
 
-def test_stages_are_elidable_iso():
+def test_stages_are_object_identity_map():
     doc = _generator().build_workflow(1, 1)
     for stage in _STAGES:
         proc = doc["processes"][stage]
-        assert proc.get("traits") == ["elidable_iso"]
+        assert proc.get("behavior") == ["object_identity_map"]
         assert set(proc["inputs"]) == {"plate"} and set(proc["outputs"]) == {"plate"}
         assert "objects" not in proc
 

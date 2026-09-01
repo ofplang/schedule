@@ -22,7 +22,7 @@ environment therefore cannot be a single fixed file; this script emits a matchin
 `env.yaml` alongside the `workflow.yaml`. The single-device stages
 (peal/dispense/seal/rotate) are contended across branches, while thermal_cycle has
 a `--thermal-cycler-pool`-device pool (default 2, an environment-only knob) the scheduler
-spreads parallel branches over via mode selection. Stages are `elidable_iso` (a
+spreads parallel branches over via mode selection. Stages are `object_identity_map` (a
 single `plate` port passes through).
 
 Usage:
@@ -81,12 +81,13 @@ def build_workflow(branches: int, repeats: int) -> dict:
             "objects": {"consume": [f"inputs.{p}" for p in branch_ports]},
         },
     }
-    # Stages pass the plate through unchanged: elidable_iso on a single `plate`
-    # port (v0 infers the same-name identity map, so no `objects` section).
+    # Stages pass the plate through unchanged: object_identity_map on a single
+    # `plate` port (v0 infers the same-name identity map, so no `objects`
+    # section).
     for stage in _STAGES:
         processes[stage] = {
             "kind": "atomic",
-            "traits": ["elidable_iso"],
+            "behavior": ["object_identity_map"],
             "inputs": _plate_ports("plate"),
             "outputs": _plate_ports("plate"),
         }
