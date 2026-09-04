@@ -1,0 +1,9 @@
+activities:
+- kind: replenishment
+  job: morning
+  start: 0
+  end: 10
+  id: replenishment_0
+  device: reader
+  replenisher: dispenser
+  amounts: {reagent: 6}

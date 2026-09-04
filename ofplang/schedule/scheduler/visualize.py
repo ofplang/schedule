@@ -211,7 +211,7 @@ def _workflow_layout(activities):
         if kind == "processing":
             lane_labels.append(_proc_label(a))
             bars.append(_Bar(lane, s, e, _proc_label(a), "proc"))
-            proc_lane[tuple(a.get("node") or [])] = lane
+            proc_lane[_node_key(a)] = lane
         elif kind == "replenishment":
             # Its own lane, and no arrows: a refill connects nothing to anything.
             # It is here because it takes time on machines the rest of the plan
@@ -220,9 +220,8 @@ def _workflow_layout(activities):
             lane_labels.append(label)
             bars.append(_Bar(lane, s, e, label, "xfer"))
         else:
-            arc = a.get("arc") or {}
-            src = tuple((arc.get("from") or {}).get("node") or [])
-            dst = tuple((arc.get("to") or {}).get("node") or [])
+            src = _arc_end_key(a, "from")
+            dst = _arc_end_key(a, "to")
             lane_labels.append(_xfer_label(a))
             bars.append(_Bar(lane, s, e, _xfer_label(a), "xfer"))
             transports.append((lane, src, dst))
@@ -256,16 +255,16 @@ def _lane_layout(activities):
     proc = [a for a in activities if a.get("kind") == "processing"]
     xfer = [a for a in activities if a.get("kind") == "transport"]
     refills = [a for a in activities if a.get("kind") == "replenishment"]
-    visible = {tuple(a.get("node") or []) for a in proc}
+    visible = {_node_key(a) for a in proc}
 
     # Predecessors / successors from the transport arcs.
     preds: dict[tuple, list[tuple]] = {}
     succs: dict[tuple, list[tuple]] = {}
     for t in xfer:
         arc = t.get("arc") or {}
-        src = tuple((arc.get("from") or {}).get("node") or [])
+        src = _arc_end_key(t, "from")
         sport = (arc.get("from") or {}).get("port")
-        dst = tuple((arc.get("to") or {}).get("node") or [])
+        dst = _arc_end_key(t, "to")
         if src in visible and dst in visible:
             preds.setdefault(dst, []).append((src, sport))
             succs.setdefault(src, []).append((sport, dst))
@@ -274,8 +273,11 @@ def _lane_layout(activities):
     lane_by_node: dict[tuple, int] = {}
     out_lane_by_port: dict[tuple, int] = {}
     next_lane = 0
-    for a in sorted(proc, key=lambda a: (float(a.get("start", 0)), tuple(a.get("node") or []))):
-        node = tuple(a.get("node") or [])
+    def _order(a: dict) -> tuple:
+        return (float(a.get("start", 0)), a.get("job") or "", tuple(a.get("node") or []))
+
+    for a in sorted(proc, key=_order):
+        node = _node_key(a)
         pp = preds.get(node, [])
         if not pp:  # source: its own lane
             lane_by_node[node] = next_lane
@@ -311,8 +313,8 @@ def _lane_layout(activities):
         lane_by_node[node] = out_lane_by_port[(pred_node, pred_port)]
 
     proc_geom = {
-        tuple(a.get("node") or []): (
-            lane_by_node.get(tuple(a.get("node") or []), 0),
+        _node_key(a): (
+            lane_by_node.get(_node_key(a), 0),
             float(a.get("start", 0)),
             float(a.get("end", 0)),
         )
@@ -323,9 +325,8 @@ def _lane_layout(activities):
     extra = max(lane_by_node.values(), default=-1) + 1
     xfer_info = []  # (lane, start, end, src, dst)
     for t in xfer:
-        arc = t.get("arc") or {}
-        src = tuple((arc.get("from") or {}).get("node") or [])
-        dst = tuple((arc.get("to") or {}).get("node") or [])
+        src = _arc_end_key(t, "from")
+        dst = _arc_end_key(t, "to")
         s, e = float(t.get("start", 0)), float(t.get("end", 0))
         if src in lane_by_node and len(succs.get(src, [])) > 1 and dst in lane_by_node:
             lane = lane_by_node[dst]
@@ -351,10 +352,9 @@ def _lane_layout(activities):
 
     bars: list[_Bar] = []
     for a in proc:
-        node = tuple(a.get("node") or [])
         bars.append(
             _Bar(
-                remap[lane_by_node[node]],
+                remap[lane_by_node[_node_key(a)]],
                 float(a.get("start", 0)),
                 float(a.get("end", 0)),
                 _proc_label(a),
@@ -649,16 +649,43 @@ def _device_of(qualified_spot) -> str:
     return ""
 
 
+def _node_key(a: dict) -> tuple:
+    """Identity of a processing activity for the two flow views: its node path,
+    scoped by the job it belongs to.
+
+    On a single-workflow plan `job` is absent and the key is effectively the path it
+    always was. On a joint plan (§6.11) two jobs of the same workflow render the very
+    same path, so without the job an arc would be traced from one job's step to the
+    other's, and both would fight over one lane."""
+    return (a.get("job"), tuple(a.get("node") or []))
+
+
+def _arc_end_key(a: dict, side: str) -> tuple:
+    """`_node_key` for one end of a transport's arc (`from` / `to`). A transport
+    belongs to exactly one job, so both of its endpoints are that job's."""
+    end = (a.get("arc") or {}).get(side) or {}
+    return (a.get("job"), tuple(end.get("node") or []))
+
+
+def _job_prefix(a: dict) -> str:
+    """`job:` in front of an activity's label on a joint plan (§6.11), and nothing at
+    all on a single-workflow one. Two jobs of the same workflow render the same node
+    path, so without this a chart of two jobs shows every bar twice under one name."""
+    job = a.get("job")
+    return f"{job}:" if job else ""
+
+
 def _proc_label(a: dict) -> str:
     node = a.get("node") or []
-    return "/".join(str(x) for x in node) or str(a.get("process", "?"))
+    name = "/".join(str(x) for x in node) or str(a.get("process", "?"))
+    return _job_prefix(a) + name
 
 
 def _xfer_label(a: dict) -> str:
     to = (a.get("arc") or {}).get("to") or {}
     node = to.get("node") or []
     # ASCII prefix (">") keeps output printable on any console encoding.
-    return "> " + ("/".join(str(x) for x in node) if node else "transport")
+    return "> " + _job_prefix(a) + ("/".join(str(x) for x in node) if node else "transport")
 
 
 def _makespan_of(objective):

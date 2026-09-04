@@ -1,0 +1,8 @@
+activities:
+- kind: processing
+  job: "not an id"
+  start: 0
+  end: 60
+  process: measure_od
+  mode: fast
+  node: [assay]

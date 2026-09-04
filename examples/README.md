@@ -108,6 +108,40 @@ ofp-schedule schedule interface_load.workflow.yaml --env interface_load.env.yaml
 An Object-bearing entry input with no `interface` binding is an error
 (`interface_input_missing`), so `--document` is required here.
 
+## `shared_refill` — the refill that only two jobs together need
+
+The one example that plans **several workflows at once** (SPEC §6.11). It reuses the
+`consumable` reader, and the whole demonstration is that the *same* file, given
+twice, does not simply cost twice as much:
+
+```sh
+# one job: no replenishment at all
+ofp-schedule schedule shared_refill.workflow.yaml \
+    --env consumable.env.yaml --document shared_refill.document.yaml
+
+# two jobs: exactly one refill, shared
+ofp-schedule schedule shared_refill.workflow.yaml shared_refill.workflow.yaml \
+    --env consumable.env.yaml --document shared_refill.document.yaml
+```
+
+- `shared_refill.workflow.yaml` — one plate: made, assayed, discarded. It says
+  nothing about consumables, which is the point: whether a run needs a refill is not
+  a property of the workflow.
+- `shared_refill.document.yaml` — the reader starts with **2** units and holds 6.
+  One assay draws 2, so one job is exactly self-sufficient and two jobs are not.
+
+Neither workflow asks for a refill, and neither needs one alone. It appears because
+the stock belongs to the **device** (SPEC §4.7): planning the jobs together is what
+puts them on one stock, and one visit to the dispenser tops it up for whichever
+assays come after it, from either job. That refill is the one activity in the plan
+with no `job` — the scheduler decided to run it, and it serves both.
+
+Every other activity carries its `job`. Bare filenames are numbered `job1`, `job2`
+in the order written (which is what lets the same file mean two runs of it); write
+`morning=shared_refill.workflow.yaml` to name a job instead. `node` stays relative
+to that job's own workflow, so the two jobs render identical paths and are told
+apart by `job` alone.
+
 ## `consumable` — a limited stock two assays compete for
 
 - `consumable.workflow.yaml` — two plates, each assayed then discarded. The

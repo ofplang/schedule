@@ -37,8 +37,13 @@ OUTCOMES = {"optimal", "feasible", "infeasible", "unknown"}
 STATUSES = {"pending", "running", "completed", "failed", "cancelled"}
 OBJECTIVE_KEYS = {"kind", "value"}
 TIME_KEYS = {"unit"}
+# `job` scopes an activity's workflow provenance to one of several workflows planned
+# together (§6.11). Optional and absent from every single-workflow plan, which is why
+# it is not part of the identity of a document that never had one: a plan with one
+# workflow is exactly the document it always was.
 PROCESSING_KEYS = {
     "kind",
+    "job",
     "status",
     "start",
     "end",
@@ -55,6 +60,7 @@ PROCESSING_KEYS = {
 # serves one logical arc; absent on a single-leg transport). See §6.6.
 TRANSPORT_KEYS = {
     "kind",
+    "job",
     "status",
     "start",
     "end",
@@ -66,9 +72,11 @@ TRANSPORT_KEYS = {
 }
 # A relay (§6) is a transport junction: it belongs to a logical `arc` at a `seq`
 # position, occupies one `spot`, and is instantaneous (end == start).
-RELAY_KEYS = {"kind", "status", "start", "end", "arc", "seq", "spot"}
+RELAY_KEYS = {"kind", "job", "status", "start", "end", "arc", "seq", "spot"}
 # A replenishment (§6.9) refills one device's stocks. It is the one kind with no
-# workflow provenance -- no `node`, no `arc` -- so it carries an explicit `id`.
+# workflow provenance -- no `node`, no `arc` -- so it carries an explicit `id`, and
+# no `job` either: the scheduler decided to run it, and in a joint plan one refill
+# commonly serves several jobs (§6.11).
 REPLENISHMENT_KEYS = {"kind", "status", "start", "end", "id", "device", "replenisher", "amounts"}
 ACTIVITY_KINDS = {"processing", "transport", "relay", "replenishment"}
 ARC_ENDPOINT_KEYS = {"node", "port"}
@@ -294,6 +302,7 @@ def _check_activity(node: YNode, base: str, diags: Diagnostics) -> None:
         "replenishment": REPLENISHMENT_KEYS,
     }[kind]
     shape.unknown_keys(amap, allowed, base, diags)
+    _check_job(amap.get("job"), base, diags)
     _check_status(amap.get("status"), base, diags)
     _check_interval(amap, base, diags)
 
@@ -305,6 +314,20 @@ def _check_activity(node: YNode, base: str, diags: Diagnostics) -> None:
         _check_replenishment(amap, base, diags)
     else:
         _check_relay(amap, base, diags)
+
+
+def _check_job(node: YNode | None, base: str, diags: Diagnostics) -> None:
+    """`job` (§6.11): which of several jointly planned workflows this activity came
+    from. An identifier, because it prefixes the activity's provenance the way a
+    machine id names a machine -- and absent on every single-workflow plan, where
+    there is only one workflow for a `node` to be relative to."""
+    if node is None:
+        return
+    path = shape.join(base, "job")
+    if not (isinstance(node, YScalar) and node.is_str):
+        diags.error(errors.WRONG_TYPE, "job must be a string", path, at=node)
+    elif not is_identifier(node.value):
+        diags.error(errors.INVALID_IDENTIFIER, f"invalid job {node.value!r}", path, at=node)
 
 
 def _check_status(node: YNode | None, base: str, diags: Diagnostics) -> None:

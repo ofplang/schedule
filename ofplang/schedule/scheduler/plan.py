@@ -24,20 +24,29 @@ def render_plan(
     instance: Instance,
     solution: Solution,
     *,
-    workflow: str | None = None,
+    # A string for one workflow, the list of them (in job order) for a joint plan.
+    workflow: str | list[str] | None = None,
     environment: str | None = None,
     status: str | None = None,
     now: int | None = None,
     interface: dict | None = None,
     inventories: dict | None = None,
     ignore_resources: bool = False,
+    jobs: tuple[str, ...] = (),
 ) -> dict:
     """Build the execution-document dict for `solution`.
 
     `inventories` is echoed either way -- it is the caller's own input, and dropping
     it would lose the round trip -- but with `ignore_resources` no activity carries a
     `consumption` echo, so a plan adds nothing a reader that predates resources
-    cannot read (§4.7.3)."""
+    cannot read (§4.7.3).
+
+    `jobs` names the jobs of a joint plan (SPEC §6.11), and saying so is what makes
+    every workflow node path in the instance job-prefixed (`instance.prefix_instance`).
+    Rendering splits that prefix back off into each activity's `job` field, so `node`
+    stays the workflow-relative path it has always been. Empty -- the single-workflow
+    case -- means node paths carry no prefix and no activity gets a `job`, which is
+    what keeps such a plan byte-for-byte what it was."""
     activities: list[dict] = []
 
     for p in solution.processing:
@@ -48,8 +57,9 @@ def render_plan(
             continue
         if p.relay is not None:
             # A relay junction (§6.4.1): identity is its arc + seq + spot, not a
-            # workflow node.
+            # workflow node. Its job is the one the arc belongs to.
             entry: dict[str, Any] = {"kind": "relay"}
+            _set_job(entry, _arc_job(p.relay.arc, jobs))
             if p.status is not None:
                 entry["status"] = p.status
             entry.update(
@@ -58,13 +68,15 @@ def render_plan(
                     "end": p.end,
                     "seq": p.relay.seq,
                     "spot": p.relay.spot,
-                    "arc": _arc(p.relay.arc),
+                    "arc": _arc(p.relay.arc, jobs),
                 }
             )
             activities.append(entry)
             continue
 
         entry = {"kind": "processing"}
+        job, node = _split_job(p.node, jobs)
+        _set_job(entry, job)
         # A fixed activity keeps its status (§6.2); pending activities omit it.
         if p.status is not None:
             entry["status"] = p.status
@@ -74,7 +86,7 @@ def render_plan(
                 "end": p.end,
                 "process": p.process,
                 "mode": p.mode.id,
-                "node": list(p.node),
+                "node": node,
             }
         )
         # Derivable echo of the selected mode (§6.3); omit when empty.
@@ -108,6 +120,7 @@ def render_plan(
 
     for t in solution.transport:
         entry = {"kind": "transport"}
+        _set_job(entry, _arc_job(t.arc, jobs))
         if t.status is not None:
             entry["status"] = t.status
         entry["start"] = t.start
@@ -119,7 +132,7 @@ def render_plan(
         # the spots, and the route (from == to) is unambiguous without it.
         if t.option.from_spot != t.option.to_spot:
             entry["transporter"] = t.option.transporter
-        entry["arc"] = _arc(t.arc)
+        entry["arc"] = _arc(t.arc, jobs)
         # Chain position on a multi-leg move (§6.6); omit for a single-leg transport.
         if t.seq is not None:
             entry["seq"] = t.seq
@@ -180,11 +193,47 @@ def render_plan(
     return doc
 
 
-def _arc(arc) -> dict:
-    """Render an Arc as the document's `{from, to}` provenance."""
+def _split_job(path, jobs: tuple[str, ...]) -> tuple[str | None, list]:
+    """Split a job-prefixed node path into its job id and the workflow-relative path
+    the document carries (SPEC §6.11).
+
+    Two paths are left alone: any path at all when `jobs` is empty (a single-workflow
+    plan prefixes nothing), and the **empty** path, which is the interface side of a
+    boundary arc (§6.8) and belongs to no job.
+    """
+    if not jobs or not path:
+        return None, list(path)
+    job = path[0]
+    # The prefix was put there by `instance.prefix_instance` from this same job list.
+    # Anything else means the two have drifted, and silently shipping a mangled `node`
+    # would be far worse than stopping: a replan matches activities by that path.
+    assert job in jobs, f"node path {list(path)!r} does not start with a known job id"
+    return job, list(path[1:])
+
+
+def _set_job(entry: dict, job: str | None) -> None:
+    """Record which job an activity belongs to, right after `kind` so it reads as
+    part of the activity's identity. Omitted entirely on a single-workflow plan
+    (`job` is None there), which is what keeps such a plan unchanged.
+
+    A replenishment never gets one: the scheduler decided to run it, and in a joint
+    plan a single refill commonly serves several jobs (§6.9, §6.11)."""
+    if job is not None:
+        entry["job"] = job
+
+
+def _arc_job(arc, jobs: tuple[str, ...]) -> str | None:
+    """The job an arc belongs to. A boundary arc has one empty-path endpoint (§6.8),
+    so the job is read off whichever end names a real node."""
+    return _split_job(arc.src.node, jobs)[0] or _split_job(arc.dst.node, jobs)[0]
+
+
+def _arc(arc, jobs: tuple[str, ...] = ()) -> dict:
+    """Render an Arc as the document's `{from, to}` provenance, with the job prefix
+    split off both endpoints (it is carried once, by the activity's `job`)."""
     return {
-        "from": {"node": list(arc.src.node), "port": arc.src.port},
-        "to": {"node": list(arc.dst.node), "port": arc.dst.port},
+        "from": {"node": _split_job(arc.src.node, jobs)[1], "port": arc.src.port},
+        "to": {"node": _split_job(arc.dst.node, jobs)[1], "port": arc.dst.port},
     }
 
 
@@ -210,10 +259,13 @@ def _fold_relayed_zero_distance(activities: list[dict]) -> list[dict]:
     it would not round-trip. It carries no `transporter` (rendered above), which is
     what marks it as a no-op in the output.
     """
+    # `job` is part of the pairing key, not decoration: the rendered `arc` has its job
+    # prefix split off (§6.11), so two jobs running the same workflow render the same
+    # arc, and without the job a leg could pair with the other job's relay.
     relay_at: dict[tuple, int] = {}
     for i, a in enumerate(activities):
         if a["kind"] == "relay":
-            relay_at[(_arc_key(a["arc"]), a["seq"])] = i
+            relay_at[(a.get("job"), _arc_key(a["arc"]), a["seq"])] = i
     drop: set[int] = set()
     for i, a in enumerate(activities):
         if a["kind"] != "transport" or a["from_spot"] != a["to_spot"] or a["start"] != a["end"]:
@@ -221,7 +273,7 @@ def _fold_relayed_zero_distance(activities: list[dict]) -> list[dict]:
         seq = a.get("seq")
         if seq is None:
             continue  # standalone same-spot hop: no relay to pair with, so kept
-        j = relay_at.get((_arc_key(a["arc"]), seq - 1))
+        j = relay_at.get((a.get("job"), _arc_key(a["arc"]), seq - 1))
         if j is not None:
             drop.add(i)
             drop.add(j)

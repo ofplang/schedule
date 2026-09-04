@@ -1,0 +1,173 @@
+time:
+  unit: second
+inventories:
+  levels:
+    reader:
+      reagent: 2
+outcome: optimal
+objective:
+  kind:
+  - makespan
+  - replenishment_count
+  value:
+  - 33
+  - 1
+activities:
+- kind: processing
+  job: job2
+  start: 0
+  end: 3
+  process: make_plate
+  mode: slot_b
+  node:
+  - Make
+  devices:
+  - bench
+  output_spots:
+    plate: bench.slot_b
+- kind: replenishment
+  id: replenishment_0
+  start: 0
+  end: 4
+  device: reader
+  replenisher: dispenser
+  amounts:
+    reagent: 4
+- kind: transport
+  job: job2
+  start: 4
+  end: 6
+  from_spot: bench.slot_b
+  to_spot: reader.stage
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Make
+      port: plate
+    to:
+      node:
+      - Assay
+      port: plate
+- kind: processing
+  job: job1
+  start: 6
+  end: 9
+  process: make_plate
+  mode: slot_b
+  node:
+  - Make
+  devices:
+  - bench
+  output_spots:
+    plate: bench.slot_b
+- kind: processing
+  job: job2
+  start: 6
+  end: 16
+  process: assay
+  mode: '0'
+  node:
+  - Assay
+  devices:
+  - reader
+  input_spots:
+    plate: reader.stage
+  output_spots:
+    out: reader.stage
+  consumption:
+    reader.reagent: 2
+- kind: transport
+  job: job2
+  start: 16
+  end: 18
+  from_spot: reader.stage
+  to_spot: bin.chute
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Assay
+      port: out
+    to:
+      node:
+      - Drop
+      port: plate
+- kind: processing
+  job: job2
+  start: 18
+  end: 19
+  process: discard
+  mode: '0'
+  node:
+  - Drop
+  devices:
+  - bin
+  input_spots:
+    plate: bin.chute
+- kind: transport
+  job: job1
+  start: 18
+  end: 20
+  from_spot: bench.slot_b
+  to_spot: reader.stage
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Make
+      port: plate
+    to:
+      node:
+      - Assay
+      port: plate
+- kind: processing
+  job: job1
+  start: 20
+  end: 30
+  process: assay
+  mode: '0'
+  node:
+  - Assay
+  devices:
+  - reader
+  input_spots:
+    plate: reader.stage
+  output_spots:
+    out: reader.stage
+  consumption:
+    reader.reagent: 2
+- kind: transport
+  job: job1
+  start: 30
+  end: 32
+  from_spot: reader.stage
+  to_spot: bin.chute
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Assay
+      port: out
+    to:
+      node:
+      - Drop
+      port: plate
+- kind: processing
+  job: job1
+  start: 32
+  end: 33
+  process: discard
+  mode: '0'
+  node:
+  - Drop
+  devices:
+  - bin
+  input_spots:
+    plate: bin.chute
+meta:
+  workflow:
+  - examples/shared_refill.workflow.yaml
+  - examples/shared_refill.workflow.yaml
+  environment: examples/consumable.env.yaml
+  status: examples/shared_refill.document.yaml

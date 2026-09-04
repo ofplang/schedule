@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from ofplang.schedule import schedule
+from ofplang.schedule import JobInput, schedule, schedule_jobs
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = ROOT / "examples"
@@ -64,6 +64,15 @@ CASES = [
         EXAMPLES / "consumable.document.yaml",
         33,
     ),
+    # shared_refill on its own: one plate against a stock that exactly covers it, so
+    # no refill is planned at all. Its two-job counterpart is pinned below.
+    (
+        "shared_refill",
+        EXAMPLES / "shared_refill.workflow.yaml",
+        EXAMPLES / "consumable.env.yaml",
+        EXAMPLES / "shared_refill.document.yaml",
+        18,
+    ),
 ]
 
 
@@ -74,3 +83,22 @@ def test_example_makespan_is_stable(name, workflow, env, document, expected):
     report = schedule(workflow, env, document_path=document)
     assert report.outcome == "optimal", f"{name}: outcome={report.outcome}"
     assert report.makespan == expected, f"{name}: makespan={report.makespan}, expected {expected}"
+
+
+def test_shared_refill_two_jobs_makespan_is_stable():
+    """The joint plan (§6.11) of the same example, anchored the same way.
+
+    33 rather than twice the 18 above: the two jobs overlap where the environment
+    lets them and serialise on the reader, and the refill they share holds that
+    reader for its 4 seconds in between.
+    """
+    report = schedule_jobs(
+        [
+            JobInput("job1", EXAMPLES / "shared_refill.workflow.yaml"),
+            JobInput("job2", EXAMPLES / "shared_refill.workflow.yaml"),
+        ],
+        EXAMPLES / "consumable.env.yaml",
+        document_path=EXAMPLES / "shared_refill.document.yaml",
+    )
+    assert report.outcome == "optimal"
+    assert report.makespan == 33

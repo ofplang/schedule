@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: invalid_identifier}
+notes: An activity's `job` must be an identifier; spec §6.11, §8.1.

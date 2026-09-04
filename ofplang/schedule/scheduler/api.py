@@ -20,7 +20,7 @@ normalizer matches against the instance.
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from ofplang.schedule.core import objective as objective_stages
 from ofplang.schedule.core import yamlnode
@@ -28,7 +28,13 @@ from ofplang.schedule.core.diagnostics import ERROR, Diagnostic, Diagnostics
 from ofplang.schedule.core.yamlnode import YMap
 from ofplang.schedule.scheduler.cpsat import solve
 from ofplang.schedule.scheduler.envload import load_environment
-from ofplang.schedule.scheduler.instance import build_instance, report_unreachable
+from ofplang.schedule.scheduler.instance import (
+    build_instance,
+    merge_instances,
+    prefix_instance,
+    report_unreachable,
+)
+from ofplang.schedule.scheduler.model import Workflow
 from ofplang.schedule.scheduler.normalize import normalize
 from ofplang.schedule.scheduler.plan import render_plan
 from ofplang.schedule.scheduler.plancheck import check_plan_inventories
@@ -84,6 +90,19 @@ def _objective_of(declared) -> tuple[str, ...]:
     return objective_stages.normalize(declared) or objective_stages.DEFAULT
 
 
+def _attribute(items, job, jobs) -> list[Diagnostic]:
+    """Name the job a per-workflow diagnostic came from.
+
+    Only in a joint plan, and only in the message: the code and the source position
+    stay exactly what the single-workflow pipeline produces, so nothing that matches
+    on them has to know about jobs. Without this, two jobs running the same workflow
+    report the same finding twice with no way to tell which is which.
+    """
+    if len(jobs) < 2:
+        return list(items)
+    return [replace(d, message=f"job {job.id!r}: {d.message}") for d in items]
+
+
 def _provenance(value, source: str | None) -> str:
     """What the plan's `meta` records for one input: the display name the caller
     gave, else the path it was read from -- or `<in-memory>` for a document that
@@ -91,6 +110,22 @@ def _provenance(value, source: str | None) -> str:
     if source is not None:
         return source
     return "<in-memory>" if isinstance(value, dict) else str(value)
+
+
+@dataclass(frozen=True)
+class JobInput:
+    """One workflow to plan as part of a joint plan (SPEC §6.11).
+
+    `id` names the job in the plan: every activity of this workflow carries it as
+    its `job`, and it is what tells two jobs' activities apart when both run the
+    same workflow (so it must be unique within one call, and non-empty). `workflow`
+    is a path or an already-loaded document, exactly as `schedule` accepts, and
+    `source` is the optional display path recorded as provenance.
+    """
+
+    id: str
+    workflow: object
+    source: str | None = None
 
 
 def schedule(
@@ -107,7 +142,9 @@ def schedule(
     environment_source: str | None = None,
     document_source: str | None = None,
 ) -> ScheduleReport:
-    """Each of `workflow_path`, `environment_path` and `document_path` is a path to
+    """Plan one workflow. See `schedule_jobs` for several at once.
+
+    Each of `workflow_path`, `environment_path` and `document_path` is a path to
     a file or an already-loaded document (a mapping) -- e.g. an import-expanded
     workflow, or the status a runner just rendered from its own history.
 
@@ -132,18 +169,108 @@ def schedule(
     bound, model size -- costs nothing and is always there.
 
     In-memory documents are read, never written to."""
+    # The single-workflow call is the one-job case with an empty id, which is what
+    # leaves node paths unprefixed and the plan free of any `job` field -- so a plan
+    # for one workflow is exactly what it was before joint planning existed.
+    return _run(
+        [JobInput("", workflow_path, workflow_source)],
+        environment_path,
+        document_path=document_path,
+        running_task_margin=running_task_margin,
+        max_time_seconds=max_time_seconds,
+        random_seed=random_seed,
+        ignore_resources=ignore_resources,
+        collect_solutions=collect_solutions,
+        environment_source=environment_source,
+        document_source=document_source,
+    )
+
+
+def schedule_jobs(
+    jobs,
+    environment_path,
+    *,
+    document_path=None,
+    running_task_margin: int = 0,
+    max_time_seconds: float | None = None,
+    random_seed: int | None = None,
+    ignore_resources: bool = False,
+    collect_solutions: bool = False,
+    environment_source: str | None = None,
+    document_source: str | None = None,
+) -> ScheduleReport:
+    """Plan several workflows together, against one environment (SPEC §6.11).
+
+    `jobs` is a sequence of `JobInput`. The jobs share everything the environment
+    describes -- devices, spots, transporters -- and share the consumable stocks the
+    execution document's `inventories` starts them at, because a stock belongs to a
+    device rather than to a workflow. That sharing is the reason to plan jointly:
+    the jobs compete for machines, and a refill that neither workflow needs on its
+    own is planned once for both.
+
+    Every other argument means what it does for `schedule`. What a joint plan does
+    *not* have yet is anything that distinguishes the jobs from one another: there
+    are no priorities, no release times and no per-job objective, so the makespan
+    minimised is the one over all of them (design.md D38 stages this deliberately).
+    Per-job `interface` is likewise not there yet, so a joint plan cannot use the
+    document's single boundary constraint (`multi_job_interface`); workflows whose
+    entry inputs are Object-bearing therefore cannot be planned jointly yet.
+    """
+    jobs = list(jobs)
+    if not jobs:
+        raise ValueError("schedule_jobs needs at least one job")
+    ids = [job.id for job in jobs]
+    if not all(ids):
+        raise ValueError("every job needs a non-empty id (it names the job in the plan)")
+    if len(set(ids)) != len(ids):
+        raise ValueError(f"job ids must be unique within one plan: {ids}")
+    return _run(
+        jobs,
+        environment_path,
+        document_path=document_path,
+        running_task_margin=running_task_margin,
+        max_time_seconds=max_time_seconds,
+        random_seed=random_seed,
+        ignore_resources=ignore_resources,
+        collect_solutions=collect_solutions,
+        environment_source=environment_source,
+        document_source=document_source,
+    )
+
+
+def _run(
+    jobs,
+    environment_path,
+    *,
+    document_path=None,
+    running_task_margin: int = 0,
+    max_time_seconds: float | None = None,
+    random_seed: int | None = None,
+    ignore_resources: bool = False,
+    collect_solutions: bool = False,
+    environment_source: str | None = None,
+    document_source: str | None = None,
+) -> ScheduleReport:
+    """The pipeline both entry points run. One job with an empty id is the
+    single-workflow case; several named jobs are a joint plan (§6.11)."""
     diagnostics: list[Diagnostic] = []
 
-    # 1. Environment: schema-validate, then load into the model.
+    # 1. Environment: schema-validate, then load into the model. One environment
+    # serves every job -- that is what makes them compete for the same machines.
     env, env_result = load_environment(environment_path)
     diagnostics += env_result.diagnostics
     if env is None:
         return ScheduleReport(None, None, None, diagnostics)
 
-    # 2. Workflow: our own minimal parse (D17).
-    workflow, wf_diags = parse_workflow(workflow_path)
-    diagnostics += wf_diags.items
-    if workflow is None or _has_error(wf_diags.items):
+    # 2. Workflows: our own minimal parse (D17), one per job. Every job is parsed
+    # before any is rejected, so a caller with two broken workflows hears about both.
+    workflows: list[Workflow] = []
+    for job in jobs:
+        workflow, wf_diags = parse_workflow(job.workflow)
+        diagnostics += _attribute(wf_diags.items, job, jobs)
+        if workflow is not None and not _has_error(wf_diags.items):
+            workflows.append(workflow)
+    if len(workflows) != len(jobs):
         return ScheduleReport(None, None, None, diagnostics)
 
     # Unified execution-document input (SPEC §6.1). Shape-validate it once, then read
@@ -179,14 +306,42 @@ def schedule(
             declared_objective = stated.get("kind") if isinstance(stated, dict) else None
             had_now = "now" in root
 
-    # 3. Build the instance (boundary nodes/arcs from interface always re-created,
-    # like relays) and normalize the document into the augmented instance +
-    # fixation (empty history when there is no document). Reachability is checked
-    # per pending leg after normalization (committed legs are facts).
-    base, inst_diags = build_instance(workflow, env, interface=interface, check_reachability=False)
-    diagnostics += inst_diags.items
-    if base is None:
+    # The document's `interface` binds one workflow's boundary material to spots, so
+    # it says nothing about which job each binding belongs to. Rather than guess (and
+    # have several jobs' boundary nodes silently claim the same spot at time 0), a
+    # joint plan refuses it. Per-job interface is the next stage; until then, a
+    # workflow with Object-bearing entry inputs cannot be part of a joint plan --
+    # `build_instance` rejects it with the usual `interface_input_missing`.
+    if len(jobs) > 1 and interface:
+        diagnostics.append(
+            Diagnostic(
+                errors.MULTI_JOB_INTERFACE,
+                "interface binds one workflow's boundary and cannot be shared by "
+                f"{len(jobs)} jobs",
+                "interface",
+            )
+        )
         return ScheduleReport(None, None, None, diagnostics)
+
+    # 3. Build one instance per job (boundary nodes/arcs from interface always
+    # re-created, like relays), prefix each job's node paths with its id so the two
+    # cannot collide, and merge. Everything downstream sees a single instance and
+    # never learns that jobs exist -- which is what lets one refill candidate serve
+    # activities from several jobs (`merge_instances`).
+    bases = []
+    for job, workflow in zip(jobs, workflows, strict=True):
+        base, inst_diags = build_instance(
+            workflow, env, interface=interface, check_reachability=False
+        )
+        diagnostics += _attribute(inst_diags.items, job, jobs)
+        if base is not None:
+            bases.append(prefix_instance(base, (job.id,) if job.id else ()))
+    # Every job is built before any rejection, for the same reason every one is
+    # parsed first: a caller whose environment is missing two capabilities should
+    # hear about both, not be sent round the loop once per job.
+    if len(bases) != len(jobs):
+        return ScheduleReport(None, None, None, diagnostics)
+    base = merge_instances(bases)
 
     instance, fixation, norm_diags = normalize(
         base, root, env, ignore_resources=ignore_resources
@@ -215,16 +370,20 @@ def schedule(
         diagnostics.append(Diagnostic(errors.INFEASIBLE, "no feasible schedule found"))
         return ScheduleReport(solution.outcome, None, None, diagnostics, solution.stats)
 
+    # One job's provenance is the string it always was; a joint plan's is the list of
+    # its workflows, in job order, so `meta` still names everything the plan came from.
+    provenance = [_provenance(job.workflow, job.source) for job in jobs]
     plan = render_plan(
         instance,
         solution,
-        workflow=_provenance(workflow_path, workflow_source),
+        workflow=provenance[0] if len(jobs) == 1 else provenance,
         environment=_provenance(environment_path, environment_source),
         status=_provenance(doc_path, document_source) if root is not None else None,
         now=fixation.now if had_now else None,
         interface=interface,
         inventories=inventories,
         ignore_resources=ignore_resources,
+        jobs=tuple(job.id for job in jobs if job.id),
     )
 
     # 6. Check what is about to be handed out. The refill amounts in the document are

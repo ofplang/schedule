@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: unknown_key}
+notes: A replenishment belongs to no job -- one refill may serve several; spec §6.9, §6.11.

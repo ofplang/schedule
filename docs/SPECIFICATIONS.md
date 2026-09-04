@@ -17,20 +17,21 @@ work in a workflow runs.
 
 It consumes:
 
-- an **ofplang v0 workflow** (the logical dataflow graph), and
+- one or more **ofplang v0 workflows** (the logical dataflow graph), and
 - an **execution environment definition** (devices, timing, transport), which
   supplies the physical layer the language deliberately omits,
 
 and produces an **execution plan** (what runs where and when).
 
-It also supports **replanning**: given a workflow, an environment, and an
+Several workflows may be planned **together** against one environment, as separate
+**jobs** in a single solve (§6.11). They then compete for the same machines and draw
+on the same consumable stocks, so a refill that neither needs on its own is planned
+once for both. What v0 does not yet give them is any way to differ: no priorities, no
+per-job release times, no per-job objective.
+
+It also supports **replanning**: given the workflows, an environment, and an
 **execution status** describing what has happened so far, it produces an updated
 plan for the remaining work.
-
-Scope is intentionally narrow:
-
-- A single workflow at a time (not multiple concurrent workflows).
-- Replanning is in scope.
 
 ## 2. Supported v0 subset
 
@@ -59,7 +60,7 @@ In scope:
 
 | Artifact | Role | Nature |
 | --- | --- | --- |
-| ofplang workflow YAML | The logical DAG (what to do; data / Object flow) | Logical, invariant |
+| ofplang workflow YAML | The logical DAG (what to do; data / Object flow). Several may be given, planned together against one environment as separate **jobs** (§6.11) | Logical, invariant |
 | Execution environment YAML (§5) | Where / how long (capabilities, durations, transport, stocks a device can hold) | Physical, static, reusable |
 | Execution document YAML (§6) | Input carrying the `interface` boundary constraint and the `inventories` starting levels and, on a replan, the prior status; also the output plan | Planning constraint / dynamic / result |
 
@@ -699,6 +700,11 @@ environment.
 
 - `kind` (required) — `processing`, `transport`, `relay` (§6.4.1), or
   `replenishment` (§6.9).
+- `job` (optional) — an identifier (§8.1) naming which of several jointly planned
+  workflows this activity came from (§6.11). Absent from every plan of a single
+  workflow, and from a `replenishment` in any plan. It **scopes** the activity's
+  provenance: `node` and `arc` stay relative to that job's workflow, so two jobs
+  running the same workflow carry the same paths and are told apart by `job` alone.
 - `status` (optional) — `pending`, `running`, `completed`, `failed`, or
   `cancelled`; default `pending`. A plan leaves it out (all activities are
   pending). A status sets `completed` / `running` on the activities that have
@@ -1075,6 +1081,38 @@ a misnomer the day the moment can be something other than the start. A section t
 carries one moment carries the *latest* one worth knowing; anything earlier is
 history, and history is what the activities already record.
 
+### 6.11 Jobs (several workflows planned together)
+
+The scheduler can plan several workflows against one environment in a single solve.
+Each is a **job**, named by an identifier, and every activity it contributes carries
+that name as its `job` (§6.2).
+
+The jobs share everything the environment describes — devices, spots, transporters —
+and share the consumable stocks that `inventories` (§6.10) starts them at, because a
+stock belongs to a device rather than to a workflow (§4.7). That sharing is the whole
+reason to plan them together rather than one after another: the jobs compete for the
+same machines, and a refill that neither workflow needs on its own is planned **once
+for both**. Such a refill carries no `job`; the scheduler decided to run it, and it
+serves whatever draws on the stock afterwards, from any job (§6.9).
+
+`job` scopes provenance, it does not replace it. An activity's `node` (§6.3) and an
+arc's endpoints (§6.4) stay relative to that job's own workflow, exactly as in a
+single-workflow plan, so two jobs running the *same* workflow render the same paths
+and are distinguished by `job` alone. Identity for replanning (§6.6) is read the same
+way, with `job` added in front: a processing activity is matched by `job` + `node`, a
+transport or relay by `job` + `arc` + `seq`, and a replenishment by `id` as before.
+
+A plan of one workflow has no `job` on any activity, and is byte-for-byte the
+document it would have been before jobs existed.
+
+**Current limits.** v0 gives the jobs no way to differ from one another: there are no
+priorities, no per-job release times, and no per-job objective, so what is minimised
+is the makespan over all of them (§4.8). The `interface` boundary constraint (§6.8)
+likewise binds one workflow's boundary material and says nothing about which job a
+binding belongs to, so a document carrying `interface` is refused for a joint plan
+(`multi_job_interface`, §10.4) — which means a workflow with Object-bearing entry
+inputs cannot yet be part of one.
+
 ## 7. Execution status
 
 The execution status is the replanning input. It is the **same document as the
@@ -1266,7 +1304,8 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
   port, and input-completeness / spot uniqueness / spot existence, are
   execution-layer, §9.3.)
 - Each activity: `kind` is required and is `processing`, `transport`, `relay`, or
-  `replenishment`;
+  `replenishment`; `job` (if present) is an identifier (§6.11) and is accepted on
+  every kind but `replenishment`, which belongs to no job (§6.9);
   `status` (if present) is `pending` / `running` / `completed` / `failed` /
   `cancelled` (the last two are terminal, §6.2); `start` and `end`
   are required non-negative integers with `end >= start`. Unknown keys are errors
@@ -1518,6 +1557,7 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `interface_pure_data_port` | an `interface` binding names a Pure Data port (occupies no spot) |
 | `interface_duplicate_spot` | two bindings on one side (two inputs, or two outputs) bind the same spot |
 | `interface_input_missing` | an Object-bearing entry input has no `interface` binding (§6.8) |
+| `multi_job_interface` | a joint plan (§6.11) was given a document carrying `interface`: it binds one workflow's boundary and says nothing about which job each binding belongs to |
 | `missing_inventories` | the resource model is in effect but the document has no `inventories` (§6.10). An empty `initial` is the way to say every stock starts empty |
 | `inventory_exceeds_capacity` | an `inventories.levels` level is above its resource's `capacity` |
 | `resources_ignored` | the resource model was disabled (§4.7.3) where it would otherwise have been in effect, so nothing was applied. Not raised for an environment that merely declares a stock nothing draws on — switching that off changes nothing (*warning*) |

@@ -150,6 +150,11 @@ INTERFACE_DUPLICATE_SPOT = "interface_duplicate_spot"
 # An Object-bearing entry input has no `interface` binding (only where interface is
 # required; optional in the current phase).
 INTERFACE_INPUT_MISSING = "interface_input_missing"
+# A joint plan (§6.11) was given a document carrying `interface`. The section binds
+# one workflow's boundary material to spots and says nothing about which job each
+# binding belongs to, so sharing it between jobs would have several boundary nodes
+# claim the same spot. Refused rather than guessed; per-job interface is a later stage.
+MULTI_JOB_INTERFACE = "multi_job_interface"
 
 # Replanning (§9.3): produced while matching an execution status against the
 # workflow/instance and building the fixation for the solver. A status names a
@@ -264,6 +269,7 @@ ERROR_CODES = frozenset(
         INTERFACE_PURE_DATA_PORT,
         INTERFACE_DUPLICATE_SPOT,
         INTERFACE_INPUT_MISSING,
+        MULTI_JOB_INTERFACE,
         STATUS_MISSING_NOW,
         STATUS_NODE_UNKNOWN,
         STATUS_ARC_UNKNOWN,

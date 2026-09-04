@@ -1,0 +1,35 @@
+# Joint planning of two workflows (SPEC §6.11), and the refill that only the pair
+# needs.
+#
+# This document goes with shared_refill.workflow.yaml — one plate, assayed once —
+# and the reader of consumable.env.yaml. The point is what changes when the *same*
+# workflow is planned twice against one lab.
+#
+#   one job   ofp-schedule schedule shared_refill.workflow.yaml \
+#                 --env consumable.env.yaml --document shared_refill.document.yaml
+#   two jobs  ofp-schedule schedule shared_refill.workflow.yaml shared_refill.workflow.yaml \
+#                 --env consumable.env.yaml --document shared_refill.document.yaml
+#
+# Each run assays one plate and each assay draws 2 units of `reader.reagent`, so one
+# job needs 2 units and two jobs need 4. The reader starts with 2 and holds at most 6:
+#
+#   one job   2 needed, 2 in stock   -> no replenishment at all
+#   two jobs  4 needed, 2 in stock   -> exactly one refill covers both
+#
+# Neither workflow mentions a resource and neither asks for a refill. The refill
+# appears because the stock belongs to the *device* (§4.7), so planning the two jobs
+# together is what puts them on one stock — and a single visit tops it up for
+# whichever assays come after it, from either job. That refill carries no `job` in
+# the plan: the scheduler decided to run it, and it serves both.
+#
+# `replenishment_count` is what pins it to exactly one rather than one per assay
+# (§4.8): a refill that delays nothing would otherwise be free.
+inventories:
+  levels:
+    reader:
+      reagent: 2
+
+objective:
+  kind: [makespan, replenishment_count]
+
+activities: []

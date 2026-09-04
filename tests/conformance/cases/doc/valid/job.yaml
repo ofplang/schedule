@@ -1,0 +1,25 @@
+# Several workflows planned together (§6.11): each activity says which job it came
+# from, and `node` stays relative to that job's workflow. The refill carries no
+# `job` -- it serves both.
+activities:
+- kind: processing
+  job: morning
+  start: 0
+  end: 60
+  process: measure_od
+  mode: fast
+  node: [assay]
+- kind: processing
+  job: evening
+  start: 60
+  end: 120
+  process: measure_od
+  mode: fast
+  node: [assay]
+- kind: replenishment
+  start: 120
+  end: 130
+  id: replenishment_0
+  device: reader
+  replenisher: dispenser
+  amounts: {reagent: 6}

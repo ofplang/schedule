@@ -39,7 +39,9 @@ from ofplang.validate import EXTENSION_TOLERANT, expand
 from ofplang.validate import validate as validate_workflow
 from ofplang.validate.yamlnode import YamlError
 
+from ofplang.schedule import JobInput
 from ofplang.schedule import schedule as run_schedule
+from ofplang.schedule import schedule_jobs as run_schedule_jobs
 from ofplang.schedule.core import yamlnode
 from ofplang.schedule.core.diagnostics import ERROR, ValidationResult
 from ofplang.schedule.core.yamlnode import YMap, YNode
@@ -78,7 +80,17 @@ def _build_parser() -> argparse.ArgumentParser:
     v.add_argument("--no-color", action="store_true", help="disable ANSI color")
 
     s = sub.add_parser("schedule", help="produce an execution plan from a workflow and environment")
-    s.add_argument("workflow", metavar="WORKFLOW", help="ofplang v0 workflow YAML")
+    s.add_argument(
+        "workflow",
+        metavar="WORKFLOW",
+        nargs="+",
+        help="ofplang v0 workflow YAML. Give several to plan them together against "
+        "one environment (SPEC §6.11): they compete for the same machines and draw "
+        "on the same consumable stocks, so a refill neither needs alone is planned "
+        "once for both. Each is numbered job1, job2, ... in the order written, and "
+        "every activity in the plan carries the job it belongs to; write ID=FILE to "
+        "name a job yourself (the same file may be given more than once)",
+    )
     s.add_argument(
         "--env", required=True, metavar="ENV", help="execution environment definition YAML"
     )
@@ -309,45 +321,93 @@ def _front_door_validate(workflow_path: str) -> dict | None:
     return None
 
 
+def _parse_job_args(specs: list[str]) -> list[tuple[str, str]] | None:
+    """Read the positional WORKFLOW arguments as (job id, path) pairs.
+
+    A bare path is numbered by position -- `job1`, `job2`, ... -- which is what makes
+    giving the *same* workflow twice work, the common way to ask for two runs of one
+    protocol. `ID=FILE` names a job instead, for a plan whose activities should read
+    by what the job is rather than by when it was written. Ids must be unique; a
+    path that itself contains `=` can still be given by naming it.
+    """
+    jobs: list[tuple[str, str]] = []
+    for position, spec in enumerate(specs, start=1):
+        name, sep, path = spec.partition("=")
+        if sep and name and not Path(spec).is_file():
+            jobs.append((name, path))
+        else:
+            jobs.append((f"job{position}", spec))
+    seen = [job_id for job_id, _ in jobs]
+    duplicate = next((i for i in seen if seen.count(i) > 1), None)
+    if duplicate is not None:
+        print(f"ofp-schedule: job id {duplicate!r} is used more than once", file=sys.stderr)
+        return None
+    return jobs
+
+
 def _cmd_schedule(args) -> int:
     doc = args.document
-    inputs = [args.workflow, args.env] + ([doc] if doc else [])
+    specs = _parse_job_args(args.workflow)
+    if specs is None:
+        return EXIT_USAGE
+    inputs = [path for _, path in specs] + [args.env] + ([doc] if doc else [])
     for p in inputs:
         if not Path(p).is_file():
             print(f"ofp-schedule: cannot open {p!r}: no such file", file=sys.stderr)
             return EXIT_USAGE
 
-    # Front door: validate the workflow as portable v0 once, unless suppressed,
+    # Front door: validate each workflow as portable v0 once, unless suppressed,
     # and resolve `$import` so the scheduler runs exactly the document that was
     # validated (not a re-read, unexpanded file). A validation failure is an
     # invalid document (EXIT_INVALID), mirroring the `validate` subcommand; the
     # scheduler library is not invoked in that case. `$import` expansion is a
     # structural step independent of validation, so it still runs under
     # `--no-validate`; a structural failure there is an input error (EXIT_USAGE).
-    workflow_doc: dict
-    if args.no_validate:
-        try:
-            workflow_doc = expand(args.workflow)
-        except YamlError as exc:
-            print(f"ofp-schedule: cannot expand {args.workflow!r}: {exc}", file=sys.stderr)
-            return EXIT_USAGE
-    else:
-        validated = _front_door_validate(args.workflow)
-        if validated is None:
-            return EXIT_INVALID
-        workflow_doc = validated
+    #
+    # The same file given twice is validated and expanded twice. It is cheap next to
+    # the solve, and the alternative -- handing both jobs one expanded document --
+    # would have them share a mutable structure for no gain.
+    workflows: list[dict] = []
+    for _, path in specs:
+        if args.no_validate:
+            try:
+                workflows.append(expand(path))
+            except YamlError as exc:
+                print(f"ofp-schedule: cannot expand {path!r}: {exc}", file=sys.stderr)
+                return EXIT_USAGE
+        else:
+            validated = _front_door_validate(path)
+            if validated is None:
+                return EXIT_INVALID
+            workflows.append(validated)
 
     try:
-        report = run_schedule(
-            workflow_doc,
-            args.env,
-            document_path=doc,
-            running_task_margin=args.running_margin,
-            max_time_seconds=args.max_time,
-            random_seed=args.seed,
-            ignore_resources=args.ignore_resources,
-            workflow_source=args.workflow,
-        )
+        # One workflow keeps the single-job entry point, so its plan is exactly what
+        # it has always been -- no `job` on any activity (SPEC §6.11).
+        if len(specs) == 1:
+            report = run_schedule(
+                workflows[0],
+                args.env,
+                document_path=doc,
+                running_task_margin=args.running_margin,
+                max_time_seconds=args.max_time,
+                random_seed=args.seed,
+                ignore_resources=args.ignore_resources,
+                workflow_source=specs[0][1],
+            )
+        else:
+            report = run_schedule_jobs(
+                [
+                    JobInput(job_id, workflow, path)
+                    for (job_id, path), workflow in zip(specs, workflows, strict=True)
+                ],
+                args.env,
+                document_path=doc,
+                running_task_margin=args.running_margin,
+                max_time_seconds=args.max_time,
+                random_seed=args.seed,
+                ignore_resources=args.ignore_resources,
+            )
     except yaml.YAMLError as exc:
         # Malformed workflow / environment / document YAML is an input error.
         print(f"ofp-schedule: cannot parse input: {exc}", file=sys.stderr)

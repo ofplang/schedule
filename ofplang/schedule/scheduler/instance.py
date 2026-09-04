@@ -13,7 +13,8 @@ needs without touching the raw documents again.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 
 from ofplang.schedule.core.diagnostics import Diagnostics
 from ofplang.schedule.core.identifiers import format_endpoint, parse_qualified_spot
@@ -233,6 +234,98 @@ def build_instance(
     if any(d.severity == "error" for d in diags.items):
         return None, diags
     return Instance(env, env.time_unit, tuple(activities), tuple(arcs), precedence), diags
+
+
+def prefix_instance(instance: Instance, prefix: NodePath) -> Instance:
+    """`instance` with every workflow node path prefixed by `prefix`.
+
+    Planning several workflows together (SPEC §6.11) merges their instances into
+    one, and two workflows may well name the same node -- both have a `[Heat]`. The
+    prefix is the job id, so node paths stay distinct across the merged instance
+    **without anything downstream having to know that jobs exist**: `normalize`, the
+    solver and the fixation all treat a node path as an opaque key. `plan` splits the
+    prefix back off into each activity's `job` field, so the rendered `node` is the
+    workflow-relative path it has always been -- the node-path convention the sibling
+    runner keys its value store by (see `model.Workflow`, INVARIANT 2).
+
+    A boundary node (§6.8) keeps its **empty** path: the empty path is what marks an
+    endpoint as the interface side, so prefixing it would make it an ordinary node
+    path. A boundary arc stays unambiguous in the merged instance anyway, because it
+    is keyed by both of its endpoints (§6.6) and the other end is prefixed.
+
+    An empty prefix returns the instance unchanged -- what the single-workflow path
+    passes -- so a plan for one workflow is byte-for-byte what it always was.
+    """
+    if not prefix:
+        return instance
+
+    def endpoint(activity_index: int, path: NodePath) -> NodePath:
+        # The interface side of a boundary arc keeps its empty path (see above);
+        # every other endpoint names a real node and is prefixed.
+        if instance.activities[activity_index].boundary is not None:
+            return path
+        return prefix + path
+
+    activities = tuple(
+        a if a.boundary is not None else replace(a, node=prefix + a.node)
+        for a in instance.activities
+    )
+    arcs = tuple(
+        replace(
+            r,
+            arc=Arc(
+                Endpoint(endpoint(r.src_activity, r.arc.src.node), r.arc.src.port),
+                Endpoint(endpoint(r.dst_activity, r.arc.dst.node), r.arc.dst.port),
+            ),
+        )
+        for r in instance.arcs
+    )
+    # `precedence` is index-based and indices do not move, so it needs no rewriting.
+    return replace(instance, activities=activities, arcs=arcs)
+
+
+def merge_instances(instances: Sequence[Instance]) -> Instance:
+    """One instance holding every activity and arc of `instances` (SPEC §6.11).
+
+    This is all that planning several workflows jointly takes at this layer, because
+    everything that makes them interact is already environment-wide rather than
+    workflow-wide: the solver puts one non-overlap constraint on each device, spot and
+    transporter, and a consumable stock is keyed by `(device, resource)`. Merged jobs
+    therefore compete for machines and draw on the same stocks with no further work --
+    including a refill that only the *combination* needs, since `normalize` derives
+    refill candidates from the merged activity list rather than per workflow.
+
+    Every index in the model is positional (`ArcInstance.src_activity` /
+    `dst_activity`, `precedence`), so merging is concatenation plus an offset.
+    `replenishments` is empty here and is not merged: candidates are constructed
+    later, by `normalize`, from the merged instance.
+
+    The instances must have been built against the same environment; the merged
+    instance carries the first one's.
+    """
+    if len(instances) == 1:
+        return instances[0]
+
+    activities: list[ActivityInstance] = []
+    arcs: list[ArcInstance] = []
+    precedence: list[tuple[int, int]] = []
+    for inst in instances:
+        offset = len(activities)
+        activities += list(inst.activities)
+        arcs += [
+            replace(
+                a,
+                src_activity=a.src_activity + offset,
+                dst_activity=a.dst_activity + offset,
+            )
+            for a in inst.arcs
+        ]
+        precedence += [(s + offset, d + offset) for s, d in inst.precedence]
+
+    first = instances[0]
+    return Instance(
+        first.env, first.time_unit, tuple(activities), tuple(arcs), tuple(precedence)
+    )
 
 
 def report_unreachable(instance: Instance, fixed_arc_indices: set[int], diags: Diagnostics) -> None:

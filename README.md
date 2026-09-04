@@ -7,20 +7,23 @@ A scheduler for **Object-flow Programming Language v0** — a YAML-based dataflo
 workflow IR with linear Object tracking. The language is defined in the
 [ofplang/spec](https://github.com/ofplang/spec) repository.
 
-The scheduler takes a portable v0 workflow plus an execution environment
-definition and plans when its work runs; it also replans from an execution
+The scheduler takes one or more portable v0 workflows plus an execution environment
+definition and plans when their work runs; it also replans from an execution
 status. The design is documented in [docs/SPECIFICATIONS.md](docs/SPECIFICATIONS.md).
 
 > **Status:** the **schema validators** (environment definition and execution
 > document, spec §9) and the **scheduler** are implemented: it produces an optimal
-> plan for a single workflow with mode selection, spot/device occupancy, and
+> plan with mode selection, spot/device occupancy, and
 > transport, lets a mode **hold a spot without holding its device** for storage and
 > incubation (`device_access: false`, spec §4.4.2), pins a workflow's boundary
 > material to spots via an `interface`
 > (spec §6.8), respects **device-local consumable resources** — what a mode draws
 > and what a **replenishment** puts back (spec §4.7) — and **replans** from an
 > execution document (`--document`) by fixing completed/running activities and
-> re-optimising the rest at or after `now`. A `visualize` command renders a plan as
+> re-optimising the rest at or after `now`. Several workflows can be planned
+> **together** against one environment as separate **jobs** (spec §6.11), so they
+> compete for the same machines and share the same stocks — a refill neither needs
+> alone is then planned once for both. A `visualize` command renders a plan as
 > a self-contained SVG/HTML Gantt chart. The model is documented in
 > [docs/FORMULATION.md](docs/FORMULATION.md).
 
