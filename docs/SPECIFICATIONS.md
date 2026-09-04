@@ -842,7 +842,15 @@ activities. A `placements` key is now an unknown key (`unknown_key`, §9.2).
 A status is matched against the workflow (and any prior plan) by each activity's
 provenance: a processing activity by its `node`; a transport or relay activity by
 its `arc` **and `seq`**; a replenishment activity by its `id` (§6.9), since it has
-no workflow provenance to be matched by. A single-leg transport has one leg per arc, so its `arc`
+no workflow provenance to be matched by.
+
+In a joint plan (§6.11) the activity's `job` is part of every one of those keys,
+because provenance is relative to that job's workflow: a processing activity is
+matched by `job` + `node`, a transport or relay by `job` + `arc` + `seq`. A
+replenishment is unchanged — it has no `job`, and its `id` is unique across the whole
+document. Two jobs running the same workflow render identical `node` paths and
+identical arcs, so without the job the second would read as a repeat of the first
+(`status_duplicate`) and its history would be lost. A single-leg transport has one leg per arc, so its `arc`
 alone identifies it (`seq` omitted = position `0`). A multi-leg move (through
 relays, §6.4.1) has several legs and relays on the **same** `arc`, distinguished
 by `seq` — a per-arc chain ordinal. A **boundary** transport is matched the same

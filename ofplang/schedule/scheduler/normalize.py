@@ -59,7 +59,9 @@ from ofplang.schedule.scheduler.status import (
     Fixation,
     RefillFixation,
     arc_key,
+    job_of,
     node_path,
+    scoped,
     status_of,
     text,
     times,
@@ -498,7 +500,15 @@ class _FixedProc:
 
 def _read_status(root, node_index, arc_keys, now, diags):
     """Collect fixed processing (by node) and committed transport legs (by arc)
-    from the status; relays and pending entries are ignored (regenerated)."""
+    from the status; relays and pending entries are ignored (regenerated).
+
+    Both keys are read back into the instance's namespace with the activity's `job`
+    restored (`status.scoped`, SPEC §6.11), because that is the namespace
+    `node_index` and `arc_keys` are in -- they come from the merged instance, whose
+    paths are job-prefixed. Doing so is also what keeps two jobs of the *same*
+    workflow apart here: their activities render identical `node` paths, so without
+    the job the second would read as a duplicate of the first and its history would
+    be dropped."""
     fixed_proc: dict[NodePath, _FixedProc] = {}
     legs_by_arc: dict[tuple, list[_Leg]] = defaultdict(list)
 
@@ -513,14 +523,15 @@ def _read_status(root, node_index, arc_keys, now, diags):
             continue  # pending / relay / status-less: regenerated from committed legs
         base = f"activities[{i}]"
         kind = text(item.get("kind"))
+        job = job_of(item)
         start, end = times(item)
         if kind == "processing":
-            path = node_path(item.get("node"))
+            path = scoped(job, node_path(item.get("node")))
+            subject = _subject(job, node_path(item.get("node")))
             if path not in node_index:
                 diags.error(
                     errors.STATUS_NODE_UNKNOWN,
-                    f"status references a processing node not in the workflow: "
-                    f"{format_node_path(path)}",
+                    f"status references a processing node not in the workflow: {subject}",
                     f"{base}.node",
                     at=item.get("node") or item,
                 )
@@ -528,7 +539,7 @@ def _read_status(root, node_index, arc_keys, now, diags):
             if path in fixed_proc:
                 diags.error(
                     errors.STATUS_DUPLICATE,
-                    f"processing node {format_node_path(path)} is fixed more than once",
+                    f"processing node {subject} is fixed more than once",
                     base,
                     at=item,
                 )
@@ -536,22 +547,26 @@ def _read_status(root, node_index, arc_keys, now, diags):
             _check_times(status, start, end, now, item, base, diags)
             fixed_proc[path] = _FixedProc(status, start, end, item)
         elif kind == "transport":
-            key = arc_key(item.get("arc"))
+            key = arc_key(item.get("arc"), job)
             if key is None:
                 continue
             if key not in arc_keys:
                 diags.error(
                     errors.STATUS_ARC_UNKNOWN,
-                    "status references a transport arc not in the workflow",
+                    "status references a transport arc not in the workflow"
+                    + (f" (job {job!r})" if job else ""),
                     f"{base}.arc",
                     at=item.get("arc") or item,
                 )
                 continue
             seq = _seq_of(item)
+            # `key` already carries the job, so "same arc + seq" means the same leg of
+            # the same job -- two jobs' matching legs are distinct here.
             if (key, seq) in seen_arc_seq:
                 diags.error(
                     errors.STATUS_DUPLICATE,
-                    "transport leg is fixed more than once (same arc + seq)",
+                    "transport leg is fixed more than once (same arc + seq)"
+                    + (f" in job {job!r}" if job else ""),
                     base,
                     at=item,
                 )
@@ -748,6 +763,17 @@ def _frozen_processing_mode(entry: YMap, process: str, env, diags) -> Mode | Non
 # --------------------------------------------------------------------------
 # Small helpers.
 # --------------------------------------------------------------------------
+
+
+def _subject(job: str, path: NodePath) -> str:
+    """How a status entry's processing activity is named in a diagnostic: its
+    workflow-relative node path, and the job it belongs to where there is one.
+
+    The scoped path would read as `job1/Assay` and invite the reader to look for a
+    node called `job1`; the job is not part of the workflow, so it is said separately.
+    """
+    where = format_node_path(path)
+    return f"{where} (job {job!r})" if job else where
 
 
 def _arc_key_of(arc: Arc) -> tuple:

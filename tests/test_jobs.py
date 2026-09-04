@@ -331,6 +331,142 @@ def test_a_single_workflow_may_not_continue_a_joint_plan():
     assert [d.code for d in report.diagnostics] == ["job_roster_mismatch"]
 
 
+# ---------------------------------------------------------------------------
+# Replanning a joint plan: history belongs to the job that ran it.
+# ---------------------------------------------------------------------------
+
+
+def _joint_simple():
+    """Two jobs of `simple`, planned together. Both render the node path
+    `[SampleSource]`, which is what makes them worth replanning: the two are told
+    apart by `job` alone."""
+    workflow, env = _simple()
+    report = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env,
+    )
+    assert report.ok, [d.code for d in report.diagnostics]
+    return workflow, env, report.plan
+
+
+def _advance(plan, now: int) -> dict:
+    """The status a run of `plan` would report at `now`: everything that has ended is
+    `completed`, at the times the plan itself gave it.
+
+    Built from the plan's own schedule rather than from invented times, because two
+    jobs share the environment's devices -- reporting both jobs' sources as running at
+    once is infeasible *history*, which the solver rejects before it can say anything
+    about how the two were keyed."""
+    status = copy.deepcopy(plan)
+    status["now"] = now
+    for activity in status["activities"]:
+        if activity["end"] <= now:
+            activity["status"] = "completed"
+    return status
+
+
+def _find(plan, job, node) -> dict:
+    for activity in plan["activities"]:
+        if activity.get("job") == job and activity.get("node") == node:
+            return activity
+    raise AssertionError(f"no activity {node} in job {job}")
+
+
+def _replan(workflow, env, status):
+    return schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env,
+        document_path=status,
+    )
+
+
+def test_history_is_fixed_for_the_job_that_ran_it():
+    """The headline for replanning a joint plan. `job1`'s source ran [0, 2] and is
+    pinned there; `job2`'s source has the very same node path and is *not* fixed by
+    it -- it is still pending and re-optimised at or after `now`."""
+    workflow, env, plan = _joint_simple()
+    report = _replan(workflow, env, _advance(plan, 2))
+    assert report.ok, [d.code for d in report.diagnostics]
+
+    ran = _find(report.plan, "job1", ["SampleSource"])
+    assert ran["status"] == "completed"
+    assert (ran["start"], ran["end"]) == (0, 2)
+
+    other = _find(report.plan, "job2", ["SampleSource"])
+    assert other.get("status", "pending") == "pending"
+    assert other["start"] >= 2
+
+
+def test_two_jobs_reporting_the_same_node_are_not_a_duplicate():
+    """Both jobs report a completed `[SampleSource]`. Keyed by node path alone that is
+    one activity fixed twice (`status_duplicate`) and one job's history is lost; keyed
+    by job + node they are two, each pinned where it ran."""
+    workflow, env, plan = _joint_simple()
+    report = _replan(workflow, env, _advance(plan, 5))
+    assert report.ok, [d.code for d in report.diagnostics]
+
+    job1 = _find(report.plan, "job1", ["SampleSource"])
+    job2 = _find(report.plan, "job2", ["SampleSource"])
+    assert (job1["start"], job1["end"]) == (0, 2)
+    assert (job2["start"], job2["end"]) == (3, 5)
+    assert job1["status"] == job2["status"] == "completed"
+
+
+def test_one_job_reporting_the_same_node_twice_is_still_a_duplicate():
+    """The guard the job scoping must not throw away: within one job, the same node
+    fixed twice is still one activity fixed twice."""
+    workflow, env, plan = _joint_simple()
+    status = _advance(plan, 2)
+    status["activities"].append(copy.deepcopy(_find(status, "job1", ["SampleSource"])))
+
+    report = _replan(workflow, env, status)
+    assert not report.ok
+    assert "status_duplicate" in [d.code for d in report.diagnostics]
+
+
+def test_a_started_transport_is_matched_within_its_job():
+    """A transport is keyed by its arc, and both jobs render the identical arc
+    (`SampleSource.source_out -> SampleTarget.target_in`) -- so the job has to be part
+    of that key too, on both of its endpoints."""
+    workflow, env, plan = _joint_simple()
+    report = _replan(workflow, env, _advance(plan, 3))
+    assert report.ok, [d.code for d in report.diagnostics]
+
+    def transports(job):
+        return [
+            a
+            for a in report.plan["activities"]
+            if a.get("kind") == "transport" and a.get("job") == job
+        ]
+
+    assert [(a["start"], a["end"], a["status"]) for a in transports("job1")] == [
+        (2, 3, "completed")
+    ]
+    # job2's leg is the same arc and must be untouched by job1's history.
+    assert all(a.get("status", "pending") == "pending" for a in transports("job2"))
+
+
+def test_a_status_naming_an_unknown_node_says_which_job():
+    """Two jobs of one workflow would otherwise report the same finding with nothing
+    to tell them apart."""
+    workflow, env, plan = _joint_simple()
+    status = _advance(plan, 2)
+    _find(status, "job1", ["SampleSource"])["node"] = ["Nope"]
+
+    report = _replan(workflow, env, status)
+    assert not report.ok
+    unknown = [d for d in report.diagnostics if d.code == "status_node_unknown"]
+    assert unknown and "job1" in unknown[0].message
+
+
+def test_a_joint_replan_still_carries_the_roster():
+    workflow, env, plan = _joint_simple()
+    report = _replan(workflow, env, _advance(plan, 3))
+    assert report.ok
+    assert report.plan["jobs"] == [{"id": "job1"}, {"id": "job2"}]
+    assert report.plan["now"] == 3
+
+
 def test_the_cli_plans_the_same_workflow_twice(tmp_path):
     """The end-to-end demo, through the command line: the same file given twice, and
     the refill that only the pair needs. Numbering the jobs by position is what makes

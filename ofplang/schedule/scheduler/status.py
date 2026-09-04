@@ -110,17 +110,40 @@ def node_path(node: YNode | None) -> NodePath:
     return tuple(x.value for x in node.items if isinstance(x, YScalar) and x.is_str)
 
 
-def arc_key(node: YNode | None) -> ArcKey | None:
+def arc_key(node: YNode | None, job: str = "") -> ArcKey | None:
     if not isinstance(node, YMap):
         return None
     frm, to = node.get("from"), node.get("to")
     if not isinstance(frm, YMap) or not isinstance(to, YMap):
         return None
     return (
-        node_path(frm.get("node")),
+        scoped(job, node_path(frm.get("node"))),
         text(frm.get("port")),
-        node_path(to.get("node")),
+        scoped(job, node_path(to.get("node"))),
         text(to.get("port")),
     )
+
+
+def job_of(item: YMap) -> str:
+    """The job an activity belongs to (SPEC §6.11), or `""` where it names none --
+    every activity of a single-workflow document, and a replenishment in any."""
+    return text(item.get("job"))
+
+
+def scoped(job: str, path: NodePath) -> NodePath:
+    """A document node path read back into the *instance's* namespace.
+
+    The instance prefixes each workflow node path with its job id
+    (`instance.prefix_instance`) and the plan splits that prefix back off into the
+    activity's `job`, so reading one back means putting it on again. This is the
+    inverse of `plan._split_job` and has to stay so: a replan matches history by
+    these paths, and the two halves disagreeing would silently pin one job's history
+    onto another job's activities.
+
+    The **empty** path is left alone -- it is the interface side of a boundary arc
+    (§6.8) and belongs to no job -- and so is any path in a document that names no
+    job, which is what leaves single-workflow replanning exactly as it was.
+    """
+    return (job, *path) if job and path else path
 
 
