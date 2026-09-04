@@ -168,7 +168,20 @@ def solve(
     # below is the same shape either way -- it simply has nothing to distinguish.
     membership = job_membership(instance, [job.id for job in jobs])
     releases = {job.id: job.release for job in jobs}
-    job_bounds = {job.id: job.bound for job in jobs if job.bound is not None}
+    # A job whose work was cancelled has stopped (§6.2): it is not going to complete,
+    # so it contributes no completion to minimise and its promise no longer means
+    # anything -- holding it to a bound it can never reach would make every plan that
+    # continues past a failure infeasible.
+    stopped = {
+        membership[i]
+        for i, fx in (fixation.activities if fixation is not None else {}).items()
+        if fx.status == "cancelled" and membership[i] is not None
+    }
+    job_bounds = {
+        job.id: job.bound
+        for job in jobs
+        if job.bound is not None and job.id not in stopped
+    }
 
     # Resource occupancy: interval lists to feed NoOverlap, keyed by qualified
     # spot, by device, and by transporter.
@@ -202,7 +215,7 @@ def solve(
             # a fixed activity the size is free (times pinned below) so an
             # overrunning running activity can hold its resources past its nominal
             # duration.
-            if boundary is not None and boundary.kind == "output":
+            if boundary is not None and boundary.kind in ("output", "held"):
                 size = model.NewIntVar(0, horizon, f"bsz{i}_{m}")
             else:
                 size = mode.duration if fx is None else model.NewIntVar(0, horizon, f"psz{i}_{m}")
@@ -229,6 +242,16 @@ def solve(
                 # together onto one bay infeasible rather than queued.
                 model.Add(s == releases.get(boundary.job or "", 0))
                 model.Add(e == s)
+            elif boundary.kind == "held":
+                # Occupied from a stated moment until further notice (§6.12). It ends
+                # at the *horizon*, not at the makespan: its start is pinned, so tying
+                # its end to `c_max` would force `c_max >= since` and report a makespan
+                # for a run that finished long before -- the spot being taken is not
+                # work, and must not be timed as though it were. The horizon is past
+                # every activity by construction, so holding to it is "for the rest of
+                # this plan", which is what the document is saying.
+                model.Add(s == (boundary.since or 0))
+                model.Add(e == horizon)
             else:
                 model.Add(e == c_max)
         elif fx is not None:
@@ -254,7 +277,7 @@ def solve(
         ends.append(e)
         # The input node (end 0) is harmless in the makespan max; the output node's
         # end equals c_max, so feeding it back would be circular — exclude it.
-        if boundary is None or boundary.kind != "output":
+        if boundary is None or boundary.kind not in ("output", "held"):
             make_ends.append(e)
         mode_lits.append(lits)
 
@@ -376,13 +399,17 @@ def solve(
         # A boundary node belongs to a job (`job_membership` reports ownership) but is
         # not its work: an output node ends at the makespan, so counting it would make
         # every job finish when the last one does.
-        if job_id is not None and instance.activities[i].boundary is None:
+        if (
+            job_id is not None
+            and job_id not in stopped
+            and instance.activities[i].boundary is None
+        ):
             job_ends.setdefault(job_id, []).append(ends[i])
     for r, arc in enumerate(instance.arcs):
         src, dst = membership[arc.src_activity], membership[arc.dst_activity]
         # A boundary arc has one end in no job; the other names the job it serves.
         job_id = src if src is not None else dst
-        if job_id is not None:
+        if job_id is not None and job_id not in stopped:
             job_ends.setdefault(job_id, []).append(arc_ends[r])
 
     completions = {}
@@ -406,7 +433,7 @@ def solve(
     # It is only sound where the jobs really are interchangeable, so `_interchangeable`
     # is strict about it -- an order imposed on jobs that differ would prune schedules
     # that are perfectly legitimate.
-    for group in _interchangeable(jobs, fixation, membership):
+    for group in _interchangeable(jobs, fixation, membership, stopped):
         starts_of = {
             job_id: [starts[i] for i, m in enumerate(membership) if m == job_id]
             for job_id in group
@@ -998,6 +1025,7 @@ def _interchangeable(
     jobs: tuple[JobSpec, ...],
     fixation: Fixation | None,
     membership: tuple[str | None, ...],
+    stopped: set[str | None] = frozenset(),  # type: ignore[assignment]
 ) -> list[list[str]]:
     """Groups of jobs that any relabelling maps onto one another (SPEC §6.11), in
     roster order, each with at least two members.
@@ -1011,7 +1039,8 @@ def _interchangeable(
     - **neither promised a bound**, because a promise is a constraint one of them has
       and the other does not -- and once bounds exist they break the symmetry anyway;
     - **neither started**, because reported history is exactly what tells two otherwise
-      identical jobs apart.
+      identical jobs apart -- and neither **stopped**, since a job whose work was
+      cancelled has no remaining work to order and is not the same as one that has.
 
     In practice that means the initial plan, which is also where it is needed: on a
     replan the jobs carry bounds and history and are no longer interchangeable at all.
@@ -1021,7 +1050,7 @@ def _interchangeable(
     }
     groups: dict[tuple[str | None, int], list[str]] = {}
     for job in jobs:
-        if job.bound is not None or job.id in started:
+        if job.bound is not None or job.id in started or job.id in stopped:
             continue
         groups.setdefault((job.fingerprint, job.release), []).append(job.id)
     return [group for group in groups.values() if len(group) > 1]
@@ -1049,6 +1078,16 @@ def _horizon(
     # the latest of them too -- otherwise a job released beyond the bound would have
     # nowhere to be scheduled and the instance would read as infeasible.
     total += max((job.release for job in jobs), default=0)
+    # A spot the document says is already occupied (§6.12) is held from a stated time,
+    # so the bound has to clear that too.
+    total += max(
+        (
+            a.boundary.since
+            for a in instance.activities
+            if a.boundary is not None and a.boundary.since is not None
+        ),
+        default=0,
+    )
     if fixation is not None:
         fixed_ends = (
             [f.end for f in fixation.activities.values()]

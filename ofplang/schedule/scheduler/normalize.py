@@ -46,10 +46,12 @@ from ofplang.schedule.core.yamlnode import YMap, YNode, YScalar, YSeq, to_plain
 from ofplang.schedule.scheduler.instance import (
     ActivityInstance,
     ArcInstance,
+    BoundaryInfo,
     Instance,
     RefillCandidate,
     RefillOption,
     RelayInfo,
+    job_membership,
     transport_options,
 )
 from ofplang.schedule.scheduler.model import Arc, Mode, NodePath
@@ -68,7 +70,10 @@ from ofplang.schedule.scheduler.status import (
 )
 from ofplang.schedule.validation import errors
 
-_STARTED = ("completed", "running")
+# Statuses that mean the activity ran, and so is pinned to what it did. `failed` is
+# among them: it started and ended, taking its resources and drawing its consumption
+# on the way -- it merely ended abnormally. Only `cancelled` never ran (§6.2).
+_STARTED = ("completed", "running", "failed")
 # Terminal statuses (§6.2): a run stops on any failure, so a document carrying one
 # is a final status, not a replannable history. The scheduler rejects it rather
 # than silently treating it as pending.
@@ -89,7 +94,12 @@ class _Leg:
 
 
 def normalize(
-    base: Instance, root: YNode | None, env, *, ignore_resources: bool = False
+    base: Instance,
+    root: YNode | None,
+    env,
+    *,
+    ignore_resources: bool = False,
+    jobs: tuple[str, ...] = (),
 ) -> tuple[Instance | None, Fixation | None, Diagnostics]:
     """Build the augmented instance and fixation from `base` (the workflow
     instance, built with `check_reachability=False`) and the status `root`.
@@ -120,12 +130,19 @@ def normalize(
         )
         return None, None, diags
 
-    # A terminal status (failed / cancelled) means the run has stopped; there is no
-    # remaining work to plan, so such a document is not a valid replan input.
-    if isinstance(root, YMap) and _has_terminal_status(root):
+    # A terminal status (failed / cancelled) stops the **job** it belongs to (§6.2):
+    # its remaining work is not planned, and its history stays. A single workflow is
+    # one job, so its sole job going terminal is the whole document going terminal --
+    # which is what this always meant, and what it still reports when every job has
+    # stopped and there is nothing left to plan.
+    membership = job_membership(base, jobs)
+    terminal = _terminal_jobs(root) if isinstance(root, YMap) else set()
+    planned = {job for job in membership if job is not None}
+    if terminal and planned <= terminal:
         diags.error(
             errors.TERMINAL_STATUS_NOT_REPLANNABLE,
-            "a document with a failed / cancelled activity is terminal and cannot be replanned",
+            "every job in this document has stopped (a failed / cancelled activity), "
+            "so there is no remaining work to plan",
             "activities",
             at=root,
         )
@@ -163,6 +180,14 @@ def normalize(
     if _has_error(diags):
         return None, None, diags
 
+    # Work of a stopped job that never ran is `cancelled` (§6.2), not pending: it is
+    # pinned to a zero-length interval at `now`, which holds no spot and no device
+    # (nothing overlaps a zero-length interval) and draws no consumption. The job
+    # keeps its place in the instance so its history still has somewhere to live.
+    for i in range(len(activities)):
+        if i not in act_fix and membership[i] in terminal:
+            act_fix[i] = ActivityFixation("cancelled", now, now, 0)
+
     # 2. Per workflow arc, rebuild its transport chain from the committed legs,
     #    deriving relays and (when the destination is pending) a re-transport.
     arcs: list[ArcInstance] = []
@@ -175,6 +200,20 @@ def normalize(
         )
     if _has_error(diags):
         return None, None, diags
+
+    # Spots the document says are already occupied (§6.12) join the instance as held
+    # nodes: no work, no arcs, just something sitting there from a stated moment until
+    # the run is over. They are appended after the workflow activities, so no index
+    # already in `act_fix` / `arc_fix` / `precedence` moves.
+    activities.extend(_held_nodes(root))
+
+    # A move that would carry cancelled work, or carry it away, never happens either.
+    for r, arc_inst in enumerate(arcs):
+        if r in arc_fix:
+            continue
+        endpoints = (arc_inst.src_activity, arc_inst.dst_activity)
+        if any(act_fix.get(i) is not None and act_fix[i].status == "cancelled" for i in endpoints):
+            arc_fix[r] = ArcFixation("cancelled", now, now, 0)
 
     instance = Instance(env, base.time_unit, tuple(activities), tuple(arcs), base.precedence)
 
@@ -382,6 +421,8 @@ def _derive_levels(
         return levels
 
     for index, fixation in act_fix.items():
+        if fixation.status == "cancelled":
+            continue  # it never ran, so it never drew anything
         mode = instance.activities[index].modes[fixation.mode_index]
         for qualified, amount in mode.consumption.items():
             parsed = parse_qualified_resource(qualified)
@@ -472,6 +513,65 @@ def _has_started_activities(root: YMap) -> bool:
     if not isinstance(activities, YSeq):
         return False
     return any(isinstance(item, YMap) and status_of(item) in _STARTED for item in activities.items)
+
+
+def _held_nodes(root: YNode | None) -> list[ActivityInstance]:
+    """`occupied` (§6.12) read into the instance: one held node per entry.
+
+    The scheduler knows a spot is taken only while some activity's interval covers it,
+    and a completed activity's interval has ended -- so material a stopped job left
+    behind is invisible unless the document says so. Each entry becomes a node that
+    holds that one spot from `since` until the run is over, exactly as a delivered
+    Object does (§6.8), and belongs to no work at all.
+
+    The document has been shape-validated, so `spot` is a well-formed qualified spot
+    and `since` a non-negative integer; anything else is skipped rather than raising.
+    """
+    if not isinstance(root, YMap):
+        return []
+    seq = root.get("occupied")
+    if not isinstance(seq, YSeq):
+        return []
+    out = []
+    for item in seq.items:
+        if not isinstance(item, YMap):
+            continue
+        spot, since = text(item.get("spot")), item.get("since")
+        if not spot or not (isinstance(since, YScalar) and since.is_int):
+            continue
+        mode = Mode(
+            id="occupied",
+            devices=(),
+            duration=0,
+            input_spots={"held": spot},
+            output_spots={},
+        )
+        out.append(
+            ActivityInstance(
+                (),
+                "",
+                (mode,),
+                boundary=BoundaryInfo("held", job=text(item.get("job")) or None, since=since.value),
+            )
+        )
+    return out
+
+
+def _terminal_jobs(root: YMap) -> set[str]:
+    """The jobs a terminal status has stopped (§6.2, §6.11).
+
+    A `failed` or `cancelled` activity stops the job it belongs to, and only that job.
+    For a single workflow there is one job -- the implicit one, named by the empty
+    string -- so a terminal status there stops the whole document, which is what it
+    has always meant."""
+    activities = root.get("activities")
+    if not isinstance(activities, YSeq):
+        return set()
+    return {
+        job_of(item)
+        for item in activities.items
+        if isinstance(item, YMap) and status_of(item) in _TERMINAL
+    }
 
 
 def _has_terminal_status(root: YMap) -> bool:

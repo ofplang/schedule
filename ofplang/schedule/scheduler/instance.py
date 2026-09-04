@@ -59,10 +59,17 @@ class BoundaryInfo:
     today. It is deliberately expressible: material left behind by a job that has
     left the plan belongs to no job either, and that is the shape a withdrawal will
     need (design.md "ジョブの退出").
+
+    `kind` is `input`, `output`, or **`held`**. A held node is not a workflow boundary
+    at all: it is a spot the document says is occupied by something the plan does not
+    otherwise account for (§6.12) -- material a stopped job left behind. It behaves
+    exactly like an output node, holding its spot until the run is over, except that
+    its start is pinned at `since` rather than being decided.
     """
 
-    kind: str  # "input" | "output"
+    kind: str  # "input" | "output" | "held"
     job: str | None = None
+    since: int | None = None  # `held` only: when the spot became occupied
 
 
 @dataclass(frozen=True)

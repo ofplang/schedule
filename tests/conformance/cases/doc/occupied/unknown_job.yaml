@@ -1,0 +1,7 @@
+occupied:
+- spot: heater.stage
+  since: 10
+  job: evening
+jobs:
+- id: morning
+activities: []

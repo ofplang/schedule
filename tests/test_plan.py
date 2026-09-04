@@ -64,6 +64,8 @@ _COMMITTED_PLANS = [
     "shared_refill",
     # A joint plan whose jobs carry their own boundary (§6.8 per job).
     "shared_bay",
+    # A joint plan with a stopped job and the tray it is still holding (§6.2, §6.12).
+    "stopped_job",
 ]
 
 

@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: malformed_qualified_spot}
+notes: An occupied spot is qualified `<device>.<spot>`; spec §6.12, §8.2.

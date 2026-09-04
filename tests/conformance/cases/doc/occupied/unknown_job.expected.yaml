@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: unknown_job}
+notes: An occupancy may name the job that left it, and it must be one of them; spec §6.12, §6.11.

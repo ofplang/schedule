@@ -23,6 +23,7 @@ DOC_TOP = {
     "time",
     "now",
     "jobs",
+    "occupied",
     "outcome",
     "objective",
     "interface",
@@ -35,6 +36,9 @@ DOC_TOP = {
 # (`interface`) -- the same section a single-workflow document carries at the top
 # level, one per job, because it binds one workflow's ports.
 JOB_KEYS = {"id", "release", "bound", "fingerprint", "interface"}
+# One entry of `occupied` (§6.12): a spot something is sitting on, since when, and
+# optionally which job left it there.
+OCCUPIED_KEYS = {"spot", "since", "job"}
 INVENTORIES_KEYS = {"levels"}
 OUTCOMES = {"optimal", "feasible", "infeasible", "unknown"}
 # `failed` / `cancelled` are terminal statuses (§6.2): a run stops on any failure,
@@ -136,6 +140,7 @@ def _check(root: YNode | None, diags: Diagnostics) -> None:
     # the first says this is a single-workflow document, where a `job` is simply out
     # of place, and both are reported the same way.
     job_ids = _check_jobs(root, diags)
+    _check_occupied(root, job_ids, diags)
 
     if "activities" not in root:
         diags.error(errors.MISSING_ACTIVITIES, "activities is required", "activities", at=root)
@@ -206,6 +211,45 @@ def _check_jobs(root: YMap, diags: Diagnostics) -> set[str] | None:
         else:
             ids.add(node.value)
     return ids
+
+
+def _check_occupied(root: YMap, job_ids: set[str] | None, diags: Diagnostics) -> None:
+    """`occupied` (§6.12): spots held by something the plan does not otherwise account
+    for -- material a stopped job left behind.
+
+    The scheduler models occupancy through activity intervals, and a completed
+    activity's interval has ended, so a spot that still physically holds something is
+    free as far as the model can tell. This section is how a document says otherwise.
+    `spot` and `since` are required: without the time there is no interval to hold, and
+    "occupied from the beginning" is a different claim from "occupied since the failure".
+    `job` is optional traceability -- which job left it -- and must name a roster entry
+    where there is one.
+    """
+    if "occupied" not in root:
+        return
+    seq = shape.as_seq(root.get("occupied"), "occupied", diags)
+    if seq is None:
+        return
+    for i, item in enumerate(seq.items):
+        base = f"occupied[{i}]"
+        omap = shape.as_map(item, base, diags)
+        if omap is None:
+            continue
+        shape.unknown_keys(omap, OCCUPIED_KEYS, base, diags)
+        spot = shape.require(omap, "spot", base, diags)
+        if spot is not None:
+            _check_qualified_spot(spot, shape.join(base, "spot"), diags)
+        since = omap.get("since")
+        if since is None and "since" not in omap:
+            diags.error(
+                errors.MISSING_REQUIRED_FIELD,
+                "since is required: it is when the spot became occupied",
+                shape.join(base, "since"),
+                at=omap,
+            )
+        else:
+            shape.nonneg_int(since, shape.join(base, "since"), diags)
+        _check_job(omap.get("job"), base, "occupied", job_ids, diags)
 
 
 def _check_activity_ids(activities: YSeq, diags: Diagnostics) -> None:
@@ -409,11 +453,13 @@ def _check_job(
 
     Required exactly where the roster is. A document that lists jobs and then leaves
     an activity unattributed is half-converted -- there is no "the" job to fall back
-    on -- and a `replenishment` is the one exception, belonging to no job because one
-    refill may serve several (§6.9).
+    on. Two things are exempt: a `replenishment`, which belongs to no job because one
+    refill may serve several (§6.9), and an `occupied` entry (§6.12), where naming the
+    job that left the material is traceability rather than provenance -- nobody may
+    know, and the occupancy is real either way.
     """
     if node is None:
-        if job_ids is not None and kind != "replenishment":
+        if job_ids is not None and kind not in ("replenishment", "occupied"):
             diags.error(
                 errors.MISSING_REQUIRED_FIELD,
                 "job is required where the document lists jobs",

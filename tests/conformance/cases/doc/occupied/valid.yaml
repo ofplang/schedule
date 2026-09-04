@@ -1,0 +1,10 @@
+# Spots held by something the plan does not otherwise account for (§6.12).
+occupied:
+- spot: heater.stage
+  since: 120
+- spot: bench.slot_a
+  since: 0
+  job: morning
+jobs:
+- id: morning
+activities: []

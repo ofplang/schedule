@@ -108,6 +108,34 @@ ofp-schedule schedule interface_load.workflow.yaml --env interface_load.env.yaml
 An Object-bearing entry input with no `interface` binding is an error
 (`interface_input_missing`), so `--document` is required here.
 
+## `stopped_job` — one job stops, and what it left behind is still there
+
+The example for a failure that is not the end of the world (SPEC §6.2) and for the
+section that says what it left (§6.12).
+
+```sh
+ofp-schedule schedule shared_refill.workflow.yaml shared_refill.workflow.yaml     shared_refill.workflow.yaml --env stopped_job.env.yaml     --document stopped_job.document.yaml
+```
+
+- `stopped_job.env.yaml` — an oven with two trays, and a `bake` that declares
+  **`device_access: false`**, so both trays can be in use at once. That makes the
+  *trays* the scarce thing rather than the machine, which is what lets a stranded
+  plate cost the others their parallelism.
+- `stopped_job.document.yaml` — `job2` failed on `oven.tray_1` at 10; `job1` and
+  `job3` have not started.
+
+Under v0's single-workflow rule a `failed` activity ends everything. Here it stops
+`job2` alone: its unfinished work comes back `cancelled` at a zero-length interval, so
+it holds no machine, and the other two are replanned around it.
+
+**Delete the `occupied` section and see what happens.** The plan comes back at makespan
+**38** instead of **57** — because it bakes `job3`'s plate on `tray_1`, where `job2`'s
+plate is still sitting. The failed bake's interval has *ended*, so nothing else in the
+document says that tray is taken. The nineteen seconds are what the truth costs, and
+the shorter plan is the one that cannot be run.
+
+- `outputs/stopped_job.plan.yaml` (makespan 57) and `outputs/stopped_job.device.svg`.
+
 ## `shared_bay` — one loading bay, two jobs, taking turns
 
 Where `shared_refill` shows two jobs sharing a *stock*, this shows them sharing a

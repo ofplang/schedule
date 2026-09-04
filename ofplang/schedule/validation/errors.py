@@ -175,6 +175,11 @@ JOB_ROSTER_MISMATCH = "job_roster_mismatch"
 # arrived no longer is. Relaxed in roster order and by as little as possible, so an
 # earlier job is never relaxed to spare a later one.
 JOB_BOUND_RELAXED = "job_bound_relaxed"
+# Nothing can be planned, and the promises are not why (§6.11). Names the job whose
+# removal would let the rest be planned, or says that no single one accounts for it.
+# Reported, never acted on: dropping a job would be the scheduler quietly discarding
+# work somebody asked for.
+JOBS_NOT_PLANNABLE_TOGETHER = "jobs_not_plannable_together"
 # A warning: two jobs bind the same entry spot (§6.8, §6.11). Legitimate -- entry
 # material holds its spot only from its job's release until the move that collects it,
 # so one loading bay can serve two runs -- but only if the releases leave room. Said
@@ -304,6 +309,7 @@ ERROR_CODES = frozenset(
         JOB_ROSTER_MISMATCH,
         JOB_WORKFLOW_MISMATCH,
         INTERFACE_SHARED_INPUT_SPOT,
+        JOBS_NOT_PLANNABLE_TOGETHER,
         MULTI_JOB_INTERFACE,
         STATUS_MISSING_NOW,
         STATUS_NODE_UNKNOWN,

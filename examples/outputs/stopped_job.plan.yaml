@@ -1,0 +1,251 @@
+time:
+  unit: second
+now: 10
+jobs:
+- id: job1
+  bound: 35
+  fingerprint: 321e98b8ab8853b8
+- id: job2
+  fingerprint: 321e98b8ab8853b8
+- id: job3
+  bound: 57
+  fingerprint: 321e98b8ab8853b8
+occupied:
+- spot: oven.tray_1
+  since: 10
+  job: job2
+outcome: optimal
+objective:
+  kind:
+  - completion_time_sum
+  - makespan
+  value:
+  - 92
+  - 57
+activities:
+- kind: processing
+  job: job2
+  status: completed
+  start: 0
+  end: 2
+  process: make_plate
+  mode: slot_a
+  node:
+  - Make
+  devices:
+  - bench
+  output_spots:
+    plate: bench.slot_a
+- kind: transport
+  job: job2
+  status: completed
+  start: 2
+  end: 3
+  from_spot: bench.slot_a
+  to_spot: oven.tray_1
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Make
+      port: plate
+    to:
+      node:
+      - Assay
+      port: plate
+  seq: 0
+- kind: processing
+  job: job2
+  status: failed
+  start: 3
+  end: 10
+  process: assay
+  mode: tray_1
+  node:
+  - Assay
+  devices:
+  - oven
+  device_access: false
+  input_spots:
+    plate: oven.tray_1
+  output_spots:
+    out: oven.tray_1
+- kind: processing
+  job: job2
+  status: cancelled
+  start: 10
+  end: 10
+  process: discard
+  mode: '0'
+  node:
+  - Drop
+  devices:
+  - bin
+  input_spots:
+    plate: bin.chute
+- kind: transport
+  job: job2
+  status: cancelled
+  start: 10
+  end: 10
+  from_spot: oven.tray_1
+  to_spot: bin.chute
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Assay
+      port: out
+    to:
+      node:
+      - Drop
+      port: plate
+- kind: processing
+  job: job1
+  start: 10
+  end: 12
+  process: make_plate
+  mode: slot_b
+  node:
+  - Make
+  devices:
+  - bench
+  output_spots:
+    plate: bench.slot_b
+- kind: transport
+  job: job1
+  start: 12
+  end: 13
+  from_spot: bench.slot_b
+  to_spot: oven.tray_2
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Make
+      port: plate
+    to:
+      node:
+      - Assay
+      port: plate
+- kind: processing
+  job: job3
+  start: 13
+  end: 15
+  process: make_plate
+  mode: slot_b
+  node:
+  - Make
+  devices:
+  - bench
+  output_spots:
+    plate: bench.slot_b
+- kind: processing
+  job: job1
+  start: 13
+  end: 33
+  process: assay
+  mode: tray_2
+  node:
+  - Assay
+  devices:
+  - oven
+  device_access: false
+  input_spots:
+    plate: oven.tray_2
+  output_spots:
+    out: oven.tray_2
+- kind: transport
+  job: job1
+  start: 33
+  end: 34
+  from_spot: oven.tray_2
+  to_spot: bin.chute
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Assay
+      port: out
+    to:
+      node:
+      - Drop
+      port: plate
+- kind: processing
+  job: job1
+  start: 34
+  end: 35
+  process: discard
+  mode: '0'
+  node:
+  - Drop
+  devices:
+  - bin
+  input_spots:
+    plate: bin.chute
+- kind: transport
+  job: job3
+  start: 34
+  end: 35
+  from_spot: bench.slot_b
+  to_spot: oven.tray_2
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Make
+      port: plate
+    to:
+      node:
+      - Assay
+      port: plate
+- kind: processing
+  job: job3
+  start: 35
+  end: 55
+  process: assay
+  mode: tray_2
+  node:
+  - Assay
+  devices:
+  - oven
+  device_access: false
+  input_spots:
+    plate: oven.tray_2
+  output_spots:
+    out: oven.tray_2
+- kind: transport
+  job: job3
+  start: 55
+  end: 56
+  from_spot: oven.tray_2
+  to_spot: bin.chute
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Assay
+      port: out
+    to:
+      node:
+      - Drop
+      port: plate
+- kind: processing
+  job: job3
+  start: 56
+  end: 57
+  process: discard
+  mode: '0'
+  node:
+  - Drop
+  devices:
+  - bin
+  input_spots:
+    plate: bin.chute
+meta:
+  workflow:
+  - examples/shared_refill.workflow.yaml
+  - examples/shared_refill.workflow.yaml
+  - examples/shared_refill.workflow.yaml
+  environment: examples/stopped_job.env.yaml
+  status: examples/stopped_job.document.yaml

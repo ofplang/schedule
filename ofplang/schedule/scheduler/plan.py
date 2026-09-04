@@ -32,6 +32,7 @@ def render_plan(
     now: int | None = None,
     interface: dict | None = None,
     inventories: dict | None = None,
+    occupied: list | None = None,
     ignore_resources: bool = False,
     jobs: tuple[JobSpec, ...] = (),
 ) -> dict:
@@ -180,6 +181,11 @@ def render_plan(
     # this rather than reported.
     if inventories:
         doc["inventories"] = inventories
+    # What is sitting on a spot that this plan does not otherwise account for (§6.12).
+    # Echoed for the reason `interface` is: it is the caller's own input, and it does
+    # not stop being true because a plan was made.
+    if occupied:
+        doc["occupied"] = occupied
     doc["outcome"] = solution.outcome
     # `value` takes the shape of its `kind` (§6.1): a scalar for one stage, a list
     # for several. A plan is only rendered when a solve succeeded, so every stage

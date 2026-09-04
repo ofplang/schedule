@@ -661,6 +661,9 @@ environment.
   was a replan. A document that carries started (`completed` / `running`)
   activities **must** set `now` (§9.3, `status_missing_now`) — history cannot be
   pinned against an absent reference time.
+- `occupied` (§6.12) — spots held by something this plan does not otherwise account
+  for: material a stopped job left behind. A planning constraint (§3), supplied by
+  whoever knows and echoed in the plan output.
 - `jobs` (§6.11) — the roster of workflows a **joint plan** covers, as a list of
   entries each carrying an `id`. Present exactly on a joint plan: a document for a
   single workflow has no roster, and no activity in it carries a `job`. Where the
@@ -739,13 +742,19 @@ environment.
   `pending` / status-less entry and re-derives that work from the workflow, so a
   prior plan can be fed straight back in as the next replanning input (its future
   is simply re-optimised).
-  `failed` and `cancelled` are **terminal** statuses that appear only in a final
-  status: v0 stops the whole run on any activity failure — the activity that ended
+  `failed` and `cancelled` are **terminal** statuses: the activity that ended
   abnormally is `failed`, and work that was never started because of the stop is
-  `cancelled`. A terminal status is a valid document shape but is **not a
-  replanning input**: feeding a document with a `failed` / `cancelled` activity to
-  the scheduler is `terminal_status_not_replannable` (§9.3), because a stopped run
-  has no remaining work to plan.
+  `cancelled`. A terminal status stops the **job** it belongs to (§6.11): that job's
+  remaining work is not planned, and it keeps the history it has. A single workflow is
+  one job, so a terminal status there stops the whole document, and feeding it to the
+  scheduler is `terminal_status_not_replannable` (§9.3) — which is also what a joint
+  plan reports once *every* one of its jobs has stopped and there is nothing left to
+  plan. A stopped job's unfinished work comes back `cancelled`, pinned to a zero-length
+  interval at `now`: it holds no spot, no device, and draws no consumption.
+
+  What such a job leaves *behind* is not expressed by its activities — a completed
+  interval has ended, so the material it put somewhere is invisible. See `occupied`
+  (§6.12).
 - `start`, `end` (required) — integers in `time.unit`. Planned times on a plan;
   actual times on a `completed` activity; on a `running` activity `start` is
   actual and `end` is the expected finish. On a replan the scheduler does not
@@ -1246,10 +1255,51 @@ bounds and history they are not interchangeable at all. This is an implementatio
 choice about search, not part of the document's meaning — a plan is the same plan with
 or without it.
 
-**Current limits.** A `failed` or `cancelled` activity is read document-wide (§6.2),
-so **one job's failure stops every job in the plan from being replanned**; and nothing
-removes a job from a plan, so a finished job stays in the roster — which is also what
-says its delivered material still occupies its spot.
+**When a job stops.** A terminal status stops that job alone (§6.2). The others are
+replanned around it: its unfinished work is `cancelled` and costs nothing, it is held
+to no promise (it will not complete, and a bound it can never reach would make every
+plan past a failure infeasible), and it counts towards nothing that is minimised. What
+it leaves behind is said separately, by `occupied` (§6.12).
+
+**When nothing can be planned.** If no schedule exists even with every promise lifted,
+the scheduler takes each job out in turn and reports which one's removal would let the
+rest be planned — or that no single one accounts for it
+(`jobs_not_plannable_together`, §10.4). It **reports and does nothing else**: dropping
+a job would be quietly discarding work somebody asked for.
+
+**Current limits.** Nothing removes a job from a plan, so a finished job stays in the
+roster — which is also what says its delivered material still occupies its spot.
+
+### 6.12 Occupied spots
+
+```yaml
+occupied:
+  - spot: heater.stage      # required, a qualified spot (§8.2)
+    since: 120              # required, when it became occupied
+    job: job2               # optional: which job left it there
+```
+
+The scheduler knows a spot is taken only while some activity's interval covers it
+(§4.4). A completed activity's interval has ended, so material it left somewhere is
+free as far as the model can tell — and the plan will send other work to a place that
+is physically full. This section is how a document says otherwise.
+
+Each entry holds its spot from `since` **until further notice**: for the rest of the
+plan, like a delivered Object (§6.8), and unlike one it takes no part in the makespan.
+A run that finishes long before is still reported as finishing then; a spot being taken
+is not work, and timing it as though it were would report a makespan for a run that had
+already ended.
+
+`since` is required. Without it there is no interval to hold, and "occupied from the
+beginning" is a different claim from "occupied since the failure".
+
+`job` is **traceability, not provenance**: it records which job left the material, for
+a reader and for a later withdrawal that would free the spot. It may be omitted —
+nobody may know, and the spot is taken either way — and where a roster exists it must
+name one of its entries (§6.11).
+
+The usual writer is whatever reports a failure: a job stops (§6.2), and what it was
+holding stays where it is until somebody clears it.
 
 ## 7. Execution status
 
@@ -1443,6 +1493,9 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
   and whether each matches its fingerprint, are execution-layer (§9.3,
   `job_roster_mismatch` / `job_workflow_mismatch`) — they need the caller's inputs, not
   just the document.
+- `occupied` (if present): a list of mappings, each with a required `spot` that is a
+  well-formed qualified spot, a required `since` that is a non-negative integer, and an
+  optional `job` that is an identifier naming a roster entry where there is one (§6.12).
 - `interface` (if present): `inputs` / `outputs` (each optional) are maps of a port
   identifier to a qualified spot; a spot value is a well-formed qualified spot
   (`<device>.<spot>`, exactly one `.`). (That a port is an Object-bearing boundary
@@ -1711,6 +1764,7 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `job_bound_relaxed` | **warning**: a job could no longer finish by the completion it was promised, so the promise was re-derived (§6.11) |
 | `job_roster_mismatch` | the workflows given to the scheduler are not the ones the document's `jobs` roster names (§6.11) |
 | `multi_job_interface` | a document carrying a top-level `interface` was given to a plan that names jobs: it binds one workflow's ports, so a joint plan carries it per job (§6.11) |
+| `jobs_not_plannable_together` | no schedule exists even with every promise lifted; names the job whose removal would let the rest be planned, or says none does (§6.11) |
 | `interface_shared_input_spot` | **warning**: two jobs bind the same entry spot (§6.11). Legitimate if their releases leave the first job's material time to be collected |
 | `missing_inventories` | the resource model is in effect but the document has no `inventories` (§6.10). An empty `initial` is the way to say every stock starts empty |
 | `inventory_exceeds_capacity` | an `inventories.levels` level is above its resource's `capacity` |
@@ -1738,4 +1792,4 @@ status (§7) against the instance:
 | `status_inventory_inconsistent` | replaying the history against `inventories.levels` drives a resource outside `[0, capacity]` (§9.3) |
 | `plan_inventory_inconsistent` | a self-check on the way out: replaying the plan this scheduler just rendered drives a resource outside `[0, capacity]`, so the plan could not be executed. Not a judgement on any input — reaching it means the solved model and the rendered document disagree, which is a defect in the implementation. It is reported rather than handed out, because a plan that under-fills a stock schedules cleanly and runs dry later |
 | `broken_transport_chain` | a committed transport leg's source is not completed, or a leg does not continue the previous leg's arrival spot |
-| `terminal_status_not_replannable` | a replan input carries a `failed` / `cancelled` (terminal) activity; a stopped run has no remaining work to plan |
+| `terminal_status_not_replannable` | every job in the document has stopped (a `failed` / `cancelled` activity), so there is no remaining work to plan (§6.2, §6.11) |

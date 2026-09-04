@@ -1,0 +1,4 @@
+occupied:
+- spot: heater
+  since: 10
+activities: []

@@ -30,6 +30,7 @@ from ofplang.schedule.scheduler.cpsat import Solution, solve
 from ofplang.schedule.scheduler.envload import load_environment
 from ofplang.schedule.scheduler.instance import (
     build_instance,
+    job_membership,
     merge_instances,
     prefix_instance,
     report_unreachable,
@@ -39,6 +40,7 @@ from ofplang.schedule.scheduler.normalize import normalize
 from ofplang.schedule.scheduler.plan import render_plan
 from ofplang.schedule.scheduler.plancheck import check_plan_inventories
 from ofplang.schedule.scheduler.stats import SolveStats
+from ofplang.schedule.scheduler.status import ActivityFixation, ArcFixation, Fixation
 from ofplang.schedule.scheduler.workflow import fingerprint, parse_workflow
 from ofplang.schedule.validation import errors
 from ofplang.schedule.validation.document import validate_document_node
@@ -221,6 +223,76 @@ def _check_boundary_spots(specs: tuple[JobSpec, ...]) -> list[Diagnostic]:
                 else:
                     owner[spot] = (spec.id, port)
     return out
+
+
+def _without(fixation: Fixation, instance, job: str, membership) -> Fixation:
+    """`fixation` with every unfinished activity of `job` cancelled -- the job taken
+    out of the plan without any index moving.
+
+    Cancelling is how a stopped job's remaining work is already expressed (§6.2): a
+    zero-length interval at `now`, holding no spot and no device and drawing no
+    consumption. Reusing it here means "what if this job were not being planned?" costs
+    a fixation and a solve rather than a second instance.
+    """
+    activities = dict(fixation.activities)
+    for i, owner in enumerate(membership):
+        if owner == job and i not in activities and instance.activities[i].boundary is None:
+            activities[i] = ActivityFixation("cancelled", fixation.now, fixation.now, 0)
+    arcs = dict(fixation.arcs)
+    for r, arc in enumerate(instance.arcs):
+        if r in arcs:
+            continue
+        ends = (arc.src_activity, arc.dst_activity)
+        if any(activities.get(i) is not None and activities[i].status == "cancelled" for i in ends):
+            arcs[r] = ArcFixation("cancelled", fixation.now, fixation.now, 0)
+    return replace(fixation, activities=activities, arcs=arcs)
+
+
+def _unplannable(instance, specs: tuple[JobSpec, ...], solve_kwargs: dict) -> list[Diagnostic]:
+    """Which job, if any, is why nothing can be planned (§6.11).
+
+    Reached only when the instance is infeasible with no bound in force, so the
+    promises are not the cause and something about the work itself is. Each job is
+    taken out in turn: if the rest can then be planned, that job is why -- and saying
+    which one beats `infeasible`, which says only that the lab cannot do what it was
+    asked and leaves the reader to bisect it by hand.
+
+    🔴 **It reports and does nothing else.** Dropping the job would be the scheduler
+    quietly discarding work somebody asked for; whether to withdraw it is the
+    caller's to decide (design.md "ジョブの退出").
+    """
+    if len(specs) < 2:
+        return []
+    fixation = solve_kwargs["fixation"]
+    if fixation is None:
+        return []
+    membership = job_membership(instance, [spec.id for spec in specs])
+    unbounded = tuple(replace(spec, bound=None) for spec in specs)
+    kwargs = dict(solve_kwargs)
+
+    culprits = []
+    for spec in specs:
+        kwargs["fixation"] = _without(fixation, instance, spec.id, membership)
+        if solve(instance, jobs=unbounded, **kwargs).outcome in _SOLVED:
+            culprits.append(spec.id)
+    if not culprits:
+        return [
+            Diagnostic(
+                errors.JOBS_NOT_PLANNABLE_TOGETHER,
+                "no single job accounts for this: the jobs cannot be planned together "
+                f"({sorted(spec.id for spec in specs)})",
+                "jobs",
+            )
+        ]
+    return [
+        Diagnostic(
+            errors.JOBS_NOT_PLANNABLE_TOGETHER,
+            f"the rest can be planned without job {job!r}; it is not being removed "
+            "-- that is the caller's decision",
+            "jobs",
+        )
+        for job in culprits
+    ]
 
 
 def _promised(specs: tuple[JobSpec, ...], solution: Solution) -> tuple[JobSpec, ...]:
@@ -496,6 +568,7 @@ def _run(
     inventories = None
     declared_objective = None
     roster = None
+    occupied = None
     had_now = False
     now_value = 0
     root = None
@@ -514,6 +587,7 @@ def _run(
             inventories = copy.deepcopy(doc_path.get("inventories"))
             declared_objective = (doc_path.get("objective") or {}).get("kind")
             roster = copy.deepcopy(doc_path.get("jobs"))
+            occupied = copy.deepcopy(doc_path.get("occupied"))
             had_now = "now" in doc_path
             stated_now = doc_path.get("now")
             now_value = stated_now if isinstance(stated_now, int) else 0
@@ -523,6 +597,7 @@ def _run(
             stated = yamlnode.to_plain(root.get("objective"))
             declared_objective = stated.get("kind") if isinstance(stated, dict) else None
             roster = yamlnode.to_plain(root.get("jobs")) if "jobs" in root else None
+            occupied = yamlnode.to_plain(root.get("occupied")) if "occupied" in root else None
             had_now = "now" in root
             stated_now = yamlnode.to_plain(root.get("now"))
             now_value = stated_now if isinstance(stated_now, int) else 0
@@ -612,7 +687,11 @@ def _run(
     base = merge_instances(bases)
 
     instance, fixation, norm_diags = normalize(
-        base, root, env, ignore_resources=ignore_resources
+        base,
+        root,
+        env,
+        ignore_resources=ignore_resources,
+        jobs=tuple(spec.id for spec in specs if spec.id),
     )
     diagnostics += norm_diags.items
     if instance is None or fixation is None:
@@ -627,21 +706,19 @@ def _run(
     # 4. Solve, then 5. render the plan (only when feasible). One pass unless a
     # promised bound can no longer be kept (`_solve_within_bounds`).
     named = tuple(specs) if any(job.id for job in jobs) else ()
-    solution, settled, relax_diags = _solve_within_bounds(
-        instance,
-        named,
-        {
-            "fixation": fixation,
-            "running_task_margin": running_task_margin,
-            "max_time_seconds": max_time_seconds,
-            "random_seed": random_seed,
-            "objective": _objective_of(declared_objective, len(named)),
-            "collect_solutions": collect_solutions,
-        },
-    )
+    solve_kwargs = {
+        "fixation": fixation,
+        "running_task_margin": running_task_margin,
+        "max_time_seconds": max_time_seconds,
+        "random_seed": random_seed,
+        "objective": _objective_of(declared_objective, len(named)),
+        "collect_solutions": collect_solutions,
+    }
+    solution, settled, relax_diags = _solve_within_bounds(instance, named, solve_kwargs)
     diagnostics += relax_diags
     if solution.outcome not in ("optimal", "feasible"):
         diagnostics.append(Diagnostic(errors.INFEASIBLE, "no feasible schedule found"))
+        diagnostics += _unplannable(instance, named, solve_kwargs)
         return ScheduleReport(solution.outcome, None, None, diagnostics, solution.stats)
 
     # One job's provenance is the string it always was; a joint plan's is the list of
@@ -656,6 +733,7 @@ def _run(
         now=fixation.now if had_now else None,
         interface=interface,
         inventories=inventories,
+        occupied=occupied,
         ignore_resources=ignore_resources,
         jobs=settled,
     )

@@ -1,0 +1,82 @@
+# One job stops; the others carry on, and what it left behind stays where it is.
+#
+# Goes with `shared_refill.workflow.yaml` (one plate: made, baked, discarded) and
+# `stopped_job.env.yaml`, planned as three jobs:
+#
+#   ofp-schedule schedule shared_refill.workflow.yaml shared_refill.workflow.yaml \
+#       shared_refill.workflow.yaml --env stopped_job.env.yaml \
+#       --document stopped_job.document.yaml
+#
+# `job2` made its plate, moved it to `oven.tray_1`, and then **failed** there at 10;
+# what it had not started is `cancelled` (SPEC §6.2). Under v0's single-workflow rule
+# that would be the end of everything. Here it stops `job2` alone: `job1` and `job3`
+# are replanned around it, and `job2` keeps what happened without gaining anything new
+# — cancelled work is pinned to a zero-length interval at `now`, so it holds no
+# machine and cannot be why anything waits.
+#
+# 🔴 **The plate is still on `oven.tray_1`.** Nothing in the activities says so: the
+# failed bake's interval has *ended*, so as far as the model can tell the tray is free.
+# `occupied` (§6.12) is what says otherwise.
+#
+# **Delete the `occupied` section and see what happens.** The plan comes back at
+# makespan 38 instead of 57 — because it puts `job3`'s plate on `tray_1`, where
+# `job2`'s is already sitting. With the section, the two remaining jobs have to share
+# `tray_2` and take turns. The nineteen seconds are what the truth costs, and the
+# shorter plan is the one that cannot be run.
+#
+# `job2` keeps its roster entry. That is not leftover bookkeeping: the entry is what
+# says this job's material is still in the laboratory.
+now: 10
+
+jobs:
+  - id: job1
+  - id: job2
+  - id: job3
+
+occupied:
+  - spot: oven.tray_1
+    since: 10
+    job: job2
+
+activities:
+  - kind: processing
+    job: job2
+    status: completed
+    start: 0
+    end: 2
+    process: make_plate
+    mode: slot_a
+    node: [Make]
+    devices: [bench]
+    output_spots: { plate: bench.slot_a }
+  - kind: transport
+    job: job2
+    status: completed
+    start: 2
+    end: 3
+    from_spot: bench.slot_a
+    to_spot: oven.tray_1
+    transporter: arm
+    arc:
+      from: { node: [Make], port: plate }
+      to:   { node: [Assay], port: plate }
+  - kind: processing
+    job: job2
+    status: failed
+    start: 3
+    end: 10
+    process: assay
+    mode: tray_1
+    node: [Assay]
+    devices: [oven]
+    device_access: false
+    input_spots:  { plate: oven.tray_1 }
+    output_spots: { out: oven.tray_1 }
+  - kind: processing
+    job: job2
+    status: cancelled
+    start: 10
+    end: 10
+    process: discard
+    mode: '0'
+    node: [Drop]
