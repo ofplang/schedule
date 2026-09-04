@@ -85,6 +85,16 @@ class PhaseStats:
     # Improving solutions in the order they were found, or None when the caller did
     # not ask for them (`schedule(collect_solutions=True)`). None and () mean
     # different things: "not recorded" versus "recorded, and there were none".
+    #
+    # This is the only part of the record that grows, and it is bounded twice over:
+    # CP-SAT calls back on *improving* solutions only, so there can never be more
+    # entries than there are distinct objective values (at most the horizon times
+    # the refill count), and each entry is five numbers. Measured: a 60-second solve
+    # of the 6x4 plate batch collected 7 entries -- improvements thin out as the
+    # search turns to proving -- and a whole record with history came to ~2 KB
+    # against a ~31 KB plan. A caller running thousands of solves should still write
+    # each one out and drop it rather than accumulate them, but that is bookkeeping,
+    # not a size problem here.
     history: tuple[SolutionEvent, ...] | None = None
 
 
