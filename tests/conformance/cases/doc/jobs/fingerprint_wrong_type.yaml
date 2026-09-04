@@ -1,0 +1,4 @@
+jobs:
+- id: morning
+  fingerprint: 42
+activities: []

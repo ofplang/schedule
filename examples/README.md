@@ -137,20 +137,37 @@ assays come after it, from either job. That refill is the one activity in the pl
 with no `job` — the scheduler decided to run it, and it serves both.
 
 Every other activity carries its `job`, and the plan opens with the roster it comes
-from:
+from — each entry saying which workflow the job runs and what completion it was
+promised:
 
 ```yaml
 jobs:
 - id: job1
+  bound: 33
+  fingerprint: 321e98b8ab8853b8
 - id: job2
+  bound: 19
+  fingerprint: 321e98b8ab8853b8
 ```
+
+`bound` is the guarantee (SPEC §6.11): a job that arrives later may compete with these
+two for machines and stock, but may not push either past the completion it was already
+promised. `fingerprint` is what stops the two being swapped on a replan — their ids
+match as a set, so nothing else would catch it. (Here they hash the same, because they
+*are* the same workflow, and swapping those two changes nothing.)
 
 Bare filenames are numbered `job1`, `job2` in the order written (which is what lets
 the same file mean two runs of it); write `morning=shared_refill.workflow.yaml` to
 name a job instead. `node` stays relative to that job's own workflow, so the two jobs
-render identical paths and are told apart by `job` alone. Feeding the plan back as
-the next `--document` requires the same jobs to be given again — the roster is what
-that is checked against (`job_roster_mismatch`).
+render identical paths and are told apart by `job` alone. Feeding the plan back as the
+next `--document` requires the same jobs to be given again — the roster is what that is
+checked against (`job_roster_mismatch`) — and giving *more* is how a third job joins
+them, released at `now`.
+
+The document states no `objective`, so each run takes the default for its job count
+(§4.8): the makespan alone for one job, and the sum of the jobs' completions ahead of
+it for the joint plan, since minimising the makespan alone says nothing about which job
+finishes when.
 
 ## `consumable` — a limited stock two assays compete for
 

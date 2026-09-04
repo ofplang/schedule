@@ -18,6 +18,7 @@ import yaml
 from ofplang.schedule.core import objective as objective_stages
 from ofplang.schedule.scheduler.cpsat import Solution
 from ofplang.schedule.scheduler.instance import Instance
+from ofplang.schedule.scheduler.model import JobSpec
 
 
 def render_plan(
@@ -32,7 +33,7 @@ def render_plan(
     interface: dict | None = None,
     inventories: dict | None = None,
     ignore_resources: bool = False,
-    jobs: tuple[str, ...] = (),
+    jobs: tuple[JobSpec, ...] = (),
 ) -> dict:
     """Build the execution-document dict for `solution`.
 
@@ -41,12 +42,13 @@ def render_plan(
     `consumption` echo, so a plan adds nothing a reader that predates resources
     cannot read (§4.7.3).
 
-    `jobs` names the jobs of a joint plan (SPEC §6.11), and saying so is what makes
-    every workflow node path in the instance job-prefixed (`instance.prefix_instance`).
-    Rendering splits that prefix back off into each activity's `job` field, so `node`
-    stays the workflow-relative path it has always been. Empty -- the single-workflow
-    case -- means node paths carry no prefix and no activity gets a `job`, which is
-    what keeps such a plan byte-for-byte what it was."""
+    `jobs` is the roster of a joint plan (SPEC §6.11), in job order, and giving it is
+    what says every workflow node path in the instance is job-prefixed
+    (`instance.prefix_instance`). Rendering splits that prefix back off into each
+    activity's `job` field, so `node` stays the workflow-relative path it has always
+    been. Empty -- the single-workflow case -- means node paths carry no prefix and no
+    activity gets a `job`, which is what keeps such a plan byte-for-byte what it was."""
+    job_ids = tuple(job.id for job in jobs)
     activities: list[dict] = []
 
     for p in solution.processing:
@@ -59,7 +61,7 @@ def render_plan(
             # A relay junction (§6.4.1): identity is its arc + seq + spot, not a
             # workflow node. Its job is the one the arc belongs to.
             entry: dict[str, Any] = {"kind": "relay"}
-            _set_job(entry, _arc_job(p.relay.arc, jobs))
+            _set_job(entry, _arc_job(p.relay.arc, job_ids))
             if p.status is not None:
                 entry["status"] = p.status
             entry.update(
@@ -68,14 +70,14 @@ def render_plan(
                     "end": p.end,
                     "seq": p.relay.seq,
                     "spot": p.relay.spot,
-                    "arc": _arc(p.relay.arc, jobs),
+                    "arc": _arc(p.relay.arc, job_ids),
                 }
             )
             activities.append(entry)
             continue
 
         entry = {"kind": "processing"}
-        job, node = _split_job(p.node, jobs)
+        job, node = _split_job(p.node, job_ids)
         _set_job(entry, job)
         # A fixed activity keeps its status (§6.2); pending activities omit it.
         if p.status is not None:
@@ -120,7 +122,7 @@ def render_plan(
 
     for t in solution.transport:
         entry = {"kind": "transport"}
-        _set_job(entry, _arc_job(t.arc, jobs))
+        _set_job(entry, _arc_job(t.arc, job_ids))
         if t.status is not None:
             entry["status"] = t.status
         entry["start"] = t.start
@@ -132,7 +134,7 @@ def render_plan(
         # the spots, and the route (from == to) is unambiguous without it.
         if t.option.from_spot != t.option.to_spot:
             entry["transporter"] = t.option.transporter
-        entry["arc"] = _arc(t.arc, jobs)
+        entry["arc"] = _arc(t.arc, job_ids)
         # Chain position on a multi-leg move (§6.6); omit for a single-leg transport.
         if t.seq is not None:
             entry["seq"] = t.seq
@@ -167,7 +169,7 @@ def render_plan(
     # qualify. Present exactly on a joint plan: a single-workflow plan has no roster
     # and no `job` on any activity, which is what leaves it unchanged.
     if jobs:
-        doc["jobs"] = [{"id": job_id} for job_id in jobs]
+        doc["jobs"] = [_job_entry(job) for job in jobs]
     # The interface boundary constraint (§6.8) round-trips: echo it verbatim so the
     # plan can be fed back as the next document.
     if interface:
@@ -196,6 +198,21 @@ def render_plan(
     if meta:
         doc["meta"] = meta
     return doc
+
+
+def _job_entry(job: JobSpec) -> dict:
+    """One roster entry (§6.11). `release` is written only where it is not 0 and
+    `bound` / `fingerprint` only where they are set, so a roster says no more than it
+    has to -- and a job that arrived at time 0 with no promise yet renders as the bare
+    `{id: ...}` it did before those fields existed."""
+    entry: dict = {"id": job.id}
+    if job.release:
+        entry["release"] = job.release
+    if job.bound is not None:
+        entry["bound"] = job.bound
+    if job.fingerprint is not None:
+        entry["fingerprint"] = job.fingerprint
+    return entry
 
 
 def _split_job(path, jobs: tuple[str, ...]) -> tuple[str | None, list]:

@@ -1,0 +1,4 @@
+jobs:
+- id: morning
+  bound: soon
+activities: []

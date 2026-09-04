@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: wrong_type}
+notes: A bound is a time, not a word; spec §6.11, §9.2.

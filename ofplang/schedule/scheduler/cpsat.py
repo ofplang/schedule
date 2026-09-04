@@ -15,7 +15,7 @@ applied per spot, per device, and per transporter.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from ortools.sat.python import cp_model
@@ -27,8 +27,9 @@ from ofplang.schedule.scheduler.instance import (
     Instance,
     RelayInfo,
     TransportOption,
+    job_membership,
 )
-from ofplang.schedule.scheduler.model import Arc, Mode, NodePath
+from ofplang.schedule.scheduler.model import Arc, JobSpec, Mode, NodePath
 from ofplang.schedule.scheduler.stats import (
     ModelStats,
     PhaseStats,
@@ -99,6 +100,11 @@ class Solution:
     # prove an instance unschedulable is as much a measurement as how long it takes
     # to schedule one. None only where no solve ran.
     stats: SolveStats | None = None
+    # What each job of a joint plan (§6.11) finished at, by id. This is where a job's
+    # promised bound B_j comes from -- a bound is the completion the solve achieved,
+    # not a value derived some other way (design.md D38) -- so the caller needs it per
+    # job rather than folded into `objective_values`. Empty for a single workflow.
+    job_completions: dict[str, int] = field(default_factory=dict)
 
 
 _STATUS = {
@@ -116,6 +122,7 @@ def solve(
     max_time_seconds: float | None = None,
     random_seed: int | None = None,
     objective: tuple[str, ...] | None = None,
+    jobs: tuple[JobSpec, ...] = (),
     collect_solutions: bool = False,
 ) -> Solution:
     """Build and solve the model. With a `fixation` (a replan), completed/running
@@ -128,6 +135,14 @@ def solve(
     execution document, because where a declaration lives is a question about the
     *inputs*, not about the model; falling back here to the default only keeps a
     bare `solve(instance)` meaningful.
+
+    `jobs` is the roster of a joint plan (§6.11): each entry's `release` holds its
+    activities to start at or after it, and its `bound` -- the completion time the job
+    was promised when it arrived -- caps them. That cap is the whole of "an earlier job
+    is not disturbed by a later one" (design.md D38): the guarantee lives in the
+    constraints, never in the objective, so a caller is free to minimise whatever it
+    likes without weakening it. Empty for a single workflow, where the model is exactly
+    what it was.
 
     By default the solve is non-deterministic: CP-SAT runs a multi-worker
     portfolio that races on wall-clock time, so a fresh run may return a different
@@ -146,7 +161,14 @@ def solve(
     that only wants a schedule pays nothing."""
     model = cp_model.CpModel()
     now = fixation.now if fixation is not None else 0
-    horizon = _horizon(instance, fixation, running_task_margin)
+    horizon = _horizon(instance, fixation, running_task_margin, jobs)
+
+    # Which job each activity belongs to (§6.11), and what each job asks of the model.
+    # With no roster this is one implicit job named `""`, so the per-job machinery
+    # below is the same shape either way -- it simply has nothing to distinguish.
+    membership = job_membership(instance, [job.id for job in jobs])
+    releases = {job.id: job.release for job in jobs}
+    job_bounds = {job.id: job.bound for job in jobs if job.bound is not None}
 
     # Resource occupancy: interval lists to feed NoOverlap, keyed by qualified
     # spot, by device, and by transporter.
@@ -212,6 +234,15 @@ def solve(
         elif fixation is not None:
             # Pending during a replan: cannot start before now.
             model.Add(s >= now)
+        # A job's release time holds every pending activity of it (§6.11), on top of
+        # `now`. A fixed activity is history and is not re-held: it already ran, and a
+        # release that contradicted it would make the past infeasible rather than say
+        # anything about the future.
+        job_id = membership[i]
+        if fx is None and boundary is None and job_id is not None:
+            release = releases.get(job_id, 0)
+            if release:
+                model.Add(s >= release)
         starts.append(s)
         ends.append(e)
         # The input node (end 0) is harmless in the makespan max; the output node's
@@ -328,11 +359,39 @@ def solve(
     else:
         model.Add(c_max == 0)
 
+    # --- per-job completion times (§6.11) ---
+    # C_j is the last end of the job's *own* work -- its activities and the transports
+    # between them. Refills are excluded: they belong to no job (one commonly serves
+    # several), which is exactly why `makespan` stays in the objective beside the sum,
+    # since it is what stops a refill being parked after all the work (§4.8).
+    job_ends: dict[str, list] = {}
+    for i, job_id in enumerate(membership):
+        if job_id is not None:
+            job_ends.setdefault(job_id, []).append(ends[i])
+    for r, arc in enumerate(instance.arcs):
+        src, dst = membership[arc.src_activity], membership[arc.dst_activity]
+        # A boundary arc has one end in no job; the other names the job it serves.
+        job_id = src if src is not None else dst
+        if job_id is not None:
+            job_ends.setdefault(job_id, []).append(arc_ends[r])
+
+    completions = {}
+    for job_id, job_end_vars in sorted(job_ends.items()):
+        c = model.NewIntVar(0, horizon, f"c_job_{job_id or 'only'}")
+        model.AddMaxEquality(c, job_end_vars)
+        completions[job_id] = c
+        # B_j: the completion time this job was promised when it arrived. This one
+        # constraint is the whole of "an earlier job is not disturbed by a later one".
+        bound = job_bounds.get(job_id)
+        if bound is not None:
+            model.Add(c <= bound)
+    completion_sum = sum(completions.values()) if completions else 0
+
     # `replenishment_count` can only tell two schedules apart where a refill is
     # possible at all; `effective` drops it otherwise, which is what keeps a
     # resource-free plan reporting the bare makespan it always did.
     stages = objective_stages.effective(
-        objective or objective_stages.DEFAULT,
+        objective or objective_stages.default(len(jobs)),
         replenishment_possible=bool(instance.replenishments),
     )
     n_refills = sum(vars_.present for vars_ in refills.values())
@@ -347,12 +406,18 @@ def solve(
     terms = {
         objective_stages.MAKESPAN: c_max,
         objective_stages.REPLENISHMENT_COUNT: n_refills,
+        objective_stages.COMPLETION_TIME_SUM: completion_sum,
     }
-    bounds = {
+    stage_bounds = {
         objective_stages.MAKESPAN: horizon,
         objective_stages.REPLENISHMENT_COUNT: len(instance.replenishments),
+        # Every job finishes by the horizon, so their sum is bounded by one horizon
+        # each. The bound has to be a genuine one: the weights are mixed-radix
+        # positional notation, and a stage that could exceed its bound would silently
+        # turn the lexicographic order into an arbitrary trade-off.
+        objective_stages.COMPLETION_TIME_SUM: horizon * max(1, len(completions)),
     }
-    weights = objective_stages.weights(stages, bounds)
+    weights = objective_stages.weights(stages, stage_bounds)
     expression = 0
     for weight, stage in zip(weights, stages, strict=True):
         expression = expression + weight * terms[stage]
@@ -415,6 +480,9 @@ def solve(
         objective_stages.REPLENISHMENT_COUNT: sum(
             1 for r in replenishment if r.status is None
         ),
+        objective_stages.COMPLETION_TIME_SUM: sum(
+            solver.Value(c) for c in completions.values()
+        ),
     }
     return Solution(
         outcome,
@@ -425,6 +493,9 @@ def solve(
         objective_kind=stages,
         objective_values=tuple(values[stage] for stage in stages),
         stats=stats,
+        job_completions={
+            job_id: solver.Value(c) for job_id, c in completions.items() if job_id
+        },
     )
 
 
@@ -891,7 +962,9 @@ def _selected(solver: cp_model.CpSolver, lits) -> int:
     return 0  # pragma: no cover - AddExactlyOne guarantees one true literal
 
 
-def _horizon(instance: Instance, fixation: Fixation | None, margin: int) -> int:
+def _horizon(
+    instance: Instance, fixation: Fixation | None, margin: int, jobs: tuple[JobSpec, ...] = ()
+) -> int:
     """A safe upper bound on any end time: the longest each activity/transport
     could take, summed (a fully serial schedule). On a replan the fixed part
     may already sit past that bound, so also clear `now`, every reported end,
@@ -907,6 +980,10 @@ def _horizon(instance: Instance, fixation: Fixation | None, margin: int) -> int:
     # bound it already was, now serial over the refills as well.
     for candidate in instance.replenishments:
         total += max((o.duration for o in candidate.options), default=0)
+    # A release time (§6.11) holds a job's work back, so the serial bound has to clear
+    # the latest of them too -- otherwise a job released beyond the bound would have
+    # nowhere to be scheduled and the instance would read as infeasible.
+    total += max((job.release for job in jobs), default=0)
     if fixation is not None:
         fixed_ends = (
             [f.end for f in fixation.activities.values()]

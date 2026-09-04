@@ -24,9 +24,9 @@ from dataclasses import dataclass, field, replace
 
 from ofplang.schedule.core import objective as objective_stages
 from ofplang.schedule.core import yamlnode
-from ofplang.schedule.core.diagnostics import ERROR, Diagnostic, Diagnostics
+from ofplang.schedule.core.diagnostics import ERROR, WARNING, Diagnostic, Diagnostics
 from ofplang.schedule.core.yamlnode import YMap
-from ofplang.schedule.scheduler.cpsat import solve
+from ofplang.schedule.scheduler.cpsat import Solution, solve
 from ofplang.schedule.scheduler.envload import load_environment
 from ofplang.schedule.scheduler.instance import (
     build_instance,
@@ -34,12 +34,12 @@ from ofplang.schedule.scheduler.instance import (
     prefix_instance,
     report_unreachable,
 )
-from ofplang.schedule.scheduler.model import Workflow
+from ofplang.schedule.scheduler.model import JobSpec, Workflow
 from ofplang.schedule.scheduler.normalize import normalize
 from ofplang.schedule.scheduler.plan import render_plan
 from ofplang.schedule.scheduler.plancheck import check_plan_inventories
 from ofplang.schedule.scheduler.stats import SolveStats
-from ofplang.schedule.scheduler.workflow import parse_workflow
+from ofplang.schedule.scheduler.workflow import fingerprint, parse_workflow
 from ofplang.schedule.validation import errors
 from ofplang.schedule.validation.document import validate_document_node
 
@@ -65,11 +65,14 @@ class ScheduleReport:
         return self.plan is not None and self.outcome in ("optimal", "feasible")
 
 
+_SOLVED = ("optimal", "feasible")
+
+
 def _has_error(diagnostics) -> bool:
     return any(d.severity == ERROR for d in diagnostics)
 
 
-def _objective_of(declared) -> tuple[str, ...]:
+def _objective_of(declared, job_count: int = 0) -> tuple[str, ...]:
     """The stages to minimise: the execution document's declaration, else the
     default (§4.8, §6.1).
 
@@ -80,25 +83,164 @@ def _objective_of(declared) -> tuple[str, ...]:
     and then as a deprecated fallback; it is now refused there
     (`objective_in_environment`), so nothing reaches this function from the lab.
 
+    The default depends on the job count (§4.8): with several jobs there is something
+    for `completion_time_sum` to trade off, and with one there is not. Only the default
+    does -- a stated `kind` is honoured as written, whatever the count.
+
     A `kind` that names no stage list falls back to the default rather than being
     reported: the document validator has already refused it (`unknown_objective_kind`)
     and the pipeline stopped, so the only way to arrive here with one is an unvalidated
     call, where guessing the default beats raising.
     """
     if declared is None:
-        return objective_stages.DEFAULT
-    return objective_stages.normalize(declared) or objective_stages.DEFAULT
+        return objective_stages.default(job_count)
+    return objective_stages.normalize(declared) or objective_stages.default(job_count)
 
 
-def _roster_ids(roster) -> set[str]:
-    """The job ids a document's `jobs` names (§6.11). The document has already been
+def _roster_entries(roster) -> dict[str, dict]:
+    """A document's `jobs` roster (§6.11), by job id. The document has already been
     shape-validated, so every entry is a mapping with a string `id`; anything else is
-    simply not counted rather than raising here."""
+    simply skipped rather than raising here."""
     return {
-        entry["id"]
+        entry["id"]: entry
         for entry in roster
         if isinstance(entry, dict) and isinstance(entry.get("id"), str)
     }
+
+
+def _job_specs(jobs, workflows, roster: dict[str, dict] | None, now: int) -> list[JobSpec]:
+    """Resolve each job's planning parameters (§6.11) from the roster it appears in.
+
+    A job the roster does not name is **arriving now**, so it starts with no promise
+    (`bound = None`, assigned by this solve) and, unless the roster says otherwise,
+    cannot begin before `now` -- it did not exist earlier, and a schedule that started
+    it in the past would be describing work nobody could have done.
+
+    The fingerprint is always the one just computed from the workflow handed over, not
+    the one the roster carries; the two are compared separately (`_check_fingerprints`)
+    so a mismatch is reported rather than silently overwritten.
+    """
+    specs = []
+    for job, workflow in zip(jobs, workflows, strict=True):
+        entry = (roster or {}).get(job.id) or {}
+        arriving = roster is not None and job.id not in roster
+        release = entry.get("release")
+        if not isinstance(release, int):
+            release = now if arriving else 0
+        bound = entry.get("bound")
+        specs.append(
+            JobSpec(
+                id=job.id,
+                release=release,
+                bound=bound if isinstance(bound, int) else None,
+                fingerprint=fingerprint(workflow),
+            )
+        )
+    return specs
+
+
+def _check_fingerprints(specs, roster: dict[str, dict]) -> list[Diagnostic]:
+    """Each job must be running the workflow its roster entry was planned for (§6.11).
+
+    Nothing else ties an id to a workflow: two jobs handed over in the other order have
+    ids that match as a set, so the roster check passes and each job would be matched
+    against the other's history. An entry with no recorded fingerprint is left alone --
+    it was written before this was recorded, and refusing it would strand documents
+    that are otherwise perfectly replannable.
+    """
+    out = []
+    for spec in specs:
+        stated = (roster.get(spec.id) or {}).get("fingerprint")
+        if isinstance(stated, str) and stated != spec.fingerprint:
+            out.append(
+                Diagnostic(
+                    errors.JOB_WORKFLOW_MISMATCH,
+                    f"job {spec.id!r} was planned for a different workflow "
+                    f"(roster says {stated}, this one is {spec.fingerprint})",
+                    "jobs",
+                )
+            )
+    return out
+
+
+def _promised(specs: tuple[JobSpec, ...], solution: Solution) -> tuple[JobSpec, ...]:
+    """The roster with every job's promise settled (§6.11).
+
+    A job that arrived with no bound gets the completion this solve achieved for it.
+    A job that already had one keeps it: bounds do not ratchet. Tightening them each
+    time the search happened to place a job early would turn ordinary variation in
+    how long things take into a relaxation on the very next replan, and B_j would stop
+    meaning "what this job was promised when it arrived" (design.md D38).
+    """
+    return tuple(
+        spec
+        if spec.bound is not None
+        else replace(spec, bound=solution.job_completions.get(spec.id))
+        for spec in specs
+    )
+
+
+def _solve_within_bounds(
+    instance, specs: tuple[JobSpec, ...], solve_kwargs: dict
+) -> tuple[Solution, tuple[JobSpec, ...], list[Diagnostic]]:
+    """Solve subject to every job's promised bound, relaxing as little as possible if
+    they cannot all be kept.
+
+    Normally this is **one** solve: the promises hold, and the jobs that arrived
+    without one are given the completion it found. The rest of this runs only when
+    reality has moved -- work took longer than planned, a machine went out of service --
+    and some promise can no longer be met.
+
+    Then it takes three steps. First, drop every bound and solve once: if that is still
+    unschedulable the promises were never the problem, and reporting a relaxation would
+    send the reader to the wrong place. Otherwise walk the roster **in order**, keeping
+    each promise that still admits a schedule given the ones already kept, and dropping
+    the first that does not -- so a job is relaxed only when no schedule keeps it, and
+    an earlier job is never relaxed to spare a later one. The dropped job is then
+    re-promised from what the final solve achieves, like any job without a bound.
+
+    (Within a batch of jobs submitted together, which are peers, the roster's order is
+    the tie-break. That is a choice among equals, not a violation of anything.)
+    """
+    def attempt(trial: tuple[JobSpec, ...]) -> Solution:
+        return solve(instance, jobs=trial, **solve_kwargs)
+
+    solution = attempt(specs)
+    if solution.outcome in _SOLVED:
+        return solution, _promised(specs, solution), []
+
+    unbounded = tuple(replace(spec, bound=None) for spec in specs)
+    if not any(spec.bound is not None for spec in specs):
+        return solution, specs, []
+    probe = attempt(unbounded)
+    if probe.outcome not in _SOLVED:
+        # Not the promises. Hand back the original attempt, whose stats describe the
+        # instance the caller actually asked about.
+        return solution, specs, []
+
+    kept: list[JobSpec] = []
+    relaxed: list[JobSpec] = []
+    for i, spec in enumerate(specs):
+        trial = (*kept, spec, *unbounded[i + 1 :])
+        if spec.bound is None or attempt(trial).outcome in _SOLVED:
+            kept.append(spec)
+        else:
+            kept.append(replace(spec, bound=None))
+            relaxed.append(spec)
+
+    final = attempt(tuple(kept))
+    settled = _promised(tuple(kept), final) if final.outcome in _SOLVED else tuple(kept)
+    diagnostics = [
+        Diagnostic(
+            errors.JOB_BOUND_RELAXED,
+            f"job {spec.id!r} could no longer finish by {spec.bound}, the completion it "
+            "was promised; its bound was re-derived",
+            "jobs",
+            severity=WARNING,
+        )
+        for spec in relaxed
+    ]
+    return final, settled, diagnostics
 
 
 def _attribute(items, job, jobs) -> list[Diagnostic]:
@@ -295,6 +437,7 @@ def _run(
     declared_objective = None
     roster = None
     had_now = False
+    now_value = 0
     root = None
     if doc_path is not None:
         root = yamlnode.load_source(doc_path)
@@ -312,6 +455,8 @@ def _run(
             declared_objective = (doc_path.get("objective") or {}).get("kind")
             roster = copy.deepcopy(doc_path.get("jobs"))
             had_now = "now" in doc_path
+            stated_now = doc_path.get("now")
+            now_value = stated_now if isinstance(stated_now, int) else 0
         elif isinstance(root, YMap):
             interface = yamlnode.to_plain(root.get("interface"))
             inventories = yamlnode.to_plain(root.get("inventories"))
@@ -319,27 +464,47 @@ def _run(
             declared_objective = stated.get("kind") if isinstance(stated, dict) else None
             roster = yamlnode.to_plain(root.get("jobs")) if "jobs" in root else None
             had_now = "now" in root
+            stated_now = yamlnode.to_plain(root.get("now"))
+            now_value = stated_now if isinstance(stated_now, int) else 0
 
     # A document that names its jobs (§6.11) has to name *these* jobs. It is a
     # replanning input describing work done by particular workflows, and matching that
     # history against a different set would pin it onto activities that never ran it.
-    # Compared as a set: the roster's order is the record of how the jobs were given,
+    # Compared as sets: the roster's order is the record of how the jobs were given,
     # and re-stating them in another order is not a different plan.
-    if roster is not None:
-        stated_ids = _roster_ids(roster)
+    entries = _roster_entries(roster) if roster is not None else None
+    if entries is not None:
         # The single-workflow call has no job identity at all, so it matches only an
         # empty roster -- never one that names jobs. An empty roster and no roster say
         # the same thing there and are both accepted.
+        #
+        # A *superset* is the arrival of new jobs (§6.11): the roster names the jobs
+        # already being planned, and anything beyond it is joining them now. Missing
+        # the other way stays an error -- a job the document has history for cannot
+        # simply be dropped, or that history would have nowhere to land.
         given_ids = {job.id for job in jobs if job.id}
-        if stated_ids != given_ids:
+        if not set(entries) <= given_ids:
+            missing = sorted(set(entries) - given_ids)
             given = f"{sorted(given_ids)} were given" if given_ids else "one unnamed workflow"
             diagnostics.append(
                 Diagnostic(
                     errors.JOB_ROSTER_MISMATCH,
-                    f"the document plans jobs {sorted(stated_ids)}, but {given}",
+                    f"the document plans jobs {sorted(entries)}, but {given}"
+                    f" -- {missing} would be dropped",
                     "jobs",
                 )
             )
+            return ScheduleReport(None, None, None, diagnostics)
+
+    # Each job's planning parameters, and the check that it is running the workflow
+    # its entry was planned for. The order of these two matters: the specs carry the
+    # fingerprint just computed, so comparing them against the roster is what turns a
+    # swap into a diagnostic rather than a silent overwrite.
+    specs = _job_specs(jobs, workflows, entries, now_value)
+    if entries is not None:
+        mismatched = _check_fingerprints(specs, entries)
+        if mismatched:
+            diagnostics += mismatched
             return ScheduleReport(None, None, None, diagnostics)
 
     # The document's `interface` binds one workflow's boundary material to spots, so
@@ -392,16 +557,22 @@ def _run(
     if _has_error(reach.items):
         return ScheduleReport(None, None, None, diagnostics)
 
-    # 4. Solve, then 5. render the plan (only when feasible).
-    solution = solve(
+    # 4. Solve, then 5. render the plan (only when feasible). One pass unless a
+    # promised bound can no longer be kept (`_solve_within_bounds`).
+    named = tuple(specs) if any(job.id for job in jobs) else ()
+    solution, settled, relax_diags = _solve_within_bounds(
         instance,
-        fixation=fixation,
-        running_task_margin=running_task_margin,
-        max_time_seconds=max_time_seconds,
-        random_seed=random_seed,
-        objective=_objective_of(declared_objective),
-        collect_solutions=collect_solutions,
+        named,
+        {
+            "fixation": fixation,
+            "running_task_margin": running_task_margin,
+            "max_time_seconds": max_time_seconds,
+            "random_seed": random_seed,
+            "objective": _objective_of(declared_objective, len(named)),
+            "collect_solutions": collect_solutions,
+        },
     )
+    diagnostics += relax_diags
     if solution.outcome not in ("optimal", "feasible"):
         diagnostics.append(Diagnostic(errors.INFEASIBLE, "no feasible schedule found"))
         return ScheduleReport(solution.outcome, None, None, diagnostics, solution.stats)
@@ -419,7 +590,7 @@ def _run(
         interface=interface,
         inventories=inventories,
         ignore_resources=ignore_resources,
-        jobs=tuple(job.id for job in jobs if job.id),
+        jobs=settled,
     )
 
     # 6. Check what is about to be handed out. The refill amounts in the document are

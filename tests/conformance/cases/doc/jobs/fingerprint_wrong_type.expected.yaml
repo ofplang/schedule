@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: wrong_type}
+notes: A fingerprint is an opaque string written by the scheduler; spec §6.11, §9.2.

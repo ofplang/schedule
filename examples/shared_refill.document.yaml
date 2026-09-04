@@ -24,12 +24,14 @@
 #
 # `replenishment_count` is what pins it to exactly one rather than one per assay
 # (§4.8): a refill that delays nothing would otherwise be free.
+#
+# No `objective` here, so each run gets the default for its job count (§4.8):
+# `[makespan, replenishment_count]` for one job, and `[completion_time_sum, makespan,
+# replenishment_count]` for the joint plan — where minimising the makespan alone would
+# say nothing about *which* job finishes when. On this small instance the two agree.
 inventories:
   levels:
     reader:
       reagent: 2
-
-objective:
-  kind: [makespan, replenishment_count]
 
 activities: []

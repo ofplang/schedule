@@ -191,6 +191,32 @@ class CompositeIO:
 
 
 @dataclass(frozen=True)
+class JobSpec:
+    """One job of a joint plan, as the planner sees it (SPEC §6.11) -- the roster
+    entry with its planning parameters resolved.
+
+    Distinct from `api.JobInput`, which is what a *caller* hands over (an id and a
+    workflow). This is what the roster carries and what the solver is given.
+
+    - `release` (§6.11) is the earliest time any of the job's activities may start.
+      It is **not** the priority: priority is the roster's order, so a job submitted
+      today and released tomorrow still outranks one submitted tomorrow.
+    - `bound` is B_j, the completion time this job was promised when it arrived --
+      the whole of "an earlier job is not disturbed by a later one" (design.md D38).
+      None until the job's first solve assigns it. Scheduler-owned: it is not a
+      deadline, since a relaxation may loosen it, and a deadline that quietly
+      loosened would be worse than none.
+    - `fingerprint` identifies *which workflow* the job runs (`workflow.fingerprint`),
+      so a replan cannot be handed the same ids against different workflows.
+    """
+
+    id: str
+    release: int = 0
+    bound: int | None = None
+    fingerprint: str | None = None
+
+
+@dataclass(frozen=True)
 class Workflow:
     """The expanded, schedulable graph: atomic activities, Object-bearing arcs,
     precedence edges (a superset of arcs, covering Pure Data dependencies too),

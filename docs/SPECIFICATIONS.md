@@ -357,16 +357,31 @@ simply not used to compute anything.
 
 The objective is a sequence of **stages** minimised lexicographically: the first
 stage is minimised, then the second subject to the first's optimum, and so on. v0
-defines two stages.
+defines three stages.
 
 - `makespan` — the time at which the last activity ends. Every activity counts,
   replenishments included, so a refill can never be parked after the work.
 - `replenishment_count` — how many replenishment activities the plan contains.
+- `completion_time_sum` — the sum over the jobs of a joint plan (§6.11) of when each
+  one's own work ends. Refills are not part of any job's completion, since a single
+  refill commonly serves several; `makespan` is what keeps one from being parked after
+  the work, which is why the two sit together in the default below. On a document with
+  one workflow the sum is that one run's completion.
 
 `makespan` alone stays the common case and may be written as a bare scalar (§6.1).
-When the objective is omitted the default is `[makespan, replenishment_count]`;
-wherever replenishment is not in play `replenishment_count` is identically zero and
-that default is equivalent to `[makespan]`.
+When the objective is omitted the default depends on how many jobs there are:
+`[makespan, replenishment_count]` for one, and
+`[completion_time_sum, makespan, replenishment_count]` for a joint plan (§6.11).
+Wherever replenishment is not in play `replenishment_count` is identically zero and the
+first is equivalent to `[makespan]`.
+
+The default varies because minimising the makespan alone says nothing about *which*
+job finishes when — with one workflow there is nothing for the sum to trade off, and
+adding it would change what an existing plan means. **Only the default varies**: a
+`kind` the document states is honoured as written, whatever the job count.
+
+None of this affects the priority guarantee, which is a constraint (§6.11) and not an
+objective: what is minimised can change freely without weakening it.
 
 Minimising the number of replenishments matters as soon as replenishment is enabled.
 A refill that delays nothing is otherwise free, so without this stage a plan may
@@ -671,13 +686,16 @@ environment.
 
   `kind` is either a single stage name as a scalar, or a list of stage names
   minimised lexicographically; a one-element list means the same as the bare name.
-  The defined stage names are `makespan` and `replenishment_count` (§4.8). A list
+  The defined stage names are `makespan`, `replenishment_count` and
+  `completion_time_sum` (§4.8). A list
   must be **non-empty** (an empty one names nothing to minimise) and must **not
   repeat** a stage (a repeat is minimised subject to its own optimum, so it could
   never change the outcome). The order is the caller's: `[replenishment_count,
   makespan]` is a different objective from `[makespan, replenishment_count]`, not a
-  malformed one. Omitted, the default is `[makespan, replenishment_count]`, which is
-  equivalent to `makespan` wherever no replenishment can occur.
+  malformed one. Omitted, the default depends on the job count (§4.8):
+  `[makespan, replenishment_count]` for one workflow — equivalent to `makespan`
+  wherever no replenishment can occur — and `[completion_time_sum, makespan,
+  replenishment_count]` for a joint plan (§6.11).
 
   `value` takes the same shape as the `kind` it
   accompanies — a scalar for a scalar `kind`, a list of the achieved stage values in
@@ -1111,10 +1129,25 @@ jobs:
   - id: evening
 ```
 
-Each entry carries an `id` — an identifier (§8.1), unique within the roster, since
-the id *is* the whole of a job's identity. Nothing else, yet: the per-job planning
-inputs a joint plan will grow (its own `interface`, and the release time and bound a
-priority order needs) belong here beside it.
+Each entry carries:
+
+- `id` (required) — an identifier (§8.1), unique within the roster.
+- `release` (optional, default 0) — the earliest time any of the job's activities may
+  start. It is **not** the priority (below): a job submitted today and released
+  tomorrow still outranks one submitted tomorrow. A job that joins an existing roster
+  is released at `now` unless it says otherwise — it did not exist earlier, and a
+  schedule that started it in the past would describe work nobody could have done.
+- `bound` (optional) — B_j, the completion time this job was promised, written by the
+  scheduler when the job's first plan is made. **Scheduler-owned: it is not a
+  deadline.** A promise that can no longer be met is relaxed (below), and a deadline
+  that quietly loosened would be worse than none.
+- `fingerprint` (optional) — a digest of the workflow the job runs, written by the
+  scheduler. On a replan the workflow handed over under that id must match it
+  (`job_workflow_mismatch`, §10.4): the ids of two jobs given in the other order match
+  as a set, so nothing else catches the swap. Two copies of one workflow share a
+  digest, and swapping *those* changes nothing — they are interchangeable.
+
+A per-job `interface` will join them.
 
 The roster makes the document self-describing rather than leaving the reader to infer
 the jobs from whichever `job` values happen to appear, and it is what lets a replan be
@@ -1142,13 +1175,38 @@ transport or relay by `job` + `arc` + `seq`, and a replenishment by `id` as befo
 A plan of one workflow has no `jobs` roster and no `job` on any activity, and is
 byte-for-byte the document it would have been before jobs existed.
 
-**Current limits.** v0 gives the jobs no way to differ from one another: there are no
-priorities, no per-job release times, and no per-job objective, so what is minimised
-is the makespan over all of them (§4.8). The `interface` boundary constraint (§6.8)
-likewise binds one workflow's boundary material and says nothing about which job a
-binding belongs to, so a document carrying `interface` is refused for a joint plan
-(`multi_job_interface`, §10.4) — which means a workflow with Object-bearing entry
-inputs cannot yet be part of one.
+#### Priority
+
+The jobs are ordered by the roster: **earlier in the roster means submitted earlier,
+and an earlier job is not disturbed by a later one.** Concretely, when a job is first
+planned it is promised the completion that plan achieves, recorded as its `bound`; every
+later plan keeps `C_j ≤ bound`. That one constraint is the whole of the guarantee — it
+lives in the constraints and not in the objective, so what is minimised (§4.8) is free
+to change without weakening it.
+
+Jobs handed over **together are peers**: they were not submitted before one another, so
+no order is imposed among them and they are planned as one. Priority is what a *later*
+arrival owes to those already being planned.
+
+A promise is never tightened. Minimising the sum of completions may well finish a job
+earlier than it was promised, and that is simply enjoyed: re-promising the earlier time
+would turn ordinary variation in how long things take into a broken promise on the next
+replan, and `bound` would stop meaning "what this job was promised when it arrived".
+
+**When a promise cannot be kept.** Work overruns; a machine goes out of service. If no
+schedule keeps every promise, they are relaxed **in roster order and by as little as
+possible**: each is kept if any schedule keeps it given the ones already kept, and the
+first that cannot be is re-derived from what the new plan achieves. An earlier job is
+never relaxed to spare a later one. Each relaxation is reported (`job_bound_relaxed`,
+§10.4, a warning — a plan is still produced). Within a batch of peers the roster's order
+is the tie-break, which is a choice among equals rather than a priority among them.
+
+**Current limits.** The `interface` boundary constraint (§6.8) binds one workflow's
+boundary material and says nothing about which job a binding belongs to, so a document
+carrying `interface` is refused for a joint plan (`multi_job_interface`, §10.4) — which
+means a workflow with Object-bearing entry inputs cannot yet be part of one. A `failed`
+or `cancelled` activity is likewise read document-wide (§6.2), so **one job's failure
+stops every job in the plan from being replanned**.
 
 ## 7. Execution status
 
@@ -1336,9 +1394,11 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
   map of resource name to a non-negative integer. (That the devices and resources
   exist, and that no level exceeds its capacity, is execution-layer, §9.3.)
 - `jobs` (if present): a list of mappings, each carrying a required `id` that is an
-  identifier (§8.1) and unique in the list (`duplicate_job_id`). No other key is
-  accepted yet. Whether the workflows the scheduler was given are the ones named here
-  is execution-layer (§9.3, `job_roster_mismatch`) — it needs the caller's inputs, not
+  identifier (§8.1) and unique in the list (`duplicate_job_id`); optional `release` and
+  `bound`, non-negative integers; and an optional `fingerprint`, a string. No other key
+  is accepted. Whether the workflows the scheduler was given are the ones named here,
+  and whether each matches its fingerprint, are execution-layer (§9.3,
+  `job_roster_mismatch` / `job_workflow_mismatch`) — they need the caller's inputs, not
   just the document.
 - `interface` (if present): `inputs` / `outputs` (each optional) are maps of a port
   identifier to a qualified spot; a spot value is a well-formed qualified spot
@@ -1604,6 +1664,8 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `interface_pure_data_port` | an `interface` binding names a Pure Data port (occupies no spot) |
 | `interface_duplicate_spot` | two bindings on one side (two inputs, or two outputs) bind the same spot |
 | `interface_input_missing` | an Object-bearing entry input has no `interface` binding (§6.8) |
+| `job_workflow_mismatch` | a job's workflow is not the one its roster entry's `fingerprint` records (§6.11) |
+| `job_bound_relaxed` | **warning**: a job could no longer finish by the completion it was promised, so the promise was re-derived (§6.11) |
 | `job_roster_mismatch` | the workflows given to the scheduler are not the ones the document's `jobs` roster names (§6.11) |
 | `multi_job_interface` | a joint plan (§6.11) was given a document carrying `interface`: it binds one workflow's boundary and says nothing about which job each binding belongs to |
 | `missing_inventories` | the resource model is in effect but the document has no `inventories` (§6.10). An empty `initial` is the way to say every stock starts empty |

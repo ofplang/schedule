@@ -18,16 +18,37 @@ from collections.abc import Mapping
 
 MAKESPAN = "makespan"
 REPLENISHMENT_COUNT = "replenishment_count"
+COMPLETION_TIME_SUM = "completion_time_sum"
 
 # The stage names v0 defines (§4.8). The order here is the default order, not a
 # constraint on what a document may write: `[replenishment_count, makespan]` is a
 # legitimate lexicographic order too (minimise refills first, then time).
-STAGES: tuple[str, ...] = (MAKESPAN, REPLENISHMENT_COUNT)
+STAGES: tuple[str, ...] = (COMPLETION_TIME_SUM, MAKESPAN, REPLENISHMENT_COUNT)
 
 # The objective when the declaration is omitted (§6.1). Wherever replenishment
 # cannot occur this is equivalent to `[makespan]`, which is what `effective` below
 # makes true rather than something the reader has to remember.
-DEFAULT: tuple[str, ...] = STAGES
+DEFAULT: tuple[str, ...] = (MAKESPAN, REPLENISHMENT_COUNT)
+
+# The default for a *joint* plan (§6.11): finish each job as early as the others
+# allow, then squeeze the whole run, then the refills.
+JOINT_DEFAULT: tuple[str, ...] = (COMPLETION_TIME_SUM, MAKESPAN, REPLENISHMENT_COUNT)
+
+
+def default(job_count: int) -> tuple[str, ...]:
+    """The objective when the document declares none (§4.8).
+
+    It depends on how many jobs there are, and only on that. With one workflow there
+    is nothing for `completion_time_sum` to trade off against, and adding it would
+    change what an existing single-workflow plan means: `makespan` counts refills
+    (§4.8) while a job's completion time does not, so leading with the sum would let a
+    refill be parked after the work. With several jobs the sum is the whole point --
+    minimising the makespan alone says nothing about *which* job finishes when.
+
+    Only the default varies. A `kind` the document states is honoured as written,
+    whatever the job count: there is one declaration site, and it wins (§4.8).
+    """
+    return JOINT_DEFAULT if job_count > 1 else DEFAULT
 
 
 def normalize(value) -> tuple[str, ...] | None:

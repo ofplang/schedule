@@ -158,11 +158,23 @@ DUPLICATE_JOB_ID = "duplicate_job_id"
 # document has no roster at all. Either way the activity claims to belong to a job
 # the document does not describe.
 UNKNOWN_JOB = "unknown_job"
+# A job's workflow is not the one its roster entry was planned for: the entry's
+# `fingerprint` (§6.11) does not match the workflow handed over under that id. Two
+# jobs given in the other order have matching ids as a set, so nothing but this
+# catches the swap -- and matching a history against the wrong workflow would pin it
+# onto activities that never ran it.
+JOB_WORKFLOW_MISMATCH = "job_workflow_mismatch"
 # The jobs handed to the scheduler are not the ones the document's roster names
 # (§6.11): a replan was given a different set of workflows than the plan it continues.
 # Refused rather than guessed -- matching a status against the wrong workflow would
 # pin history onto activities that never ran it.
 JOB_ROSTER_MISMATCH = "job_roster_mismatch"
+# A warning, not bad input: a job could no longer finish by the completion it was
+# promised (§6.11), so the promise was re-derived. Reality moved -- work overran, a
+# machine went out of service -- and the schedule that was possible when the job
+# arrived no longer is. Relaxed in roster order and by as little as possible, so an
+# earlier job is never relaxed to spare a later one.
+JOB_BOUND_RELAXED = "job_bound_relaxed"
 # A joint plan (§6.11) was given a document carrying `interface`. The section binds
 # one workflow's boundary material to spots and says nothing about which job each
 # binding belongs to, so sharing it between jobs would have several boundary nodes
@@ -285,6 +297,7 @@ ERROR_CODES = frozenset(
         DUPLICATE_JOB_ID,
         UNKNOWN_JOB,
         JOB_ROSTER_MISMATCH,
+        JOB_WORKFLOW_MISMATCH,
         MULTI_JOB_INTERFACE,
         STATUS_MISSING_NOW,
         STATUS_NODE_UNKNOWN,

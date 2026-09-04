@@ -2,7 +2,11 @@ time:
   unit: second
 jobs:
 - id: job1
+  bound: 33
+  fingerprint: 321e98b8ab8853b8
 - id: job2
+  bound: 19
+  fingerprint: 321e98b8ab8853b8
 inventories:
   levels:
     reader:
@@ -10,9 +14,11 @@ inventories:
 outcome: optimal
 objective:
   kind:
+  - completion_time_sum
   - makespan
   - replenishment_count
   value:
+  - 52
   - 33
   - 1
 activities:

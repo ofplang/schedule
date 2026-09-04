@@ -18,6 +18,8 @@ precedence dependency only).
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -101,6 +103,47 @@ def parse_workflow(source) -> tuple[Workflow | None, Diagnostics]:
             "shaped as v0 requires -- validate it first",
         )
         return None, diags
+
+
+def fingerprint(workflow: Workflow) -> str:
+    """A short digest of the schedulable structure, identifying *which workflow* a
+    job runs (SPEC §6.11).
+
+    A joint plan's roster names its jobs by id, and a replan is handed the workflows
+    again. Nothing but this ties an id to the workflow it was planned for, so without
+    it two jobs given in the other order would silently swap histories -- their ids
+    match as a set, and each job would be matched against the other's workflow.
+
+    🔴 **Exactly as strong as it needs to be.** Two copies of one workflow hash the
+    same, so swapping *those* two is not detected -- and does not need to be: they are
+    interchangeable by definition, which is the same fact job-symmetry breaking rests
+    on. What the digest catches is the swap that changes the answer.
+
+    The ingredients are the **spec-level structure** and nothing else: which nodes
+    invoke which processes, which ports the Object-bearing arcs connect, the
+    precedence, and the boundary ports. Not the raw YAML (comments, key order and
+    formatting are not the workflow), and not the environment (that is shared by every
+    job, so it says nothing about which job this is).
+
+    🔴 The digest is written into documents that later runs read back, so **changing
+    how it is computed is a breaking change**: a plan written by one version would
+    stop being replannable by the next. Keep the ingredients spec-level, and treat any
+    change to them as one.
+    """
+    parts = [
+        sorted((list(a.path), a.process) for a in workflow.activities),
+        sorted(
+            (list(arc.src.node), arc.src.port, list(arc.dst.node), arc.dst.port)
+            for arc in workflow.arcs
+        ),
+        sorted((list(s), list(d)) for s, d in workflow.precedence),
+        sorted(workflow.entry_input_ports.items()),
+        sorted(workflow.exit_output_ports.items()),
+    ]
+    # A separator-free, unambiguous encoding: JSON with sorted keys, so the digest
+    # depends on the structure above and not on how Python happens to repr it.
+    payload = json.dumps(parts, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def _check_readable(data: dict, diags: Diagnostics) -> bool:

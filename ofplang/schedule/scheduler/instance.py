@@ -284,6 +284,43 @@ def prefix_instance(instance: Instance, prefix: NodePath) -> Instance:
     return replace(instance, activities=activities, arcs=arcs)
 
 
+def job_membership(instance: Instance, jobs: Sequence[str]) -> tuple[str | None, ...]:
+    """Which job each activity of a merged instance belongs to (SPEC §6.11), by index.
+
+    The job id is the first element of a workflow activity's node path
+    (`prefix_instance`), so most of this is reading it off. Two kinds of activity have
+    no node path of their own and are read from what they serve:
+
+    - a **relay** (§6.4.1) belongs to the job whose arc it carries -- its identity is
+      that arc, and one end of it always names a real node;
+    - a **boundary node** (§6.8) belongs to no job (`None`), being the interface rather
+      than work; a joint plan has none today, since `interface` is refused for one.
+
+    With no jobs -- the single-workflow case, where node paths carry no prefix and
+    nothing may be read off them -- every workflow activity belongs to the same
+    **implicit** job, named by the empty string. That is what lets a single-workflow
+    document ask for `completion_time_sum` and mean something by it: the run has one
+    job, and the sum is that job's completion time.
+    """
+    known = set(jobs)
+
+    def of_path(path: NodePath) -> str | None:
+        if not known:
+            return ""
+        return path[0] if path and path[0] in known else None
+
+    out: list[str | None] = []
+    for activity in instance.activities:
+        if activity.boundary is not None:
+            out.append(None)
+        elif activity.relay is not None:
+            arc = activity.relay.arc
+            out.append(of_path(arc.src.node) or of_path(arc.dst.node))
+        else:
+            out.append(of_path(activity.node))
+    return tuple(out)
+
+
 def merge_instances(instances: Sequence[Instance]) -> Instance:
     """One instance holding every activity and arc of `instances` (SPEC §6.11).
 

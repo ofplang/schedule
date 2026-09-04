@@ -30,10 +30,9 @@ DOC_TOP = {
     "activities",
     "meta",
 }
-# One entry of the `jobs` roster (§6.11). Only `id` so far; the per-job planning
-# inputs a joint plan will grow -- its own `interface`, and the release time and
-# bound that a priority order needs -- belong here beside it.
-JOB_KEYS = {"id"}
+# One entry of the `jobs` roster (§6.11): who the job is (`id`, `fingerprint`) and
+# what constrains it (`release`, `bound`). A per-job `interface` will join them.
+JOB_KEYS = {"id", "release", "bound", "fingerprint"}
 INVENTORIES_KEYS = {"levels"}
 OUTCOMES = {"optimal", "feasible", "infeasible", "unknown"}
 # `failed` / `cancelled` are terminal statuses (§6.2): a run stops on any failure,
@@ -170,6 +169,22 @@ def _check_jobs(root: YMap, diags: Diagnostics) -> set[str] | None:
         if jmap is None:
             continue
         shape.unknown_keys(jmap, JOB_KEYS, base, diags)
+        # `release` is the earliest start (§6.11) and `bound` the completion time the
+        # job was promised; both are times, so both are checked as `now` is.
+        shape.nonneg_int(jmap.get("release"), shape.join(base, "release"), diags)
+        shape.nonneg_int(jmap.get("bound"), shape.join(base, "bound"), diags)
+        # `fingerprint` says which workflow the job runs. Its content is the
+        # scheduler's own (`workflow.fingerprint`), so the schema asks only that it be
+        # a string -- a validator that re-derived the digest would need the workflow,
+        # which is execution-layer (§9.3).
+        fp = jmap.get("fingerprint")
+        if fp is not None and not (isinstance(fp, YScalar) and fp.is_str):
+            diags.error(
+                errors.WRONG_TYPE,
+                "job fingerprint must be a string",
+                shape.join(base, "fingerprint"),
+                at=fp,
+            )
         node = shape.require(jmap, "id", base, diags)
         if node is None:
             continue

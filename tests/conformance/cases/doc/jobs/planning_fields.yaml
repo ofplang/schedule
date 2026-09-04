@@ -1,0 +1,10 @@
+# A roster entry's planning parameters (§6.11): when the job may start, the
+# completion it was promised, and which workflow it runs.
+jobs:
+- id: morning
+  fingerprint: 0123456789abcdef
+- id: evening
+  release: 120
+  bound: 400
+  fingerprint: 0123456789abcdef
+activities: []

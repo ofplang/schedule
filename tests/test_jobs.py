@@ -21,6 +21,7 @@ import pytest
 import yaml
 
 from ofplang.schedule import JobInput, schedule, schedule_jobs
+from ofplang.schedule.scheduler.workflow import fingerprint, parse_workflow
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
@@ -232,7 +233,7 @@ def test_a_joint_plan_names_its_jobs():
         document_path=document,
     )
     assert report.ok
-    assert report.plan["jobs"] == [{"id": "b"}, {"id": "a"}]
+    assert [entry["id"] for entry in report.plan["jobs"]] == ["b", "a"]
 
 
 def test_a_single_workflow_plan_has_no_roster():
@@ -329,6 +330,303 @@ def test_a_single_workflow_may_not_continue_a_joint_plan():
     report = schedule(workflow, env, document_path=plan)
     assert not report.ok
     assert [d.code for d in report.diagnostics] == ["job_roster_mismatch"]
+
+
+# ---------------------------------------------------------------------------
+# The roster's planning parameters: which workflow, and from when.
+# ---------------------------------------------------------------------------
+
+
+def test_the_roster_records_which_workflow_each_job_runs():
+    workflow, env, document = _consumable()
+    other, _ = _simple()
+    report = schedule_jobs(
+        [JobInput("a", copy.deepcopy(workflow)), JobInput("b", copy.deepcopy(workflow))],
+        env,
+        document_path=document,
+    )
+    assert report.ok
+    prints = [entry["fingerprint"] for entry in report.plan["jobs"]]
+    # Two copies of one workflow hash the same -- which is the point: swapping *those*
+    # two changes nothing, and the digest is there to catch the swap that does.
+    assert prints[0] == prints[1]
+    assert prints[0] != fingerprint(parse_workflow(other)[0])
+
+
+def test_a_job_given_a_different_workflow_is_refused():
+    """Two jobs handed over in the other order have ids that match as a set, so the
+    roster check passes -- only the fingerprint catches it."""
+    workflow, env, document = _consumable()
+    other, other_env = _simple()
+    plan = schedule_jobs(
+        [JobInput("a", copy.deepcopy(workflow)), JobInput("b", copy.deepcopy(workflow))],
+        env,
+        document_path=document,
+    ).plan
+
+    report = schedule_jobs(
+        [JobInput("a", copy.deepcopy(other)), JobInput("b", copy.deepcopy(workflow))],
+        env,
+        document_path=plan,
+    )
+    assert not report.ok
+    assert [d.code for d in report.diagnostics] == ["job_workflow_mismatch"]
+    assert "'a'" in report.diagnostics[0].message
+
+
+def test_a_roster_without_fingerprints_is_still_replannable():
+    """An entry written before fingerprints were recorded is left alone: refusing it
+    would strand documents that are otherwise perfectly replannable."""
+    workflow, env = _simple()
+    plan = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env,
+    ).plan
+    for entry in plan["jobs"]:
+        del entry["fingerprint"]
+
+    report = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env,
+        document_path=plan,
+    )
+    assert report.ok, [d.code for d in report.diagnostics]
+
+
+def test_a_new_job_may_join_an_existing_roster():
+    """The roster names the jobs already being planned; anything beyond it is arriving
+    now (§6.11). Dropping one stays an error -- its history would have nowhere to go."""
+    workflow, env = _simple()
+    plan = schedule_jobs([JobInput("job1", copy.deepcopy(workflow))], env).plan
+
+    joined = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env,
+        document_path=plan,
+    )
+    assert joined.ok, [d.code for d in joined.diagnostics]
+    assert [entry["id"] for entry in joined.plan["jobs"]] == ["job1", "job2"]
+
+    dropped = schedule_jobs([JobInput("job2", copy.deepcopy(workflow))], env, document_path=plan)
+    assert not dropped.ok
+    assert [d.code for d in dropped.diagnostics] == ["job_roster_mismatch"]
+
+
+def test_an_arriving_job_is_released_at_now():
+    """A job that did not exist earlier cannot be scheduled to have started earlier."""
+    workflow, env, plan = _joint_simple()
+    status = _advance(plan, 3)
+
+    report = schedule_jobs(
+        [
+            JobInput("job1", copy.deepcopy(workflow)),
+            JobInput("job2", copy.deepcopy(workflow)),
+            JobInput("job3", copy.deepcopy(workflow)),
+        ],
+        env,
+        document_path=status,
+    )
+    assert report.ok, [d.code for d in report.diagnostics]
+    entries = {entry["id"]: entry for entry in report.plan["jobs"]}
+    # The two that were already planned keep release 0 (omitted); the newcomer is
+    # released at `now`.
+    assert "release" not in entries["job1"]
+    assert entries["job3"]["release"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Priority: an earlier job is not disturbed by a later one (design.md D38).
+# ---------------------------------------------------------------------------
+
+
+def _bounds(plan) -> dict[str, int]:
+    return {entry["id"]: entry["bound"] for entry in plan["jobs"]}
+
+
+def _completion(plan, job: str) -> int:
+    return max(a["end"] for a in plan["activities"] if a.get("job") == job)
+
+
+def test_a_first_plan_promises_every_job_what_it_achieved():
+    """B_j is the completion the solve reached, not a value derived some other way."""
+    workflow, env = _simple()
+    report = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env,
+    )
+    assert report.ok
+    assert _bounds(report.plan) == {
+        "job1": _completion(report.plan, "job1"),
+        "job2": _completion(report.plan, "job2"),
+    }
+
+
+def test_a_later_job_cannot_push_an_earlier_one_out():
+    """The headline. `job1` is planned alone and promised a completion; a second job
+    arriving afterwards competes for the same devices but may not delay it."""
+    workflow, env = _simple()
+    first = schedule_jobs([JobInput("job1", copy.deepcopy(workflow))], env)
+    assert first.ok
+    promised = _bounds(first.plan)["job1"]
+
+    joined = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env,
+        document_path=first.plan,
+    )
+    assert joined.ok, [d.code for d in joined.diagnostics]
+    assert _completion(joined.plan, "job1") <= promised
+    # The newcomer really is competing -- it does not simply overlay job1.
+    assert _completion(joined.plan, "job2") > promised
+    # And job1's promise is unchanged: bounds do not ratchet.
+    assert _bounds(joined.plan)["job1"] == promised
+
+
+def test_a_promise_is_kept_across_repeated_replans():
+    workflow, env = _simple()
+    plan = schedule_jobs([JobInput("job1", copy.deepcopy(workflow))], env).plan
+    promised = _bounds(plan)["job1"]
+    for extra in ("job2", "job3"):
+        jobs = [JobInput(i, copy.deepcopy(workflow)) for i in (*_bounds(plan), extra)]
+        report = schedule_jobs(jobs, env, document_path=plan)
+        assert report.ok, [d.code for d in report.diagnostics]
+        plan = report.plan
+        assert _bounds(plan)["job1"] == promised
+        assert _completion(plan, "job1") <= promised
+
+
+def test_release_holds_a_job_back():
+    workflow, env = _simple()
+    report = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env,
+    )
+    plan = copy.deepcopy(report.plan)
+    for entry in plan["jobs"]:
+        del entry["bound"]  # re-plan from scratch, but with job2 held back
+        if entry["id"] == "job2":
+            entry["release"] = 50
+
+    again = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env,
+        document_path=plan,
+    )
+    assert again.ok, [d.code for d in again.diagnostics]
+    started = min(a["start"] for a in again.plan["activities"] if a.get("job") == "job2")
+    assert started >= 50
+    # job1 is not held back with it.
+    assert min(a["start"] for a in again.plan["activities"] if a.get("job") == "job1") == 0
+
+
+def test_a_promise_that_can_no_longer_be_kept_is_relaxed_and_reported():
+    """Reality moved: the work took longer than planned, and the promise no longer
+    fits. It is re-derived rather than the plan being refused, and the caller is told."""
+    workflow, env = _simple()
+    plan = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env,
+    ).plan
+
+    status = copy.deepcopy(plan)
+    status["now"] = 40
+    # job1's source overran badly -- far past the completion job1 was promised.
+    entry = _find(status, "job1", ["SampleSource"])
+    entry["status"], entry["start"], entry["end"] = "completed", 0, 40
+
+    report = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env,
+        document_path=status,
+    )
+    assert report.ok, [d.code for d in report.diagnostics]
+    warned = [d for d in report.diagnostics if d.code == "job_bound_relaxed"]
+    assert warned and all(d.severity == "warning" for d in warned)
+    assert any("'job1'" in d.message for d in warned)
+    # Every re-derived promise is what the new schedule achieves.
+    for job, bound in _bounds(report.plan).items():
+        assert bound == _completion(report.plan, job)
+
+
+def test_only_the_job_that_cannot_be_kept_is_relaxed():
+    """Minimality, and in roster order: `job2`'s promise is impossible and `job1`'s is
+    not, so `job1` keeps its own -- an earlier job is never relaxed to spare a later
+    one."""
+    workflow, env = _simple()
+    plan = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env,
+    ).plan
+    promised = _bounds(plan)["job1"]
+
+    status = copy.deepcopy(plan)
+    for entry in status["jobs"]:
+        if entry["id"] == "job2":
+            entry["bound"] = 1  # nothing can finish that early
+
+    report = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env,
+        document_path=status,
+    )
+    assert report.ok, [d.code for d in report.diagnostics]
+    warned = [d for d in report.diagnostics if d.code == "job_bound_relaxed"]
+    assert len(warned) == 1
+    assert "'job2'" in warned[0].message
+    assert _bounds(report.plan)["job1"] == promised
+
+
+def test_an_instance_that_is_simply_infeasible_reports_no_relaxation():
+    """The probe exists to tell "the promises cannot be kept" from "there is no
+    schedule at all" -- a relaxation warning on the second would send the reader to
+    the wrong place."""
+    workflow, env = _simple()
+    plan = schedule_jobs([JobInput("job1", copy.deepcopy(workflow))], env).plan
+    broken = copy.deepcopy(env)
+    del broken["processes"]["target"]["modes"][0]["input_spots"]
+
+    report = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow))], broken, document_path=plan
+    )
+    assert not report.ok
+    assert not [d for d in report.diagnostics if d.code == "job_bound_relaxed"]
+
+
+# ---------------------------------------------------------------------------
+# The objective (§4.8): what a joint plan minimises by default.
+# ---------------------------------------------------------------------------
+
+
+def test_a_joint_plan_minimises_the_sum_of_completions_by_default():
+    workflow, env = _simple()
+    report = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env,
+    )
+    assert report.plan["objective"]["kind"] == ["completion_time_sum", "makespan"]
+    total = sum(
+        _completion(report.plan, job) for job in ("job1", "job2")
+    )
+    assert report.plan["objective"]["value"][0] == total
+
+
+def test_a_single_workflow_objective_is_unchanged():
+    """Only the *default* switches on the job count. One workflow keeps the objective
+    it always had, so no existing plan changes meaning."""
+    workflow, env = _simple()
+    assert schedule(workflow, env).plan["objective"]["kind"] == "makespan"
+    assert schedule_jobs([JobInput("only", workflow)], env).plan["objective"]["kind"] == "makespan"
+
+
+def test_a_stated_objective_is_honoured_whatever_the_job_count():
+    workflow, env = _simple()
+    report = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env,
+        document_path={"objective": {"kind": "makespan"}, "activities": []},
+    )
+    assert report.ok, [d.code for d in report.diagnostics]
+    assert report.plan["objective"]["kind"] == "makespan"
 
 
 # ---------------------------------------------------------------------------
@@ -463,7 +761,7 @@ def test_a_joint_replan_still_carries_the_roster():
     workflow, env, plan = _joint_simple()
     report = _replan(workflow, env, _advance(plan, 3))
     assert report.ok
-    assert report.plan["jobs"] == [{"id": "job1"}, {"id": "job2"}]
+    assert [entry["id"] for entry in report.plan["jobs"]] == ["job1", "job2"]
     assert report.plan["now"] == 3
 
 
