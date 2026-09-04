@@ -13,6 +13,9 @@ read the declaration had to move (0.2.1).
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
+
 MAKESPAN = "makespan"
 REPLENISHMENT_COUNT = "replenishment_count"
 
@@ -72,6 +75,67 @@ def effective(
         if stage != REPLENISHMENT_COUNT or replenishment_possible
     )
     return kept or (MAKESPAN,)
+
+
+def weights(stages: tuple[str, ...], bounds: Mapping[str, int]) -> tuple[int, ...]:
+    """The multiplier each stage gets when the lexicographic order is expressed as a
+    single weighted sum (FORMULATION "Objective"), in `stages` order.
+
+    This is mixed-radix positional notation: a stage's weight is the product of
+    `bound + 1` over every stage after it, so one unit of an earlier stage outweighs
+    every value the later ones can reach together. That is what makes the single
+    weighted solve *exact* rather than an approximation of the lexicographic order,
+    and it is why `bounds` must be genuine upper bounds -- a bound a stage can exceed
+    silently turns the order into an arbitrary trade-off.
+
+    It lives here rather than in the solver because encoding and decoding have to
+    agree, and the decoder (`decode`) is read by anything that looks at a solve in
+    progress, where the only objective value on offer is the encoded one.
+    """
+    out = [0] * len(stages)
+    weight = 1
+    for i in range(len(stages) - 1, -1, -1):
+        out[i] = weight
+        weight *= bounds[stages[i]] + 1
+    return tuple(out)
+
+
+def decode(weights_: tuple[int, ...], value: int) -> tuple[int, ...]:
+    """Split a weighted objective value back into one value per stage.
+
+    Exact, given the same `weights_` the value was built with: each stage's
+    contribution is smaller than the weight of the stage before it (that is what the
+    mixed radix buys), so integer division and remainder recover the digits.
+    """
+    out = []
+    rest = value
+    for weight in weights_:
+        out.append(rest // weight)
+        rest %= weight
+    return tuple(out)
+
+
+def first_stage_bound(weights_: tuple[int, ...], bound: float) -> int:
+    """A valid lower bound on the *first* stage, read off a lower bound on the whole
+    weighted expression.
+
+    Only the first stage gets one. The weighted sum cannot be split into per-stage
+    bounds -- a bound on `w1*v1 + R` says nothing about how it divides between the
+    two -- but the leading digit survives: with `0 <= R <= w1 - 1`, any expression
+    value at least `bound` forces `v1 >= (bound - (w1 - 1)) / w1`.
+
+    `bound` arrives as a float from CP-SAT and may be fractional; it is raised to the
+    next integer first (with a slack for float error), since the expression is
+    integral.
+    """
+    weight = weights_[0]
+    # The expression is integral, so a fractional lower bound rounds up. The epsilon
+    # keeps a bound that is an integer in exact arithmetic but 4.999999 in floating
+    # point from being rounded up to 5.
+    integral = math.ceil(bound - 1e-6)
+    # ceil((integral - (weight - 1)) / weight) in integer arithmetic.
+    numerator = integral - weight + 1
+    return max(0, -((-numerator) // weight))
 
 
 def render(stages: tuple[str, ...], values: tuple[int, ...]) -> dict:
