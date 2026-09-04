@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: missing_required_field}
+notes: Where the document lists jobs, every workflow activity must say which one; spec §6.11.

@@ -90,6 +90,17 @@ def _objective_of(declared) -> tuple[str, ...]:
     return objective_stages.normalize(declared) or objective_stages.DEFAULT
 
 
+def _roster_ids(roster) -> set[str]:
+    """The job ids a document's `jobs` names (§6.11). The document has already been
+    shape-validated, so every entry is a mapping with a string `id`; anything else is
+    simply not counted rather than raising here."""
+    return {
+        entry["id"]
+        for entry in roster
+        if isinstance(entry, dict) and isinstance(entry.get("id"), str)
+    }
+
+
 def _attribute(items, job, jobs) -> list[Diagnostic]:
     """Name the job a per-workflow diagnostic came from.
 
@@ -282,6 +293,7 @@ def _run(
     interface = None
     inventories = None
     declared_objective = None
+    roster = None
     had_now = False
     root = None
     if doc_path is not None:
@@ -298,13 +310,37 @@ def _run(
             interface = copy.deepcopy(doc_path.get("interface"))
             inventories = copy.deepcopy(doc_path.get("inventories"))
             declared_objective = (doc_path.get("objective") or {}).get("kind")
+            roster = copy.deepcopy(doc_path.get("jobs"))
             had_now = "now" in doc_path
         elif isinstance(root, YMap):
             interface = yamlnode.to_plain(root.get("interface"))
             inventories = yamlnode.to_plain(root.get("inventories"))
             stated = yamlnode.to_plain(root.get("objective"))
             declared_objective = stated.get("kind") if isinstance(stated, dict) else None
+            roster = yamlnode.to_plain(root.get("jobs")) if "jobs" in root else None
             had_now = "now" in root
+
+    # A document that names its jobs (§6.11) has to name *these* jobs. It is a
+    # replanning input describing work done by particular workflows, and matching that
+    # history against a different set would pin it onto activities that never ran it.
+    # Compared as a set: the roster's order is the record of how the jobs were given,
+    # and re-stating them in another order is not a different plan.
+    if roster is not None:
+        stated_ids = _roster_ids(roster)
+        # The single-workflow call has no job identity at all, so it matches only an
+        # empty roster -- never one that names jobs. An empty roster and no roster say
+        # the same thing there and are both accepted.
+        given_ids = {job.id for job in jobs if job.id}
+        if stated_ids != given_ids:
+            given = f"{sorted(given_ids)} were given" if given_ids else "one unnamed workflow"
+            diagnostics.append(
+                Diagnostic(
+                    errors.JOB_ROSTER_MISMATCH,
+                    f"the document plans jobs {sorted(stated_ids)}, but {given}",
+                    "jobs",
+                )
+            )
+            return ScheduleReport(None, None, None, diagnostics)
 
     # The document's `interface` binds one workflow's boundary material to spots, so
     # it says nothing about which job each binding belongs to. Rather than guess (and

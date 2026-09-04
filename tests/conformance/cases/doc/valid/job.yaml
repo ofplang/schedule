@@ -1,6 +1,9 @@
-# Several workflows planned together (§6.11): each activity says which job it came
-# from, and `node` stays relative to that job's workflow. The refill carries no
-# `job` -- it serves both.
+# Several workflows planned together (§6.11): `jobs` names them, each activity says
+# which one it came from, and `node` stays relative to that job's workflow. The
+# refill carries no `job` -- it serves both.
+jobs:
+- id: morning
+- id: evening
 activities:
 - kind: processing
   job: morning

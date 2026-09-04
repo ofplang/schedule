@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: unknown_job}
+notes: An activity carries a job in a document that lists none; spec §6.11.

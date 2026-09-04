@@ -646,6 +646,14 @@ environment.
   was a replan. A document that carries started (`completed` / `running`)
   activities **must** set `now` (§9.3, `status_missing_now`) — history cannot be
   pinned against an absent reference time.
+- `jobs` (§6.11) — the roster of workflows a **joint plan** covers, as a list of
+  entries each carrying an `id`. Present exactly on a joint plan: a document for a
+  single workflow has no roster, and no activity in it carries a `job`. Where the
+  roster is present every workflow activity **must** name one of its entries (a
+  `replenishment` never does, §6.9). The order is the order the jobs were given and
+  is preserved, though nothing reads it yet. Generated on the initial plan from the
+  workflows given, then carried through replans; a replan whose given workflows are
+  not the roster's is refused (§9.3, `job_roster_mismatch`).
 - `interface` (§6.8) — the boundary spots for the workflow's Object-bearing entry
   inputs and final outputs (a planning constraint, §3). **Required** for every
   Object-bearing entry input; optional per output. Supplied for the initial plan
@@ -1087,6 +1095,27 @@ The scheduler can plan several workflows against one environment in a single sol
 Each is a **job**, named by an identifier, and every activity it contributes carries
 that name as its `job` (§6.2).
 
+The document names them in a `jobs` roster:
+
+```yaml
+jobs:
+  - id: morning
+  - id: evening
+```
+
+Each entry carries an `id` — an identifier (§8.1), unique within the roster, since
+the id *is* the whole of a job's identity. Nothing else, yet: the per-job planning
+inputs a joint plan will grow (its own `interface`, and the release time and bound a
+priority order needs) belong here beside it.
+
+The roster makes the document self-describing rather than leaving the reader to infer
+the jobs from whichever `job` values happen to appear, and it is what lets a replan be
+checked: the workflows handed to the scheduler must be exactly the ones the roster
+names, compared as a set (`job_roster_mismatch`, §10.4). Re-stating the same jobs in
+another order is the same plan; giving a different set is not, and matching a history
+against the wrong workflow would pin it onto activities that never ran it. The order
+is still meaningful — it records how the jobs were given — and is preserved.
+
 The jobs share everything the environment describes — devices, spots, transporters —
 and share the consumable stocks that `inventories` (§6.10) starts them at, because a
 stock belongs to a device rather than to a workflow (§4.7). That sharing is the whole
@@ -1102,8 +1131,8 @@ and are distinguished by `job` alone. Identity for replanning (§6.6) is read th
 way, with `job` added in front: a processing activity is matched by `job` + `node`, a
 transport or relay by `job` + `arc` + `seq`, and a replenishment by `id` as before.
 
-A plan of one workflow has no `job` on any activity, and is byte-for-byte the
-document it would have been before jobs existed.
+A plan of one workflow has no `jobs` roster and no `job` on any activity, and is
+byte-for-byte the document it would have been before jobs existed.
 
 **Current limits.** v0 gives the jobs no way to differ from one another: there are no
 priorities, no per-job release times, and no per-job objective, so what is minimised
@@ -1283,8 +1312,8 @@ The same shape-only approach applies to an execution document (§6), used as a p
 or a status. Cross-document checks (that a `node` / `arc` / `process` exists in the
 workflow, or that a spot exists in the environment) are execution-layer (§9.3).
 
-- Top level: `activities` is required; `time` / `now` / `outcome` / `objective` /
-  `interface` / `inventories` / `meta` are optional. Unknown or extra keys are
+- Top level: `activities` is required; `time` / `now` / `jobs` / `outcome` /
+  `objective` / `interface` / `inventories` / `meta` are optional. Unknown or extra keys are
   errors, except reserved `x-` extension keys (§9.4), which are ignored. (That
   `inventories` is *required* when the resource model is in effect depends on the
   environment, so it is execution-layer, §9.3.)
@@ -1298,14 +1327,22 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
 - `inventories` (if present): `initial` is required and is a map of device id to a
   map of resource name to a non-negative integer. (That the devices and resources
   exist, and that no level exceeds its capacity, is execution-layer, §9.3.)
+- `jobs` (if present): a list of mappings, each carrying a required `id` that is an
+  identifier (§8.1) and unique in the list (`duplicate_job_id`). No other key is
+  accepted yet. Whether the workflows the scheduler was given are the ones named here
+  is execution-layer (§9.3, `job_roster_mismatch`) — it needs the caller's inputs, not
+  just the document.
 - `interface` (if present): `inputs` / `outputs` (each optional) are maps of a port
   identifier to a qualified spot; a spot value is a well-formed qualified spot
   (`<device>.<spot>`, exactly one `.`). (That a port is an Object-bearing boundary
   port, and input-completeness / spot uniqueness / spot existence, are
   execution-layer, §9.3.)
 - Each activity: `kind` is required and is `processing`, `transport`, `relay`, or
-  `replenishment`; `job` (if present) is an identifier (§6.11) and is accepted on
-  every kind but `replenishment`, which belongs to no job (§6.9);
+  `replenishment`; `job` (if present) is an identifier (§6.11) naming an entry of the
+  `jobs` roster (`unknown_job`, which also covers a `job` in a document with no
+  roster) and is accepted on every kind but `replenishment`, which belongs to no job
+  (§6.9) — and where the roster *is* present, every other kind must carry one
+  (`missing_required_field`);
   `status` (if present) is `pending` / `running` / `completed` / `failed` /
   `cancelled` (the last two are terminal, §6.2); `start` and `end`
   are required non-negative integers with `end >= start`. Unknown keys are errors
@@ -1526,6 +1563,8 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `relay_nonzero_duration` | a `relay` activity's `end` is not equal to its `start` |
 | `empty_amounts` | a `replenishment` activity's `amounts` is empty — a refill that adds nothing (§6.9) |
 | `duplicate_activity_id` | two activities in one document share an `id` |
+| `duplicate_job_id` | two entries of the `jobs` roster share an `id` (§6.11) |
+| `unknown_job` | an activity's `job` names no roster entry, or the document has no roster (§6.11) |
 
 Absent `process` / `mode` / `from_spot` and similar use the shared
 `missing_required_field`; type violations use `wrong_type` — including an
@@ -1557,6 +1596,7 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `interface_pure_data_port` | an `interface` binding names a Pure Data port (occupies no spot) |
 | `interface_duplicate_spot` | two bindings on one side (two inputs, or two outputs) bind the same spot |
 | `interface_input_missing` | an Object-bearing entry input has no `interface` binding (§6.8) |
+| `job_roster_mismatch` | the workflows given to the scheduler are not the ones the document's `jobs` roster names (§6.11) |
 | `multi_job_interface` | a joint plan (§6.11) was given a document carrying `interface`: it binds one workflow's boundary and says nothing about which job each binding belongs to |
 | `missing_inventories` | the resource model is in effect but the document has no `inventories` (§6.10). An empty `initial` is the way to say every stock starts empty |
 | `inventory_exceeds_capacity` | an `inventories.levels` level is above its resource's `capacity` |

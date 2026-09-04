@@ -1,5 +1,8 @@
 time:
   unit: second
+jobs:
+- id: job1
+- id: job2
 inventories:
   levels:
     reader:

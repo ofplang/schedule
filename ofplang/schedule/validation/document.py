@@ -22,6 +22,7 @@ from ofplang.schedule.validation.duplicates import check_duplicate_keys
 DOC_TOP = {
     "time",
     "now",
+    "jobs",
     "outcome",
     "objective",
     "interface",
@@ -29,6 +30,10 @@ DOC_TOP = {
     "activities",
     "meta",
 }
+# One entry of the `jobs` roster (§6.11). Only `id` so far; the per-job planning
+# inputs a joint plan will grow -- its own `interface`, and the release time and
+# bound that a priority order needs -- belong here beside it.
+JOB_KEYS = {"id"}
 INVENTORIES_KEYS = {"levels"}
 OUTCOMES = {"optimal", "feasible", "infeasible", "unknown"}
 # `failed` / `cancelled` are terminal statuses (§6.2): a run stops on any failure,
@@ -124,6 +129,12 @@ def _check(root: YNode | None, diags: Diagnostics) -> None:
     _check_objective(root.get("objective"), diags)
     _check_interface(root.get("interface"), diags)
     _check_inventories(root.get("inventories"), diags)
+    # The roster comes first because every activity is checked against it: a `job`
+    # naming no roster entry is a document that describes work belonging to a job it
+    # never introduces. `None` (no roster at all) and an empty set are different --
+    # the first says this is a single-workflow document, where a `job` is simply out
+    # of place, and both are reported the same way.
+    job_ids = _check_jobs(root, diags)
 
     if "activities" not in root:
         diags.error(errors.MISSING_ACTIVITIES, "activities is required", "activities", at=root)
@@ -131,8 +142,51 @@ def _check(root: YNode | None, diags: Diagnostics) -> None:
         activities = shape.as_seq(root.get("activities"), "activities", diags)
         if activities is not None:
             for i, item in enumerate(activities.items):
-                _check_activity(item, f"activities[{i}]", diags)
+                _check_activity(item, f"activities[{i}]", job_ids, diags)
             _check_activity_ids(activities, diags)
+
+
+def _check_jobs(root: YMap, diags: Diagnostics) -> set[str] | None:
+    """The `jobs` roster (§6.11): the workflows this document's activities came from.
+
+    Returns the ids it names, or **None** where the document has no roster at all --
+    a single-workflow document, which is every document written before joint planning
+    existed. The two are kept apart because they say different things to an activity
+    carrying a `job`, even though both make one an error.
+
+    Order is meaningful and preserved: it is the order the jobs were given, and it is
+    where a priority order will live. Nothing reads it yet.
+    """
+    if "jobs" not in root:
+        return None
+    seq = shape.as_seq(root.get("jobs"), "jobs", diags)
+    if seq is None:
+        return set()
+
+    ids: set[str] = set()
+    for i, item in enumerate(seq.items):
+        base = f"jobs[{i}]"
+        jmap = shape.as_map(item, base, diags)
+        if jmap is None:
+            continue
+        shape.unknown_keys(jmap, JOB_KEYS, base, diags)
+        node = shape.require(jmap, "id", base, diags)
+        if node is None:
+            continue
+        path = shape.join(base, "id")
+        if not (isinstance(node, YScalar) and node.is_str):
+            diags.error(errors.WRONG_TYPE, "job id must be a string", path, at=node)
+        elif not is_identifier(node.value):
+            diags.error(
+                errors.INVALID_IDENTIFIER, f"invalid job id {node.value!r}", path, at=node
+            )
+        elif node.value in ids:
+            diags.error(
+                errors.DUPLICATE_JOB_ID, f"duplicate job id {node.value!r}", path, at=node
+            )
+        else:
+            ids.add(node.value)
+    return ids
 
 
 def _check_activity_ids(activities: YSeq, diags: Diagnostics) -> None:
@@ -270,7 +324,9 @@ def _check_interface(node: YNode | None, diags: Diagnostics) -> None:
             _check_qualified_spot(entry.value, path, diags)
 
 
-def _check_activity(node: YNode, base: str, diags: Diagnostics) -> None:
+def _check_activity(
+    node: YNode, base: str, job_ids: set[str] | None, diags: Diagnostics
+) -> None:
     amap = shape.as_map(node, base, diags)
     if amap is None:
         return
@@ -302,7 +358,7 @@ def _check_activity(node: YNode, base: str, diags: Diagnostics) -> None:
         "replenishment": REPLENISHMENT_KEYS,
     }[kind]
     shape.unknown_keys(amap, allowed, base, diags)
-    _check_job(amap.get("job"), base, diags)
+    _check_job(amap.get("job"), base, kind, job_ids, diags)
     _check_status(amap.get("status"), base, diags)
     _check_interval(amap, base, diags)
 
@@ -316,18 +372,45 @@ def _check_activity(node: YNode, base: str, diags: Diagnostics) -> None:
         _check_relay(amap, base, diags)
 
 
-def _check_job(node: YNode | None, base: str, diags: Diagnostics) -> None:
-    """`job` (§6.11): which of several jointly planned workflows this activity came
-    from. An identifier, because it prefixes the activity's provenance the way a
-    machine id names a machine -- and absent on every single-workflow plan, where
-    there is only one workflow for a `node` to be relative to."""
+def _check_job(
+    node: YNode | None, base: str, kind: str, job_ids: set[str] | None, diags: Diagnostics
+) -> None:
+    """`job` (§6.11): which of the jointly planned workflows this activity came from.
+
+    An identifier, because it prefixes the activity's provenance the way a machine id
+    names a machine, and it must name an entry of the document's `jobs` roster: an
+    activity belonging to a job the document never introduces has provenance that
+    cannot be resolved.
+
+    Required exactly where the roster is. A document that lists jobs and then leaves
+    an activity unattributed is half-converted -- there is no "the" job to fall back
+    on -- and a `replenishment` is the one exception, belonging to no job because one
+    refill may serve several (§6.9).
+    """
     if node is None:
+        if job_ids is not None and kind != "replenishment":
+            diags.error(
+                errors.MISSING_REQUIRED_FIELD,
+                "job is required where the document lists jobs",
+                shape.join(base, "job"),
+            )
         return
     path = shape.join(base, "job")
     if not (isinstance(node, YScalar) and node.is_str):
         diags.error(errors.WRONG_TYPE, "job must be a string", path, at=node)
     elif not is_identifier(node.value):
         diags.error(errors.INVALID_IDENTIFIER, f"invalid job {node.value!r}", path, at=node)
+    elif job_ids is None:
+        diags.error(
+            errors.UNKNOWN_JOB,
+            f"job {node.value!r} but the document lists no jobs",
+            path,
+            at=node,
+        )
+    elif node.value not in job_ids:
+        diags.error(
+            errors.UNKNOWN_JOB, f"job {node.value!r} is not in jobs", path, at=node
+        )
 
 
 def _check_status(node: YNode | None, base: str, diags: Diagnostics) -> None:

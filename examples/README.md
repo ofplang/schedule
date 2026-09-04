@@ -136,11 +136,21 @@ puts them on one stock, and one visit to the dispenser tops it up for whichever
 assays come after it, from either job. That refill is the one activity in the plan
 with no `job` — the scheduler decided to run it, and it serves both.
 
-Every other activity carries its `job`. Bare filenames are numbered `job1`, `job2`
-in the order written (which is what lets the same file mean two runs of it); write
-`morning=shared_refill.workflow.yaml` to name a job instead. `node` stays relative
-to that job's own workflow, so the two jobs render identical paths and are told
-apart by `job` alone.
+Every other activity carries its `job`, and the plan opens with the roster it comes
+from:
+
+```yaml
+jobs:
+- id: job1
+- id: job2
+```
+
+Bare filenames are numbered `job1`, `job2` in the order written (which is what lets
+the same file mean two runs of it); write `morning=shared_refill.workflow.yaml` to
+name a job instead. `node` stays relative to that job's own workflow, so the two jobs
+render identical paths and are told apart by `job` alone. Feeding the plan back as
+the next `--document` requires the same jobs to be given again — the roster is what
+that is checked against (`job_roster_mismatch`).
 
 ## `consumable` — a limited stock two assays compete for
 

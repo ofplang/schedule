@@ -1,0 +1,4 @@
+# An empty roster is a well-formed way to say "no jobs", and with no activity
+# claiming one it contradicts nothing. Spec §6.11.
+jobs: []
+activities: []

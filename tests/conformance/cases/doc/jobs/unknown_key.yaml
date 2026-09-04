@@ -1,0 +1,4 @@
+jobs:
+- id: morning
+  priority: 1
+activities: []

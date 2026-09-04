@@ -1,3 +1,5 @@
+jobs:
+- id: morning
 activities:
 - kind: processing
   job: "not an id"

@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: unknown_key}
+notes: A roster entry carries only `id` so far; spec §6.11, §9.2 (strict).

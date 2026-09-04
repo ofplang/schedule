@@ -1,8 +1,6 @@
-jobs:
-- id: morning
 activities:
 - kind: processing
-  job: 7
+  job: morning
   start: 0
   end: 60
   process: measure_od

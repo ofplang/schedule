@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: wrong_type}
+notes: '`jobs` is a list of roster entries; spec §6.11, §9.2.'

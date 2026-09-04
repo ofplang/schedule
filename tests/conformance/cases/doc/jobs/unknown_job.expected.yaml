@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: unknown_job}
+notes: An activity claims a job the roster does not name; spec §6.11.

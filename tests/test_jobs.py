@@ -40,6 +40,12 @@ def _consumable():
     )
 
 
+def _simple():
+    """The smallest example, and the one with no consumables at all -- so a plan of it
+    can be fed straight back as the next input."""
+    return _load("simple.workflow.yaml"), _load("simple.env.yaml")
+
+
 def _refills(plan) -> list[dict]:
     return [a for a in plan["activities"] if a["kind"] == "replenishment"]
 
@@ -213,6 +219,116 @@ def test_joint_plan_refuses_a_shared_interface():
     )
     assert not report.ok
     assert [d.code for d in report.diagnostics] == ["multi_job_interface"]
+
+
+def test_a_joint_plan_names_its_jobs():
+    """The plan carries the roster (§6.11), in the order the jobs were given, so the
+    document says which workflows it covers rather than leaving it to be inferred
+    from whatever `job` values happen to appear on activities."""
+    workflow, env, document = _consumable()
+    report = schedule_jobs(
+        [JobInput("b", copy.deepcopy(workflow)), JobInput("a", copy.deepcopy(workflow))],
+        env,
+        document_path=document,
+    )
+    assert report.ok
+    assert report.plan["jobs"] == [{"id": "b"}, {"id": "a"}]
+
+
+def test_a_single_workflow_plan_has_no_roster():
+    workflow, env, document = _consumable()
+    report = schedule(workflow, env, document_path=document)
+    assert report.ok
+    assert "jobs" not in report.plan
+
+
+def test_a_joint_plan_round_trips_through_its_own_roster():
+    """The plan is the next input (§6.2), so feeding it straight back has to work --
+    and it is the roster that makes the second call agree about who the jobs are.
+
+    On `simple` rather than the shared-refill example, because a plan carrying a
+    *pending* refill is not a replanning input at all (`pending_replenishment_in_status`:
+    how many to run is re-decided every solve). That rule is older than jobs and has
+    nothing to do with them."""
+    workflow, env = _simple()
+    first = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env,
+    )
+    assert first.ok
+
+    again = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env,
+        document_path=first.plan,
+    )
+    assert again.ok, [d.code for d in again.diagnostics]
+    assert again.plan["jobs"] == first.plan["jobs"]
+    assert again.makespan == first.makespan
+
+
+def test_a_document_planning_other_jobs_is_refused():
+    """A replan given a different set of workflows than the plan it continues would
+    match history onto activities that never ran it."""
+    workflow, env, document = _consumable()
+    plan = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env,
+        document_path=document,
+    ).plan
+
+    for given in (
+        [JobInput("job1", copy.deepcopy(workflow))],  # one of the two
+        [  # renamed
+            JobInput("job1", copy.deepcopy(workflow)),
+            JobInput("job3", copy.deepcopy(workflow)),
+        ],
+    ):
+        report = schedule_jobs(given, env, document_path=copy.deepcopy(plan))
+        assert not report.ok
+        assert [d.code for d in report.diagnostics] == ["job_roster_mismatch"]
+
+
+def test_the_roster_is_compared_as_a_set_not_a_sequence():
+    """Re-stating the same jobs in another order is the same plan, not a different
+    one. (The order is still the record of how they were given, and is preserved.)"""
+    workflow, env = _simple()
+    plan = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env,
+    ).plan
+
+    report = schedule_jobs(
+        [JobInput("job2", copy.deepcopy(workflow)), JobInput("job1", copy.deepcopy(workflow))],
+        env,
+        document_path=plan,
+    )
+    assert report.ok, [d.code for d in report.diagnostics]
+
+
+def test_an_empty_roster_is_no_roster_for_a_single_workflow():
+    """`jobs: []` and no `jobs` at all say the same thing to a single-workflow call:
+    this document plans no named jobs. Only a roster that *names* one is a mismatch."""
+    workflow, env, document = _consumable()
+    document = copy.deepcopy(document)
+    document["jobs"] = []
+    report = schedule(workflow, env, document_path=document)
+    assert report.ok, [d.code for d in report.diagnostics]
+    assert "jobs" not in report.plan
+
+
+def test_a_single_workflow_may_not_continue_a_joint_plan():
+    """The same guard from the other side: `schedule` is one unnamed job, which is
+    not the roster the joint plan names."""
+    workflow, env, document = _consumable()
+    plan = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env,
+        document_path=document,
+    ).plan
+    report = schedule(workflow, env, document_path=plan)
+    assert not report.ok
+    assert [d.code for d in report.diagnostics] == ["job_roster_mismatch"]
 
 
 def test_the_cli_plans_the_same_workflow_twice(tmp_path):

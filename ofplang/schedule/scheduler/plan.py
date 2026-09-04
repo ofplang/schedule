@@ -163,6 +163,11 @@ def render_plan(
     doc: dict = {"time": {"unit": instance.time_unit}}
     if now is not None:
         doc["now"] = now
+    # The roster of jobs this plan covers (§6.11), before everything the jobs then
+    # qualify. Present exactly on a joint plan: a single-workflow plan has no roster
+    # and no `job` on any activity, which is what leaves it unchanged.
+    if jobs:
+        doc["jobs"] = [{"id": job_id} for job_id in jobs]
     # The interface boundary constraint (§6.8) round-trips: echo it verbatim so the
     # plan can be fed back as the next document.
     if interface:

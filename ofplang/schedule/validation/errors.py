@@ -150,6 +150,19 @@ INTERFACE_DUPLICATE_SPOT = "interface_duplicate_spot"
 # An Object-bearing entry input has no `interface` binding (only where interface is
 # required; optional in the current phase).
 INTERFACE_INPUT_MISSING = "interface_input_missing"
+# Two entries of the document's `jobs` roster share an id (§6.11). The id is the
+# whole of a job's identity -- it is what every one of its activities carries -- so
+# a repeat would merge two jobs' work on a replan.
+DUPLICATE_JOB_ID = "duplicate_job_id"
+# An activity's `job` names no entry of the document's `jobs` roster (§6.11), or the
+# document has no roster at all. Either way the activity claims to belong to a job
+# the document does not describe.
+UNKNOWN_JOB = "unknown_job"
+# The jobs handed to the scheduler are not the ones the document's roster names
+# (§6.11): a replan was given a different set of workflows than the plan it continues.
+# Refused rather than guessed -- matching a status against the wrong workflow would
+# pin history onto activities that never ran it.
+JOB_ROSTER_MISMATCH = "job_roster_mismatch"
 # A joint plan (§6.11) was given a document carrying `interface`. The section binds
 # one workflow's boundary material to spots and says nothing about which job each
 # binding belongs to, so sharing it between jobs would have several boundary nodes
@@ -269,6 +282,9 @@ ERROR_CODES = frozenset(
         INTERFACE_PURE_DATA_PORT,
         INTERFACE_DUPLICATE_SPOT,
         INTERFACE_INPUT_MISSING,
+        DUPLICATE_JOB_ID,
+        UNKNOWN_JOB,
+        JOB_ROSTER_MISMATCH,
         MULTI_JOB_INTERFACE,
         STATUS_MISSING_NOW,
         STATUS_NODE_UNKNOWN,
