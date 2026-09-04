@@ -21,6 +21,9 @@ import pytest
 import yaml
 
 from ofplang.schedule import JobInput, schedule, schedule_jobs
+from ofplang.schedule.scheduler.cpsat import _interchangeable
+from ofplang.schedule.scheduler.model import JobSpec
+from ofplang.schedule.scheduler.status import ActivityFixation, Fixation
 from ofplang.schedule.scheduler.workflow import fingerprint, parse_workflow
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
@@ -627,6 +630,75 @@ def test_a_stated_objective_is_honoured_whatever_the_job_count():
     )
     assert report.ok, [d.code for d in report.diagnostics]
     assert report.plan["objective"]["kind"] == "makespan"
+
+
+# ---------------------------------------------------------------------------
+# Job symmetry (§6.11): ordering interchangeable jobs, and only those.
+# ---------------------------------------------------------------------------
+
+
+def test_interchangeable_needs_all_four_conditions():
+    """Each condition on its own is enough to make two jobs distinguishable, and
+    ordering distinguishable jobs would prune schedules that are perfectly good."""
+    twins = (JobSpec("a", fingerprint="f"), JobSpec("b", fingerprint="f"))
+    assert _interchangeable(twins, None, ("a", "b")) == [["a", "b"]]
+
+    # different workflow
+    assert _interchangeable(
+        (JobSpec("a", fingerprint="f"), JobSpec("b", fingerprint="g")), None, ("a", "b")
+    ) == []
+    # different release
+    assert _interchangeable(
+        (JobSpec("a", fingerprint="f"), JobSpec("b", release=5, fingerprint="f")),
+        None,
+        ("a", "b"),
+    ) == []
+    # one already promised a completion
+    assert _interchangeable(
+        (JobSpec("a", bound=9, fingerprint="f"), JobSpec("b", fingerprint="f")),
+        None,
+        ("a", "b"),
+    ) == []
+    # one has already started
+    fixation = Fixation(now=1, activities={0: ActivityFixation("completed", 0, 1, 0)}, arcs={})
+    assert _interchangeable(twins, fixation, ("a", "b")) == []
+
+
+def test_jobs_that_are_not_interchangeable_keep_every_order():
+    """The ordering must not fire on jobs that differ: `job2` is released now and
+    `job1` is held back, so `job2` starts first -- which the constraint would forbid."""
+    workflow, env = _simple()
+    document = {
+        "jobs": [{"id": "job1", "release": 20}, {"id": "job2"}],
+        "activities": [],
+    }
+    report = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env,
+        document_path=document,
+    )
+    assert report.ok, [d.code for d in report.diagnostics]
+
+    def first_start(job):
+        return min(a["start"] for a in report.plan["activities"] if a.get("job") == job)
+
+    assert first_start("job2") == 0
+    assert first_start("job1") >= 20
+
+
+def test_ordering_identical_jobs_does_not_change_the_optimum():
+    """A symmetry break keeps one representative of each relabelling, so the objective
+    it reaches is the one it always was. Pinned against the values this instance solves
+    to -- n=5 could not be *proven* before the break, and is proven now."""
+    workflow, env, document = _consumable()
+    for n, makespan in ((3, 47), (4, 65), (5, 79)):
+        report = schedule_jobs(
+            [JobInput(f"job{i + 1}", copy.deepcopy(workflow)) for i in range(n)],
+            env,
+            document_path=copy.deepcopy(document),
+        )
+        assert report.outcome == "optimal", f"n={n}: {report.outcome}"
+        assert report.makespan == makespan, f"n={n}: {report.makespan}"
 
 
 # ---------------------------------------------------------------------------

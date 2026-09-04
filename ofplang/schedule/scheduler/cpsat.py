@@ -387,6 +387,28 @@ def solve(
             model.Add(c <= bound)
     completion_sum = sum(completions.values()) if completions else 0
 
+    # --- job symmetry (§6.11) ---
+    # Two jobs running the same workflow, with nothing to tell them apart, make the
+    # search explore every relabelling of one schedule. Ordering their start times in
+    # roster order keeps one representative of each and loses no optimum. Measured on
+    # the initial plan of n identical jobs: n=5 goes from unproven in 120s to optimal.
+    #
+    # It is only sound where the jobs really are interchangeable, so `_interchangeable`
+    # is strict about it -- an order imposed on jobs that differ would prune schedules
+    # that are perfectly legitimate.
+    for group in _interchangeable(jobs, fixation, membership):
+        starts_of = {
+            job_id: [starts[i] for i, m in enumerate(membership) if m == job_id]
+            for job_id in group
+        }
+        job_start = {}
+        for job_id in group:
+            v = model.NewIntVar(0, horizon, f"job_start_{job_id}")
+            model.AddMinEquality(v, starts_of[job_id])
+            job_start[job_id] = v
+        for earlier, later in zip(group, group[1:], strict=False):
+            model.Add(job_start[earlier] <= job_start[later])
+
     # `replenishment_count` can only tell two schedules apart where a refill is
     # possible at all; `effective` drops it otherwise, which is what keeps a
     # resource-free plan reporting the bare makespan it always did.
@@ -960,6 +982,39 @@ def _selected(solver: cp_model.CpSolver, lits) -> int:
         if solver.Value(lit) == 1:
             return i
     return 0  # pragma: no cover - AddExactlyOne guarantees one true literal
+
+
+def _interchangeable(
+    jobs: tuple[JobSpec, ...],
+    fixation: Fixation | None,
+    membership: tuple[str | None, ...],
+) -> list[list[str]]:
+    """Groups of jobs that any relabelling maps onto one another (SPEC §6.11), in
+    roster order, each with at least two members.
+
+    Four things must hold, and dropping any one of them would prune real schedules
+    rather than duplicates:
+
+    - **same workflow**, which is what the roster's `fingerprint` records;
+    - **same release**, since a job held back until later is not the same job as one
+      that may start now;
+    - **neither promised a bound**, because a promise is a constraint one of them has
+      and the other does not -- and once bounds exist they break the symmetry anyway;
+    - **neither started**, because reported history is exactly what tells two otherwise
+      identical jobs apart.
+
+    In practice that means the initial plan, which is also where it is needed: on a
+    replan the jobs carry bounds and history and are no longer interchangeable at all.
+    """
+    started = {
+        membership[i] for i in (fixation.activities if fixation is not None else {})
+    }
+    groups: dict[tuple[str | None, int], list[str]] = {}
+    for job in jobs:
+        if job.bound is not None or job.id in started:
+            continue
+        groups.setdefault((job.fingerprint, job.release), []).append(job.id)
+    return [group for group in groups.values() if len(group) > 1]
 
 
 def _horizon(

@@ -1201,6 +1201,23 @@ never relaxed to spare a later one. Each relaxation is reported (`job_bound_rela
 §10.4, a warning — a plan is still produced). Within a batch of peers the roster's order
 is the tie-break, which is a choice among equals rather than a priority among them.
 
+**Interchangeable jobs.** Where two jobs would be indistinguishable to the scheduler,
+every relabelling of one schedule is another schedule, and an implementation may fix
+their order rather than search them all — this scheduler orders their start times by
+the roster. Doing so keeps one representative of each relabelling and so reaches the
+same objective; what makes it sound is being strict about *when* two jobs are
+indistinguishable. All four of these must hold:
+
+- they run the same workflow (`fingerprint`);
+- they have the same `release`;
+- neither has been promised a `bound`;
+- neither has any started activity.
+
+In practice that means an initial plan, which is also where it matters: once jobs carry
+bounds and history they are not interchangeable at all. This is an implementation
+choice about search, not part of the document's meaning — a plan is the same plan with
+or without it.
+
 **Current limits.** The `interface` boundary constraint (§6.8) binds one workflow's
 boundary material and says nothing about which job a binding belongs to, so a document
 carrying `interface` is refused for a joint plan (`multi_job_interface`, §10.4) — which
