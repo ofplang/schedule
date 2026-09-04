@@ -30,9 +30,11 @@ DOC_TOP = {
     "activities",
     "meta",
 }
-# One entry of the `jobs` roster (§6.11): who the job is (`id`, `fingerprint`) and
-# what constrains it (`release`, `bound`). A per-job `interface` will join them.
-JOB_KEYS = {"id", "release", "bound", "fingerprint"}
+# One entry of the `jobs` roster (§6.11): who the job is (`id`, `fingerprint`), what
+# constrains it (`release`, `bound`), and where its boundary material sits
+# (`interface`) -- the same section a single-workflow document carries at the top
+# level, one per job, because it binds one workflow's ports.
+JOB_KEYS = {"id", "release", "bound", "fingerprint", "interface"}
 INVENTORIES_KEYS = {"levels"}
 OUTCOMES = {"optimal", "feasible", "infeasible", "unknown"}
 # `failed` / `cancelled` are terminal statuses (§6.2): a run stops on any failure,
@@ -173,6 +175,8 @@ def _check_jobs(root: YMap, diags: Diagnostics) -> set[str] | None:
         # job was promised; both are times, so both are checked as `now` is.
         shape.nonneg_int(jmap.get("release"), shape.join(base, "release"), diags)
         shape.nonneg_int(jmap.get("bound"), shape.join(base, "bound"), diags)
+        if "interface" in jmap:
+            _check_interface(jmap.get("interface"), diags, shape.join(base, "interface"))
         # `fingerprint` says which workflow the job runs. Its content is the
         # scheduler's own (`workflow.fingerprint`), so the schema asks only that it be
         # a string -- a validator that re-derived the digest would need the workflow,
@@ -315,20 +319,26 @@ def _check_inventories(node: YNode | None, diags: Diagnostics) -> None:
             shape.nonneg_int(level.value, level_path, diags)
 
 
-def _check_interface(node: YNode | None, diags: Diagnostics) -> None:
+def _check_interface(node: YNode | None, diags: Diagnostics, base: str = "interface") -> None:
     # Shape only (§6.8): `interface` is `{inputs?, outputs?}`, each a map of a port
     # identifier to a qualified spot. That a port is an Object-bearing boundary port
     # (and completeness / spot existence) is the execution layer's job (§9.3).
-    imap = shape.as_map(node, "interface", diags)
+    #
+    # `base` is where it is being reported from: the document's own `interface` for a
+    # single workflow, or a roster entry's for one job of a joint plan (§6.11). The
+    # shape is the same either way, and saying so once is what keeps the two from
+    # drifting -- a binding a joint plan accepted and a single-workflow one refused
+    # would be a difference with no reason behind it.
+    imap = shape.as_map(node, base, diags)
     if imap is None:
         return
-    shape.unknown_keys(imap, {"inputs", "outputs"}, "interface", diags)
+    shape.unknown_keys(imap, {"inputs", "outputs"}, base, diags)
     for side in ("inputs", "outputs"):
-        smap = shape.as_map(imap.get(side), f"interface.{side}", diags)
+        smap = shape.as_map(imap.get(side), f"{base}.{side}", diags)
         if smap is None:
             continue
         for entry in smap.entries:
-            path = f"interface.{side}.{entry.key}"
+            path = f"{base}.{side}.{entry.key}"
             if not is_identifier(entry.key):
                 diags.error(
                     errors.INVALID_IDENTIFIER,

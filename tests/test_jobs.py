@@ -205,10 +205,90 @@ def test_job_ids_must_be_usable_as_names():
         )
 
 
-def test_joint_plan_refuses_a_shared_interface():
-    """`interface` binds one workflow's boundary to spots and says nothing about which
-    job a binding belongs to, so a joint plan refuses it rather than having two
-    boundary nodes claim the same spot (per-job interface is a later stage)."""
+# ---------------------------------------------------------------------------
+# Boundary material, per job (§6.8, §6.11).
+# ---------------------------------------------------------------------------
+
+
+def _bay():
+    """Two jobs of one workflow over a lab with one loading bay and two racks."""
+    return (
+        _load("interface_load.workflow.yaml"),
+        _load("shared_bay.env.yaml"),
+        _load("shared_bay.document.yaml"),
+    )
+
+
+def _bay_jobs(workflow):
+    return [
+        JobInput("job1", copy.deepcopy(workflow)),
+        JobInput("job2", copy.deepcopy(workflow)),
+    ]
+
+
+def test_a_joint_plan_carries_a_boundary_per_job():
+    """Both jobs run the same workflow and bind the same port names; where those
+    ports sit is per job, which is the whole reason `interface` moves to the entry."""
+    workflow, env, document = _bay()
+    report = schedule_jobs(_bay_jobs(workflow), env, document_path=document)
+    assert report.ok, [d.code for d in report.diagnostics]
+
+    racks = {
+        entry["id"]: entry["interface"]["outputs"]["result"] for entry in report.plan["jobs"]
+    }
+    assert racks == {"job1": "output.rack_a", "job2": "output.rack_b"}
+    # And it round-trips: the roster echo is what the next replan reads back.
+    again = schedule_jobs(_bay_jobs(workflow), env, document_path=report.plan)
+    assert again.ok, [d.code for d in again.diagnostics]
+
+
+def test_one_bay_serves_two_jobs_whose_releases_leave_room():
+    """Entry material holds its spot from its job's release until the move that
+    collects it, so one bay serves both runs -- with a warning, since it only works
+    if the releases leave room."""
+    workflow, env, document = _bay()
+    report = schedule_jobs(_bay_jobs(workflow), env, document_path=document)
+    assert report.ok
+
+    warned = [d for d in report.diagnostics if d.code == "interface_shared_input_spot"]
+    assert [d.severity for d in warned] == ["warning"]
+
+    def first_start(job):
+        return min(a["start"] for a in report.plan["activities"] if a.get("job") == job)
+
+    assert first_start("job1") == 0
+    assert first_start("job2") == 30  # its material is not on the bay before then
+
+
+def test_two_jobs_released_together_onto_one_bay_do_not_queue():
+    """The deliberate reading: entry material is already placed, not waiting to be
+    placed. Two samples on one bay at once is infeasible, not a queue."""
+    workflow, env, document = _bay()
+    document = copy.deepcopy(document)
+    del document["jobs"][1]["release"]
+
+    report = schedule_jobs(_bay_jobs(workflow), env, document_path=document)
+    assert not report.ok
+    assert report.outcome == "infeasible"
+
+
+def test_two_jobs_may_not_deliver_to_one_spot():
+    """A delivered result holds its rack until the run is over, so this could never
+    work however the schedule was arranged -- said plainly rather than as `infeasible`."""
+    workflow, env, document = _bay()
+    document = copy.deepcopy(document)
+    document["jobs"][1]["interface"]["outputs"]["result"] = "output.rack_a"
+
+    report = schedule_jobs(_bay_jobs(workflow), env, document_path=document)
+    assert not report.ok
+    codes = [d.code for d in report.diagnostics if d.severity == "error"]
+    assert codes == ["interface_duplicate_spot"]
+
+
+def test_a_joint_plan_refuses_a_top_level_interface():
+    """One rule: named jobs mean per-job, an unnamed single workflow means top-level.
+    The test is what *this call* names, not what the document happens to list -- an
+    initial joint plan is given a document with no roster at all."""
     workflow = _load("interface_load.workflow.yaml")
     env = _load("interface_load.env.yaml")
     document = _load("interface_load.document.yaml")
@@ -223,6 +303,22 @@ def test_joint_plan_refuses_a_shared_interface():
     )
     assert not report.ok
     assert [d.code for d in report.diagnostics] == ["multi_job_interface"]
+
+    # Even one named job: the shape follows the entry point, not the job count.
+    single = schedule_jobs([JobInput("only", workflow)], env, document_path=document)
+    assert not single.ok
+    assert [d.code for d in single.diagnostics] == ["multi_job_interface"]
+
+
+def test_a_job_missing_its_boundary_binding_says_which_job():
+    workflow, env, document = _bay()
+    document = copy.deepcopy(document)
+    del document["jobs"][1]["interface"]["inputs"]
+
+    report = schedule_jobs(_bay_jobs(workflow), env, document_path=document)
+    assert not report.ok
+    missing = [d for d in report.diagnostics if d.code == "interface_input_missing"]
+    assert missing and "job2" in missing[0].message
 
 
 def test_a_joint_plan_names_its_jobs():

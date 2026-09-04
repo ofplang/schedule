@@ -1,0 +1,5 @@
+jobs:
+- id: morning
+  interface:
+    inputs: { sample: loader }
+activities: []

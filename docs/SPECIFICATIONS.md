@@ -989,6 +989,11 @@ interface:                                   # carried through unchanged (§6.8)
 
 ### 6.8 Interface (boundary spots)
 
+In a joint plan the section is per job, on the roster entry rather than at the top
+level (§6.11), and a job's entry material is on its spot from that job's **release**
+rather than from time 0 — for a single workflow, whose release is 0, that is the same
+thing it always was.
+
 `interface` pins the workflow's boundary Object-bearing material to spots. It is a
 **planning constraint** (§3), the boundary analog of an interior arc: an interior
 Object-bearing port is constrained by its arc's transport (source output spot →
@@ -1146,8 +1151,31 @@ Each entry carries:
   (`job_workflow_mismatch`, §10.4): the ids of two jobs given in the other order match
   as a set, so nothing else catches the swap. Two copies of one workflow share a
   digest, and swapping *those* changes nothing — they are interchangeable.
+- `interface` (optional, §6.8) — where this job's boundary material sits. Exactly the
+  section a single-workflow document carries at the top level, one per job, because it
+  binds *one* workflow's ports: two jobs of the same workflow bind the same port names
+  to different spots. Supplied for the job's first plan and echoed thereafter.
 
-A per-job `interface` will join them.
+**Where `interface` goes.** A document that names jobs carries it per job and **not**
+at the top level (`multi_job_interface`, §10.4); a document for a single unnamed
+workflow carries it at the top level, as it always has. One rule, and it follows what
+the scheduler was asked to plan rather than what the document happens to list — an
+initial joint plan is given a document with no roster yet, and sharing one boundary
+across its jobs is exactly the ambiguity being refused.
+
+**What two jobs may share.** Entry material is *there*, given, from its job's release
+until the move that collects it, so **two jobs may bind the same entry spot** — one
+loading bay serving two runs — provided their releases leave the first job's material
+time to be collected. Whether they do is the solver's to decide, so this is a warning
+(`interface_shared_input_spot`, §10.4) and not a refusal; released together onto one
+spot, both are on it at once and the instance is infeasible rather than queued (v0
+says entry material is already placed, not waiting to be placed). A delivered Object,
+by contrast, holds its spot until the run is over, so **two jobs may not bind the same
+final-output spot** — no schedule could satisfy it, and it is refused outright
+(`interface_duplicate_spot`, §10.4).
+
+Both of those are true *of one plan*. A job that leaves the plan takes its material
+with it, and neither rule would hold across that; nothing in v0 removes a job yet.
 
 The roster makes the document self-describing rather than leaving the reader to infer
 the jobs from whichever `job` values happen to appear, and it is what lets a replan be
@@ -1218,12 +1246,10 @@ bounds and history they are not interchangeable at all. This is an implementatio
 choice about search, not part of the document's meaning — a plan is the same plan with
 or without it.
 
-**Current limits.** The `interface` boundary constraint (§6.8) binds one workflow's
-boundary material and says nothing about which job a binding belongs to, so a document
-carrying `interface` is refused for a joint plan (`multi_job_interface`, §10.4) — which
-means a workflow with Object-bearing entry inputs cannot yet be part of one. A `failed`
-or `cancelled` activity is likewise read document-wide (§6.2), so **one job's failure
-stops every job in the plan from being replanned**.
+**Current limits.** A `failed` or `cancelled` activity is read document-wide (§6.2),
+so **one job's failure stops every job in the plan from being replanned**; and nothing
+removes a job from a plan, so a finished job stays in the roster — which is also what
+says its delivered material still occupies its spot.
 
 ## 7. Execution status
 
@@ -1412,8 +1438,8 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
   exist, and that no level exceeds its capacity, is execution-layer, §9.3.)
 - `jobs` (if present): a list of mappings, each carrying a required `id` that is an
   identifier (§8.1) and unique in the list (`duplicate_job_id`); optional `release` and
-  `bound`, non-negative integers; and an optional `fingerprint`, a string. No other key
-  is accepted. Whether the workflows the scheduler was given are the ones named here,
+  `bound`, non-negative integers; an optional `fingerprint`, a string; and an optional
+  `interface`, checked exactly as the top-level one is (§6.8). No other key is accepted. Whether the workflows the scheduler was given are the ones named here,
   and whether each matches its fingerprint, are execution-layer (§9.3,
   `job_roster_mismatch` / `job_workflow_mismatch`) — they need the caller's inputs, not
   just the document.
@@ -1684,7 +1710,8 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `job_workflow_mismatch` | a job's workflow is not the one its roster entry's `fingerprint` records (§6.11) |
 | `job_bound_relaxed` | **warning**: a job could no longer finish by the completion it was promised, so the promise was re-derived (§6.11) |
 | `job_roster_mismatch` | the workflows given to the scheduler are not the ones the document's `jobs` roster names (§6.11) |
-| `multi_job_interface` | a joint plan (§6.11) was given a document carrying `interface`: it binds one workflow's boundary and says nothing about which job each binding belongs to |
+| `multi_job_interface` | a document carrying a top-level `interface` was given to a plan that names jobs: it binds one workflow's ports, so a joint plan carries it per job (§6.11) |
+| `interface_shared_input_spot` | **warning**: two jobs bind the same entry spot (§6.11). Legitimate if their releases leave the first job's material time to be collected |
 | `missing_inventories` | the resource model is in effect but the document has no `inventories` (§6.10). An empty `initial` is the way to say every stock starts empty |
 | `inventory_exceeds_capacity` | an `inventories.levels` level is above its resource's `capacity` |
 | `resources_ignored` | the resource model was disabled (§4.7.3) where it would otherwise have been in effect, so nothing was applied. Not raised for an environment that merely declares a stock nothing draws on — switching that off changes nothing (*warning*) |

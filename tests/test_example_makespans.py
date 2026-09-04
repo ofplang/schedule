@@ -85,6 +85,24 @@ def test_example_makespan_is_stable(name, workflow, env, document, expected):
     assert report.makespan == expected, f"{name}: makespan={report.makespan}, expected {expected}"
 
 
+def test_shared_bay_two_jobs_makespan_is_stable():
+    """Two jobs with boundary material over one loading bay and two racks (§6.11).
+
+    44 rather than 14 twice over: `job2` is released at 30, its sample not being on
+    the bay before then, so its run simply follows.
+    """
+    report = schedule_jobs(
+        [
+            JobInput("job1", EXAMPLES / "interface_load.workflow.yaml"),
+            JobInput("job2", EXAMPLES / "interface_load.workflow.yaml"),
+        ],
+        EXAMPLES / "shared_bay.env.yaml",
+        document_path=EXAMPLES / "shared_bay.document.yaml",
+    )
+    assert report.outcome == "optimal"
+    assert report.makespan == 44
+
+
 def test_shared_refill_two_jobs_makespan_is_stable():
     """The joint plan (§6.11) of the same example, anchored the same way.
 

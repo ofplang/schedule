@@ -220,8 +220,15 @@ def solve(
             # (§9): the input node sits at time 0 (a given origin, exempt from the
             # pending s >= now rule), the output node's end is the makespan.
             if boundary.kind == "input":
-                model.Add(s == 0)
-                model.Add(e == 0)
+                # The material is *there*, given, from the moment its job is released
+                # (§6.8, §6.11) -- time 0 for a job that was there from the start, and
+                # `now` for one that has just arrived. Pinned, not merely bounded: the
+                # entry material is a fact about the world, so the solver does not get
+                # to decide when it appears. That is what makes one loading bay serve
+                # two runs whose releases leave room, and what makes two jobs released
+                # together onto one bay infeasible rather than queued.
+                model.Add(s == releases.get(boundary.job or "", 0))
+                model.Add(e == s)
             else:
                 model.Add(e == c_max)
         elif fx is not None:
@@ -366,7 +373,10 @@ def solve(
     # since it is what stops a refill being parked after all the work (§4.8).
     job_ends: dict[str, list] = {}
     for i, job_id in enumerate(membership):
-        if job_id is not None:
+        # A boundary node belongs to a job (`job_membership` reports ownership) but is
+        # not its work: an output node ends at the makespan, so counting it would make
+        # every job finish when the last one does.
+        if job_id is not None and instance.activities[i].boundary is None:
             job_ends.setdefault(job_id, []).append(ends[i])
     for r, arc in enumerate(instance.arcs):
         src, dst = membership[arc.src_activity], membership[arc.dst_activity]

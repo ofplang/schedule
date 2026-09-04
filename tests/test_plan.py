@@ -62,6 +62,8 @@ _COMMITTED_PLANS = [
     # A joint plan of two jobs (§6.11): its activities carry `job`, so it also pins
     # that the validator accepts one.
     "shared_refill",
+    # A joint plan whose jobs carry their own boundary (§6.8 per job).
+    "shared_bay",
 ]
 
 

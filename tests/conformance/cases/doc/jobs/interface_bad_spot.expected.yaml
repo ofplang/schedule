@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: malformed_qualified_spot}
+notes: A roster entry's interface is checked exactly as the top-level one is; spec §6.11, §9.2.

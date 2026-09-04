@@ -212,6 +212,10 @@ def _job_entry(job: JobSpec) -> dict:
         entry["bound"] = job.bound
     if job.fingerprint is not None:
         entry["fingerprint"] = job.fingerprint
+    # Echoed verbatim, for the reason the top-level one is (§6.8): it is the caller's
+    # own planning input, and a plan that dropped it could not be the next one's.
+    if job.interface:
+        entry["interface"] = job.interface
     return entry
 
 

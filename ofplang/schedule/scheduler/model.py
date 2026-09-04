@@ -208,12 +208,17 @@ class JobSpec:
       loosened would be worse than none.
     - `fingerprint` identifies *which workflow* the job runs (`workflow.fingerprint`),
       so a replan cannot be handed the same ids against different workflows.
+    - `interface` is where this job's boundary material sits (§6.8) -- the same
+      section a single-workflow document carries at the top level. It is per job
+      because it binds one workflow's ports, and two jobs of the same workflow bind
+      the same port names to different spots.
     """
 
     id: str
     release: int = 0
     bound: int | None = None
     fingerprint: str | None = None
+    interface: dict | None = None
 
 
 @dataclass(frozen=True)

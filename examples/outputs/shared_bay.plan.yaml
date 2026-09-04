@@ -1,0 +1,123 @@
+time:
+  unit: second
+jobs:
+- id: job1
+  bound: 14
+  fingerprint: 8cd789557cafbc84
+  interface:
+    inputs:
+      sample: loader.stage
+    outputs:
+      result: output.rack_a
+- id: job2
+  release: 30
+  bound: 44
+  fingerprint: 8cd789557cafbc84
+  interface:
+    inputs:
+      sample: loader.stage
+    outputs:
+      result: output.rack_b
+outcome: optimal
+objective:
+  kind:
+  - completion_time_sum
+  - makespan
+  value:
+  - 58
+  - 44
+activities:
+- kind: transport
+  job: job1
+  start: 0
+  end: 2
+  from_spot: loader.stage
+  to_spot: heater.stage
+  transporter: arm
+  arc:
+    from:
+      node: []
+      port: sample
+    to:
+      node:
+      - Heat
+      port: plate
+- kind: processing
+  job: job1
+  start: 2
+  end: 12
+  process: heat
+  mode: '0'
+  node:
+  - Heat
+  devices:
+  - heater
+  input_spots:
+    plate: heater.stage
+  output_spots:
+    out: heater.stage
+- kind: transport
+  job: job1
+  start: 12
+  end: 14
+  from_spot: heater.stage
+  to_spot: output.rack_a
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Heat
+      port: out
+    to:
+      node: []
+      port: result
+- kind: transport
+  job: job2
+  start: 30
+  end: 32
+  from_spot: loader.stage
+  to_spot: heater.stage
+  transporter: arm
+  arc:
+    from:
+      node: []
+      port: sample
+    to:
+      node:
+      - Heat
+      port: plate
+- kind: processing
+  job: job2
+  start: 32
+  end: 42
+  process: heat
+  mode: '0'
+  node:
+  - Heat
+  devices:
+  - heater
+  input_spots:
+    plate: heater.stage
+  output_spots:
+    out: heater.stage
+- kind: transport
+  job: job2
+  start: 42
+  end: 44
+  from_spot: heater.stage
+  to_spot: output.rack_b
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Heat
+      port: out
+    to:
+      node: []
+      port: result
+meta:
+  workflow:
+  - examples/interface_load.workflow.yaml
+  - examples/interface_load.workflow.yaml
+  environment: examples/shared_bay.env.yaml
+  status: examples/shared_bay.document.yaml

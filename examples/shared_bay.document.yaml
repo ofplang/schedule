@@ -1,0 +1,37 @@
+# Two jobs with boundary material, taking turns on one loading bay (SPEC §6.11).
+#
+# Both run `interface_load.workflow.yaml` — a sample is loaded, heated, and the
+# result delivered — so both bind the same two port names. Where those ports *sit*
+# is per job, which is why `interface` is written on the roster entry rather than at
+# the top level: one document, two boundaries.
+#
+#   ofp-schedule schedule interface_load.workflow.yaml interface_load.workflow.yaml \
+#       --env shared_bay.env.yaml --document shared_bay.document.yaml
+#
+# **The bay is shared.** Entry material is *there*, given, from its job's release
+# until the move that collects it — so `job2`'s sample appears on the bay at 30, by
+# which time `job1`'s has long gone. The scheduler warns about the shared spot
+# (`interface_shared_input_spot`) because it can only work if the releases leave room:
+# release `job2` at 0 instead and both samples are on one bay at once, which is
+# infeasible rather than queued. That is a deliberate reading — v0 says entry material
+# is already placed, not waiting to be placed (design.md).
+#
+# **The racks are not.** A delivered result holds its rack until the run is over
+# (§6.8), so two jobs delivering to one rack overlap however the schedule is arranged.
+# The scheduler refuses that outright (`interface_duplicate_spot`) rather than
+# reporting "no feasible schedule found" — try setting both to `rack_a` to see it.
+#
+# `job1` is first in the roster, so it is first in priority: whatever completion the
+# first plan promises it, `job2` may not push it past.
+jobs:
+  - id: job1
+    interface:
+      inputs:  { sample: loader.stage }
+      outputs: { result: output.rack_a }
+  - id: job2
+    release: 30
+    interface:
+      inputs:  { sample: loader.stage }
+      outputs: { result: output.rack_b }
+
+activities: []

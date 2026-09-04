@@ -108,6 +108,36 @@ ofp-schedule schedule interface_load.workflow.yaml --env interface_load.env.yaml
 An Object-bearing entry input with no `interface` binding is an error
 (`interface_input_missing`), so `--document` is required here.
 
+## `shared_bay` — one loading bay, two jobs, taking turns
+
+Where `shared_refill` shows two jobs sharing a *stock*, this shows them sharing a
+*place*. Both run `interface_load.workflow.yaml`, so both bind the same two boundary
+port names — and where those ports sit is per job, which is why `interface` is written
+on the roster entry rather than at the top level (SPEC §6.11).
+
+```sh
+ofp-schedule schedule interface_load.workflow.yaml interface_load.workflow.yaml     --env shared_bay.env.yaml --document shared_bay.document.yaml
+```
+
+- `shared_bay.env.yaml` — narrow at the front, wide at the back: `loader` has one
+  `stage`, `output` has `rack_a` and `rack_b`.
+- `shared_bay.document.yaml` — `job1` from time 0, `job2` released at 30; both load
+  from the one bay, each delivers to its own rack.
+
+**The bay is shared.** Entry material is *there*, given, from its job's release until
+the move that collects it — so `job2`'s sample appears on the bay at 30, by which time
+`job1`'s has long gone. The scheduler **warns** (`interface_shared_input_spot`),
+because it only works if the releases leave room: drop `job2`'s release and both
+samples are on one bay at once, which comes back `infeasible` rather than queued. That
+is deliberate — v0 says entry material is already placed, not waiting to be placed.
+
+**The racks are not.** A delivered result holds its rack until the run is over (§6.8),
+so two jobs delivering to one rack overlap however the schedule is arranged. That is
+**refused outright** (`interface_duplicate_spot`) rather than reported as "no feasible
+schedule found" — set both to `rack_a` to see it.
+
+- `outputs/shared_bay.plan.yaml` (makespan 44) and `outputs/shared_bay.device.svg`.
+
 ## `shared_refill` — the refill that only two jobs together need
 
 The one example that plans **several workflows at once** (SPEC §6.11). It reuses the

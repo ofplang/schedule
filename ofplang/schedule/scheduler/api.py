@@ -134,6 +134,7 @@ def _job_specs(jobs, workflows, roster: dict[str, dict] | None, now: int) -> lis
                 release=release,
                 bound=bound if isinstance(bound, int) else None,
                 fingerprint=fingerprint(workflow),
+                interface=copy.deepcopy(entry.get("interface")),
             )
         )
     return specs
@@ -160,6 +161,65 @@ def _check_fingerprints(specs, roster: dict[str, dict]) -> list[Diagnostic]:
                     "jobs",
                 )
             )
+    return out
+
+
+def _boundary_spots(spec: JobSpec, side: str) -> dict[str, str]:
+    """One job's `interface` bindings on one side, as spot -> port name."""
+    bindings = (spec.interface or {}).get(side) or {}
+    return {
+        spot: port
+        for port, spot in bindings.items()
+        if isinstance(port, str) and isinstance(spot, str)
+    }
+
+
+def _check_boundary_spots(specs: tuple[JobSpec, ...]) -> list[Diagnostic]:
+    """What two jobs may and may not share at the boundary (SPEC §6.8, §6.11).
+
+    **Outputs cannot be shared.** A delivered Object holds its spot until the run is
+    over, so two jobs delivering to one spot always overlap there -- the instance is
+    infeasible however the schedule is arranged, and saying so beats "no feasible
+    schedule found".
+
+    **Inputs can be**, and often should: entry material holds its spot only from the
+    job's release until the move that collects it, so a second job released after the
+    first one's material has left uses the same place legitimately -- one loading bay,
+    two runs. Whether the times work out is the solver's to decide, so this only warns.
+
+    🔴 Both rules are true *of one plan*. A job that leaves the plan takes its material
+    with it (design.md "ジョブの退出"), and then even an output spot is free for the
+    next job. That is why both live in this one function: relaxing them later is
+    editing one place.
+    """
+    out: list[Diagnostic] = []
+    for side, code, severity in (
+        ("outputs", errors.INTERFACE_DUPLICATE_SPOT, ERROR),
+        ("inputs", errors.INTERFACE_SHARED_INPUT_SPOT, WARNING),
+    ):
+        owner: dict[str, tuple[str, str]] = {}
+        for spec in specs:
+            for spot, port in sorted(_boundary_spots(spec, side).items()):
+                if spot in owner:
+                    first_job, first_port = owner[spot]
+                    detail = (
+                        "two jobs cannot deliver to one spot: a delivered Object holds "
+                        "it until the run is over"
+                        if side == "outputs"
+                        else "their releases must leave the first job's material time "
+                        "to be collected before the second's arrives"
+                    )
+                    out.append(
+                        Diagnostic(
+                            code,
+                            f"job {first_job!r} ({first_port}) and job {spec.id!r} "
+                            f"({port}) both bind {spot!r} -- {detail}",
+                            "jobs",
+                            severity=severity,
+                        )
+                    )
+                else:
+                    owner[spot] = (spec.id, port)
     return out
 
 
@@ -507,21 +567,25 @@ def _run(
             diagnostics += mismatched
             return ScheduleReport(None, None, None, diagnostics)
 
-    # The document's `interface` binds one workflow's boundary material to spots, so
-    # it says nothing about which job each binding belongs to. Rather than guess (and
-    # have several jobs' boundary nodes silently claim the same spot at time 0), a
-    # joint plan refuses it. Per-job interface is the next stage; until then, a
-    # workflow with Object-bearing entry inputs cannot be part of a joint plan --
-    # `build_instance` rejects it with the usual `interface_input_missing`.
-    if len(jobs) > 1 and interface:
+    # `interface` binds *one* workflow's boundary ports, so in a joint plan it belongs
+    # to a job rather than to the document. The test is whether *this call* names jobs,
+    # not whether the input document happens to list them: an initial joint plan is
+    # given a document with no roster yet, and sharing one boundary across its jobs is
+    # the very ambiguity being refused. One rule, so there is never a question of which
+    # applies -- named jobs mean per-job, an unnamed single workflow means top-level.
+    if any(job.id for job in jobs) and interface:
         diagnostics.append(
             Diagnostic(
                 errors.MULTI_JOB_INTERFACE,
-                "interface binds one workflow's boundary and cannot be shared by "
-                f"{len(jobs)} jobs",
+                "interface binds one workflow's boundary ports, so a document that "
+                "lists jobs carries it per job (jobs[].interface), not at the top level",
                 "interface",
             )
         )
+        return ScheduleReport(None, None, None, diagnostics)
+
+    diagnostics += _check_boundary_spots(tuple(specs))
+    if _has_error(diagnostics):
         return ScheduleReport(None, None, None, diagnostics)
 
     # 3. Build one instance per job (boundary nodes/arcs from interface always
@@ -530,9 +594,12 @@ def _run(
     # never learns that jobs exist -- which is what lets one refill candidate serve
     # activities from several jobs (`merge_instances`).
     bases = []
-    for job, workflow in zip(jobs, workflows, strict=True):
+    for job, workflow, spec in zip(jobs, workflows, specs, strict=True):
         base, inst_diags = build_instance(
-            workflow, env, interface=interface, check_reachability=False
+            # A named job brings its own boundary (`spec.interface`); the unnamed
+            # single-workflow call has the document's, which is refused above wherever
+            # jobs are named, so exactly one of the two is ever set.
+            workflow, env, interface=spec.interface or interface, check_reachability=False
         )
         diagnostics += _attribute(inst_diags.items, job, jobs)
         if base is not None:

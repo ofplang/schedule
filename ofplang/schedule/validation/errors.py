@@ -175,6 +175,11 @@ JOB_ROSTER_MISMATCH = "job_roster_mismatch"
 # arrived no longer is. Relaxed in roster order and by as little as possible, so an
 # earlier job is never relaxed to spare a later one.
 JOB_BOUND_RELAXED = "job_bound_relaxed"
+# A warning: two jobs bind the same entry spot (§6.8, §6.11). Legitimate -- entry
+# material holds its spot only from its job's release until the move that collects it,
+# so one loading bay can serve two runs -- but only if the releases leave room. Said
+# out loud because the failure, when it comes, is a bare "no feasible schedule found".
+INTERFACE_SHARED_INPUT_SPOT = "interface_shared_input_spot"
 # A joint plan (§6.11) was given a document carrying `interface`. The section binds
 # one workflow's boundary material to spots and says nothing about which job each
 # binding belongs to, so sharing it between jobs would have several boundary nodes
@@ -298,6 +303,7 @@ ERROR_CODES = frozenset(
         UNKNOWN_JOB,
         JOB_ROSTER_MISMATCH,
         JOB_WORKFLOW_MISMATCH,
+        INTERFACE_SHARED_INPUT_SPOT,
         MULTI_JOB_INTERFACE,
         STATUS_MISSING_NOW,
         STATUS_NODE_UNKNOWN,

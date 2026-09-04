@@ -48,9 +48,21 @@ class BoundaryInfo:
     spot, pinned to time 0) or the `output` node (consumes every Object-bearing
     final output at its interface spot, its end pinned to the makespan). Like a
     relay it is an ordinary ActivityInstance with a single spot-fixing, device-less
-    mode; `kind` drives the solver's time pinning and rendering skips it."""
+    mode; `kind` drives the solver's time pinning and rendering skips it.
+
+    `job` is which job of a joint plan the node belongs to (§6.11), set by
+    `prefix_instance` -- the node path stays empty, because an empty path is what
+    *marks* an endpoint as the interface side, so the owner has to be recorded here
+    instead. The solver needs it to pin an input node at that job's release.
+
+    **None means the node belongs to no job**, which is the single-workflow case
+    today. It is deliberately expressible: material left behind by a job that has
+    left the plan belongs to no job either, and that is the shape a withdrawal will
+    need (design.md "ジョブの退出").
+    """
 
     kind: str  # "input" | "output"
+    job: str | None = None
 
 
 @dataclass(frozen=True)
@@ -251,7 +263,9 @@ def prefix_instance(instance: Instance, prefix: NodePath) -> Instance:
     A boundary node (§6.8) keeps its **empty** path: the empty path is what marks an
     endpoint as the interface side, so prefixing it would make it an ordinary node
     path. A boundary arc stays unambiguous in the merged instance anyway, because it
-    is keyed by both of its endpoints (§6.6) and the other end is prefixed.
+    is keyed by both of its endpoints (§6.6) and the other end is prefixed. The owner
+    is recorded on the node instead (`BoundaryInfo.job`), because the solver has to
+    know whose release to pin an input node at.
 
     An empty prefix returns the instance unchanged -- what the single-workflow path
     passes -- so a plan for one workflow is byte-for-byte what it always was.
@@ -267,7 +281,9 @@ def prefix_instance(instance: Instance, prefix: NodePath) -> Instance:
         return prefix + path
 
     activities = tuple(
-        a if a.boundary is not None else replace(a, node=prefix + a.node)
+        replace(a, boundary=replace(a.boundary, job=prefix[0]))
+        if a.boundary is not None
+        else replace(a, node=prefix + a.node)
         for a in instance.activities
     )
     arcs = tuple(
@@ -293,8 +309,13 @@ def job_membership(instance: Instance, jobs: Sequence[str]) -> tuple[str | None,
 
     - a **relay** (§6.4.1) belongs to the job whose arc it carries -- its identity is
       that arc, and one end of it always names a real node;
-    - a **boundary node** (§6.8) belongs to no job (`None`), being the interface rather
-      than work; a joint plan has none today, since `interface` is refused for one.
+    - a **boundary node** (§6.8) carries its owner on itself (`BoundaryInfo.job`), the
+      node path being empty by design; `None` there means it belongs to no job.
+
+    🔴 This is **ownership**, not "whose completion counts it". A boundary output node
+    ends at the makespan (it holds its spots until the run is over), so counting it
+    towards its job's completion would make every job finish when the last one does.
+    The completion sum excludes boundary nodes explicitly for that reason.
 
     With no jobs -- the single-workflow case, where node paths carry no prefix and
     nothing may be read off them -- every workflow activity belongs to the same
@@ -312,7 +333,7 @@ def job_membership(instance: Instance, jobs: Sequence[str]) -> tuple[str | None,
     out: list[str | None] = []
     for activity in instance.activities:
         if activity.boundary is not None:
-            out.append(None)
+            out.append(activity.boundary.job if known else "")
         elif activity.relay is not None:
             arc = activity.relay.arc
             out.append(of_path(arc.src.node) or of_path(arc.dst.node))

@@ -1,0 +1,13 @@
+# `interface` on the roster entry (§6.11): it binds one workflow's ports, so a
+# document that names jobs carries one per job.
+jobs:
+- id: morning
+  interface:
+    inputs:  { sample: loader.stage }
+    outputs: { result: output.rack_a }
+- id: evening
+  release: 30
+  interface:
+    inputs:  { sample: loader.stage }
+    outputs: { result: output.rack_b }
+activities: []
