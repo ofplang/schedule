@@ -105,6 +105,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "it never turns a solvable instance unsolvable)",
     )
     s.add_argument(
+        "--max-time",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="give up searching after SECONDS and return the best schedule found so "
+        "far (which may be unproven, or nothing at all); default: search until the "
+        "optimum is proven",
+    )
+    s.add_argument(
         "--seed",
         type=int,
         default=None,
@@ -334,6 +343,7 @@ def _cmd_schedule(args) -> int:
             args.env,
             document_path=doc,
             running_task_margin=args.running_margin,
+            max_time_seconds=args.max_time,
             random_seed=args.seed,
             ignore_resources=args.ignore_resources,
             workflow_source=args.workflow,

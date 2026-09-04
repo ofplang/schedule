@@ -51,7 +51,7 @@ pip install -e ".[test]"
 
 ```sh
 ofp-schedule validate <file>...                 # validate an environment or a plan/status
-ofp-schedule schedule <workflow> --env <env> [--document doc.yaml] [--running-margin N] [--seed N] [--no-validate] [-o plan.yaml] [--format yaml|json]
+ofp-schedule schedule <workflow> --env <env> [--document doc.yaml] [--running-margin N] [--max-time SECONDS] [--seed N] [--no-validate] [-o plan.yaml] [--format yaml|json]
 ofp-schedule visualize <plan|status> [--view device|workflow|lane] [--theme light|dark|auto] [--format svg|html] [-o FILE]
 ```
 
@@ -67,7 +67,11 @@ emitting the full timeline (fixed history + re-optimised future) that round-trip
 as the next status input. By default the solve is non-deterministic
 (a multi-worker search that may return a different equally-optimal schedule each
 run); `--seed N` makes it reproducible by fixing the CP-SAT seed and using a
-single worker. `--ignore-resources` switches consumables off (§4.7.3): the
+single worker. `--max-time SECONDS` caps the search: the best schedule found so
+far is returned instead of the proven optimum, which the plan says by reporting
+`outcome: feasible` rather than `optimal` — and a search that found nothing in
+the budget reports no schedule at all (exit `1`), since an instance is not
+unschedulable merely because time ran out. `--ignore-resources` switches consumables off (§4.7.3): the
 declarations are still checked for shape but nothing is applied, and the plan is
 shaped as it would be from an environment that never declared one — a relaxation,
 so it never turns a solvable instance unsolvable. `--no-validate` skips the one-shot `ofplang-validate` front-door
@@ -108,6 +112,17 @@ from ofplang.schedule import schedule
 
 report = schedule(workflow, environment, document_path=status)  # -> ScheduleReport
 ```
+
+Alongside the plan, the report carries `stats`: what the *solve* cost, as opposed
+to what it decided — timings (including CP-SAT's machine-independent
+`deterministic_time`), the bound the answer was measured against, and the size of
+the model. It is there on every path that reached the solver, an infeasible
+instance included, and `None` where the inputs were refused before solving.
+Passing `collect_solutions=True` additionally records each improving solution as
+the search finds it (`stats.phases[-1].history`), which is what an anytime
+measurement — how good was the schedule at time *t*? — reads; it is off by default
+because a solution callback runs inside the search. None of this enters the plan:
+a plan is a portable v0 document and says nothing about how it was found.
 
 Each input is either a path or an already-loaded document (a mapping), so an
 embedder that holds them in memory — a rolling-horizon runner rendering a fresh

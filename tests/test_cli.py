@@ -48,6 +48,26 @@ def test_schedule_produces_valid_plan(tmp_path):
     assert validate_document(out).ok
 
 
+def test_schedule_max_time_caps_the_search(capsys):
+    # The cap is an upper bound on searching, not a requirement to use it: a
+    # two-activity instance is proven optimal long before a second is up. What the
+    # test holds is that the option exists, is accepted, and does not disturb the
+    # answer -- the cases where it actually bites (a truncated search returning an
+    # unproven schedule) are wall-clock races and belong in a benchmark, not here.
+    code = cli.main(
+        [
+            "schedule",
+            str(EXAMPLES / "simple.workflow.yaml"),
+            "--env",
+            str(EXAMPLES / "simple.env.yaml"),
+            "--max-time",
+            "30",
+        ]
+    )
+    assert code == cli.EXIT_OK
+    assert "outcome: optimal" in capsys.readouterr().out
+
+
 def test_schedule_stdout_yaml(capsys):
     code = cli.main(
         [

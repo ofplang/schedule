@@ -13,6 +13,12 @@ from ofplang.schedule.core.diagnostics import (
     ValidationResult,
 )
 from ofplang.schedule.scheduler.api import ScheduleReport, schedule
+from ofplang.schedule.scheduler.stats import (
+    ModelStats,
+    PhaseStats,
+    SolutionEvent,
+    SolveStats,
+)
 from ofplang.schedule.validation import validate_document, validate_environment
 
 __all__ = [
@@ -20,6 +26,10 @@ __all__ = [
     "validate_document",
     "schedule",
     "ScheduleReport",
+    "SolveStats",
+    "PhaseStats",
+    "SolutionEvent",
+    "ModelStats",
     "ValidationResult",
     "Diagnostic",
     "ERROR",

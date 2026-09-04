@@ -2,8 +2,8 @@
 
 Mode selection, spot/device occupancy, and transport are expressed with optional
 intervals whose presence is the mode/route selector, exactly as the FORMULATION
-CP-SAT notes describe. The objective is a lexicographic stage list (§4.8) of which
-only `makespan` is realisable so far, so what is actually minimised is c_max.
+CP-SAT notes describe. The objective is a lexicographic stage list (§4.8), folded
+into one weighted expression so the whole order is settled in a single solve.
 
 Occupancy bookkeeping mirrors FORMULATION §6/§7: a processing activity holds its
 mode's spots and devices over its run interval; a transport holds the source spot
@@ -29,6 +29,12 @@ from ofplang.schedule.scheduler.instance import (
     TransportOption,
 )
 from ofplang.schedule.scheduler.model import Arc, Mode, NodePath
+from ofplang.schedule.scheduler.stats import (
+    ModelStats,
+    PhaseStats,
+    SolutionEvent,
+    SolveStats,
+)
 from ofplang.schedule.scheduler.status import Fixation
 
 
@@ -88,6 +94,11 @@ class Solution:
     # Defaulted so the infeasible return below stays a four-argument call.
     objective_kind: tuple[str, ...] = (objective_stages.MAKESPAN,)
     objective_values: tuple[int, ...] = ()
+    # What the solve cost and how it got there (stats.py). Set on every path that
+    # reached the solver, including the infeasible one -- how long it takes to
+    # prove an instance unschedulable is as much a measurement as how long it takes
+    # to schedule one. None only where no solve ran.
+    stats: SolveStats | None = None
 
 
 _STATUS = {
@@ -105,6 +116,7 @@ def solve(
     max_time_seconds: float | None = None,
     random_seed: int | None = None,
     objective: tuple[str, ...] | None = None,
+    collect_solutions: bool = False,
 ) -> Solution:
     """Build and solve the model. With a `fixation` (a replan), completed/running
     activities are pinned to their reported times, mode, and route, pending ones
@@ -125,7 +137,13 @@ def solve(
     since a fixed seed alone does not defeat the inter-worker race. This is meant
     for tests that assert on a specific plan; it forgoes parallelism, and note
     that reproducibility only holds when the solve runs to completion (a solve
-    truncated by `max_time_seconds` still depends on wall-clock timing)."""
+    truncated by `max_time_seconds` still depends on wall-clock timing).
+
+    `collect_solutions` records each improving solution as the search finds it, into
+    `Solution.stats.phases[-1].history`. Off by default because a solution callback
+    is not free -- it runs inside the search and can perturb the very timings it is
+    there to measure -- so a caller that wants the anytime curve opts in, and one
+    that only wants a schedule pays nothing."""
     model = cp_model.CpModel()
     now = fixation.now if fixation is not None else 0
     horizon = _horizon(instance, fixation, running_task_margin)
@@ -320,21 +338,24 @@ def solve(
     n_refills = sum(vars_.present for vars_ in refills.values())
 
     # Lexicographic stages as a single weighted objective (FORMULATION "Objective").
-    # Exact because the count is bounded by the number of candidates, so one unit of
-    # the earlier stage outweighs every attainable value of the later one -- and it
-    # keeps the solve to one pass, on a model whose size is already what bounds solve
-    # time (dev-notes/report-solver-scalability.md).
-    bound = len(instance.replenishments)
+    # Exact because each stage's weight outweighs everything the later stages can
+    # reach together (core.objective.weights) -- and it keeps the solve to one pass,
+    # on a model whose size is already what bounds solve time
+    # (dev-notes/report-solver-scalability.md). The weights come from core.objective
+    # because reading a solve in progress means decoding this same value back into
+    # per-stage numbers, and the two have to agree.
     terms = {
-        objective_stages.MAKESPAN: (c_max, horizon),
-        objective_stages.REPLENISHMENT_COUNT: (n_refills, bound),
+        objective_stages.MAKESPAN: c_max,
+        objective_stages.REPLENISHMENT_COUNT: n_refills,
     }
+    bounds = {
+        objective_stages.MAKESPAN: horizon,
+        objective_stages.REPLENISHMENT_COUNT: len(instance.replenishments),
+    }
+    weights = objective_stages.weights(stages, bounds)
     expression = 0
-    weight = 1
-    for stage in reversed(stages):
-        value, stage_bound = terms[stage]
-        expression = expression + weight * value
-        weight *= stage_bound + 1
+    for weight, stage in zip(weights, stages, strict=True):
+        expression = expression + weight * terms[stage]
     model.Minimize(expression)
 
     solver = cp_model.CpSolver()
@@ -346,11 +367,15 @@ def solve(
         # still varies which optimal schedule is returned.
         solver.parameters.random_seed = random_seed
         solver.parameters.num_search_workers = 1
-    status = solver.Solve(model)
+    recorder = _SolutionRecorder(weights) if collect_solutions else None
+    status = solver.Solve(model, recorder)
     outcome = _STATUS.get(status, "unknown")
+    stats = _solve_stats(
+        model, solver, outcome, instance, horizon, stages, weights, recorder
+    )
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return Solution(outcome, None, (), (), objective_kind=stages)
+        return Solution(outcome, None, (), (), objective_kind=stages, stats=stats)
 
     act_fix = fixation.activities if fixation is not None else {}
     arc_fix = fixation.arcs if fixation is not None else {}
@@ -399,6 +424,94 @@ def solve(
         replenishment,
         objective_kind=stages,
         objective_values=tuple(values[stage] for stage in stages),
+        stats=stats,
+    )
+
+
+class _SolutionRecorder(cp_model.CpSolverSolutionCallback):
+    """Records each improving solution as CP-SAT finds it (`collect_solutions`).
+
+    Only numbers are kept, never the assignment: what an anytime measurement needs
+    is how good the answer was at a given moment, and rebuilding a schedule per
+    incumbent would cost more than the search. The objective is the weighted
+    expression, so it is decoded here with the same weights that built it.
+    """
+
+    def __init__(self, weights: tuple[int, ...]) -> None:
+        super().__init__()
+        self._weights = weights
+        self.events: list[SolutionEvent] = []
+
+    def on_solution_callback(self) -> None:
+        value = round(self.ObjectiveValue())
+        self.events.append(
+            SolutionEvent(
+                wall_time=self.WallTime(),
+                deterministic_time=self.DeterministicTime(),
+                objective_value=value,
+                objective_bound=self.BestObjectiveBound(),
+                objective_values=objective_stages.decode(self._weights, value),
+            )
+        )
+
+
+def _solve_stats(
+    model,
+    solver,
+    outcome: str,
+    instance: Instance,
+    horizon: int,
+    stages: tuple[str, ...],
+    weights: tuple[int, ...],
+    recorder: _SolutionRecorder | None,
+) -> SolveStats:
+    """Assemble the record of what this solve cost (stats.py).
+
+    Built for every outcome. Where there is no solution the objective fields stay
+    None and the timings still stand, because "how long until it said infeasible"
+    is a number a benchmark measures too.
+    """
+    proto = model.Proto()
+    solved = outcome in ("optimal", "feasible")
+    value = round(solver.ObjectiveValue()) if solved else None
+    bound = solver.BestObjectiveBound() if solved else None
+    phase = PhaseStats(
+        name="cpsat",
+        outcome=outcome,
+        wall_time=solver.WallTime(),
+        user_time=solver.UserTime(),
+        deterministic_time=solver.ResponseProto().deterministic_time,
+        # What the search actually ran with. 0 is CP-SAT's "choose for me", which is
+        # the default whenever `random_seed` did not pin it to a single worker.
+        workers=solver.parameters.num_search_workers,
+        num_branches=solver.NumBranches(),
+        num_conflicts=solver.NumConflicts(),
+        num_booleans=solver.NumBooleans(),
+        objective_value=value,
+        objective_bound=bound,
+        objective_values=(
+            objective_stages.decode(weights, value) if value is not None else None
+        ),
+        first_stage_bound=(
+            objective_stages.first_stage_bound(weights, bound)
+            if bound is not None
+            else None
+        ),
+        history=tuple(recorder.events) if recorder is not None else None,
+    )
+    return SolveStats(
+        model=ModelStats(
+            variables=len(proto.variables),
+            constraints=len(proto.constraints),
+            activities=len(instance.activities),
+            arcs=len(instance.arcs),
+            transport_options=sum(len(arc.options) for arc in instance.arcs),
+            modes=sum(len(act.modes) for act in instance.activities),
+            replenishments=len(instance.replenishments),
+            horizon=horizon,
+        ),
+        objective_kind=stages,
+        phases=(phase,),
     )
 
 

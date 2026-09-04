@@ -32,6 +32,7 @@ from ofplang.schedule.scheduler.instance import build_instance, report_unreachab
 from ofplang.schedule.scheduler.normalize import normalize
 from ofplang.schedule.scheduler.plan import render_plan
 from ofplang.schedule.scheduler.plancheck import check_plan_inventories
+from ofplang.schedule.scheduler.stats import SolveStats
 from ofplang.schedule.scheduler.workflow import parse_workflow
 from ofplang.schedule.validation import errors
 from ofplang.schedule.validation.document import validate_document_node
@@ -46,6 +47,12 @@ class ScheduleReport:
     makespan: int | None
     plan: dict | None
     diagnostics: list[Diagnostic] = field(default_factory=list)
+    # What the solve cost (stats.py). Set on every path that reached the solver --
+    # including an infeasible instance and a plan withheld by a defect -- and None
+    # where the pipeline stopped before solving, since there is then nothing to
+    # measure. It describes the *solve*, never the schedule, which is why none of it
+    # goes into the plan document: that stays portable v0 (SPEC §6).
+    stats: SolveStats | None = None
 
     @property
     def ok(self) -> bool:
@@ -95,6 +102,7 @@ def schedule(
     max_time_seconds: float | None = None,
     random_seed: int | None = None,
     ignore_resources: bool = False,
+    collect_solutions: bool = False,
     workflow_source: str | None = None,
     environment_source: str | None = None,
     document_source: str | None = None,
@@ -115,6 +123,13 @@ def schedule(
     resource-bearing environment can drive a consumer that does not know about
     resources -- though such a caller has to pass it, so driving `ofplang.run` this
     way is not possible until run does.
+
+    `collect_solutions` records every improving solution the search found, into
+    `report.stats.phases[-1].history`, which is what an anytime measurement (how good
+    was the schedule at time t?) reads. Off by default: a solution callback runs
+    inside the search and can perturb the timings it is there to measure, so only a
+    caller that wants the curve pays for it. The rest of `report.stats` -- timings,
+    bound, model size -- costs nothing and is always there.
 
     In-memory documents are read, never written to."""
     diagnostics: list[Diagnostic] = []
@@ -194,10 +209,11 @@ def schedule(
         max_time_seconds=max_time_seconds,
         random_seed=random_seed,
         objective=_objective_of(declared_objective),
+        collect_solutions=collect_solutions,
     )
     if solution.outcome not in ("optimal", "feasible"):
         diagnostics.append(Diagnostic(errors.INFEASIBLE, "no feasible schedule found"))
-        return ScheduleReport(solution.outcome, None, None, diagnostics)
+        return ScheduleReport(solution.outcome, None, None, diagnostics, solution.stats)
 
     plan = render_plan(
         instance,
@@ -220,6 +236,8 @@ def schedule(
     for message in check_plan_inventories(plan, env, inventories):
         diagnostics.append(Diagnostic(errors.PLAN_INVENTORY_INCONSISTENT, message, "activities"))
     if _has_error(diagnostics):
-        return ScheduleReport(solution.outcome, None, None, diagnostics)
+        return ScheduleReport(solution.outcome, None, None, diagnostics, solution.stats)
 
-    return ScheduleReport(solution.outcome, solution.makespan, plan, diagnostics)
+    return ScheduleReport(
+        solution.outcome, solution.makespan, plan, diagnostics, solution.stats
+    )
