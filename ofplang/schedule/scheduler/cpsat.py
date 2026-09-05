@@ -177,6 +177,38 @@ def solve(
         for i, fx in (fixation.activities if fixation is not None else {}).items()
         if fx.status == "cancelled" and membership[i] is not None
     }
+    # 🔴 When each stopped job's work was abandoned: `now`, or later if something of it
+    # is *still running*. A job does not necessarily stop with nothing in flight -- one
+    # branch of it can fail while another is still on the machine, and a running
+    # operation is never aborted (§6.2). Its abandoned work has to be placed after that
+    # operation, not at `now`: a zero-length interval at `now` sits *before* the thing
+    # it waits on, which no schedule can satisfy, so the whole document goes infeasible
+    # -- taking every other job in the laboratory with it, the exact opposite of what
+    # stopping one job is for.
+    #
+    # One instant per job rather than a per-activity walk: everything the job had left
+    # was abandoned together, when its last operation came off. That also keeps chains
+    # of cancelled work consistent, since zero-length intervals at one instant satisfy
+    # precedence among themselves.
+    stopped_at = {
+        job: max(
+            [now]
+            + [
+                _fixed_end(fx.status, fx.end, now, running_task_margin)
+                for i, fx in (fixation.activities if fixation is not None else {}).items()
+                if membership[i] == job and fx.status == "running"
+            ]
+        )
+        for job in stopped
+    }
+
+    def _pinned(fx, job_id) -> int:
+        """Where a fixation's zero-length cancelled interval goes; its own start
+        otherwise."""
+        if fx.status != "cancelled":
+            return fx.start
+        return max(fx.start, stopped_at.get(job_id, now))
+
     job_bounds = {
         job.id: job.bound
         for job in jobs
@@ -220,6 +252,16 @@ def solve(
             else:
                 size = mode.duration if fx is None else model.NewIntVar(0, horizon, f"psz{i}_{m}")
             iv = model.NewOptionalIntervalVar(s, size, e, present, f"pi{i}_{m}")
+            # 🔴 Cancelled work holds nothing. It never ran, so it takes no spot and
+            # no machine, and it must not enter a non-overlap set at all -- being
+            # zero-length is not enough. A zero-length interval does not overlap
+            # another *by duration*, but a point strictly inside another interval is
+            # still a point inside it, and CP-SAT refuses the pair: measured, a
+            # cancelled activity placed inside a spot's `occupied` hold (§6.12) made
+            # the document infeasible. Leaving it out is also simply what "cancelled"
+            # means, rather than a way of arranging for the arithmetic to work out.
+            if fx is not None and fx.status == "cancelled":
+                continue
             for spot in set(mode.input_spots.values()) | set(mode.output_spots.values()):
                 add(spot_iv, spot, iv)
             # A non-accessing mode holds no device (§4.4.2): its spots are bound
@@ -274,10 +316,15 @@ def solve(
         elif fx is not None:
             # Completed/running: pin mode and times (running end clamped up to
             # now + margin). The pinned mode's interval then occupies its spots
-            # and devices over the actual [start, end].
+            # and devices over the actual [start, end]. Cancelled work is placed at
+            # its job's stopping instant (see `stopped_at`).
             model.Add(lits[fx.mode_index] == 1)
-            model.Add(s == fx.start)
-            model.Add(e == _fixed_end(fx.status, fx.end, now, running_task_margin))
+            at = _pinned(fx, membership[i])
+            model.Add(s == at)
+            model.Add(
+                e == (at if fx.status == "cancelled"
+                      else _fixed_end(fx.status, fx.end, now, running_task_margin))
+            )
         elif fixation is not None:
             # Pending during a replan: cannot start before now.
             model.Add(s >= now)
@@ -319,6 +366,9 @@ def solve(
             # transport, free for a fixed one (times pinned below).
             body_size = opt.duration if fr is None else model.NewIntVar(0, horizon, f"tbsz{r}_{k}")
             body = model.NewOptionalIntervalVar(a, body_size, b, present, f"tb{r}_{k}")
+            # A move that never happened holds nothing either (see the activity loop).
+            if fr is not None and fr.status == "cancelled":
+                continue
             # from_spot/to_spot are validated qualified spots, so parsing succeeds.
             src_parsed = parse_qualified_spot(opt.from_spot)
             dst_parsed = parse_qualified_spot(opt.to_spot)
@@ -355,8 +405,13 @@ def solve(
             # Completed/running transport: pin route and times (running end
             # clamped up to now + margin).
             model.Add(lits[fr.option_index] == 1)
-            model.Add(a == fr.start)
-            model.Add(b == _fixed_end(fr.status, fr.end, now, running_task_margin))
+            arc_job = membership[arc.src_activity] or membership[arc.dst_activity]
+            at = _pinned(fr, arc_job)
+            model.Add(a == at)
+            model.Add(
+                b == (at if fr.status == "cancelled"
+                      else _fixed_end(fr.status, fr.end, now, running_task_margin))
+            )
         elif fixation is not None:
             # Pending during a replan: cannot start before now, even if the
             # source finished earlier.

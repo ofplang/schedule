@@ -1,0 +1,34 @@
+# One job with two independent branches -- two plates made, baked and discarded,
+# neither waiting on the other.
+#
+# It exists so a job can fail in one place while another of its own operations is
+# still on the machine, which a linear workflow can never do: in a chain, whatever
+# fails is the only thing that was running.
+spec_version: "0.0"
+types:
+  Plate: { domain: object }
+processes:
+  make_plate:
+    kind: atomic
+    outputs: { plate: { type: Plate, phase: data } }
+    objects: { create: [outputs.plate] }
+  assay:
+    kind: atomic
+    inputs: { plate: { type: Plate, phase: data } }
+    outputs: { out: { type: Plate, phase: data } }
+    objects: { map: { outputs.out: inputs.plate } }
+  discard:
+    kind: atomic
+    inputs: { plate: { type: Plate, phase: data } }
+    objects: { consume: [inputs.plate] }
+  main:
+    kind: composite
+    body:
+      nodes:
+        - { id: MakeA, process: make_plate }
+        - { id: AssayA, process: assay, state: { plate: { from: MakeA.plate } } }
+        - { id: DropA, process: discard, state: { plate: { from: AssayA.out } } }
+        - { id: MakeB, process: make_plate }
+        - { id: AssayB, process: assay, state: { plate: { from: MakeB.plate } } }
+        - { id: DropB, process: discard, state: { plate: { from: AssayB.out } } }
+entry: main

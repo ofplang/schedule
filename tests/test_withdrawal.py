@@ -339,3 +339,89 @@ def test_the_committed_example_shows_what_the_occupancy_costs():
         if a["kind"] == "processing" and a.get("node") == ["Assay"] and a["job"] != "job2"
     }
     assert "tray_1" in trays
+
+
+# ---------------------------------------------------------------------------
+# A job does not always stop with nothing in flight.
+# ---------------------------------------------------------------------------
+
+
+def _two_branch():
+    """A workflow whose job has two independent branches, and the two-tray oven. A
+    linear job can never fail with its own work still running -- whatever fails is
+    the only thing that was going."""
+    return (
+        yaml.safe_load(
+            (Path(__file__).parent / "fixtures" / "two_branch.workflow.yaml")
+            .read_text(encoding="utf-8")
+        ),
+        yaml.safe_load((EXAMPLES / "stopped_job.env.yaml").read_text(encoding="utf-8")),
+    )
+
+
+def _stop_mid_flight(plan, held_since=None):
+    """`job1` has stopped: one of its bakes failed, while its *other* bake is still on
+    the oven. `now` is the moment the first one gave out. Returns the status and the
+    moment the still-running bake is due to come off."""
+    status = copy.deepcopy(plan)
+    bakes = [a for a in _of(status, "job1") if a.get("process") == "assay"]
+    assert len(bakes) == 2, bakes
+    running, failed = sorted(bakes, key=lambda a: -a["end"])
+    at = failed["end"]
+    assert running["start"] <= at < running["end"], (running, failed)
+    status["now"] = at
+    for a in status["activities"]:
+        if a.get("job") != "job1":
+            a.pop("status", None)
+            continue
+        if a is failed:
+            a["status"] = "failed"
+        elif a is running:
+            a["status"] = "running"
+        elif a["end"] <= at:
+            a["status"] = "completed"
+        else:
+            a.pop("status", None)
+    status["activities"] = [
+        a for a in status["activities"] if a.get("job") != "job1" or "status" in a
+    ]
+    if held_since is not None:
+        status["occupied"] = [{"spot": "oven.tray_1", "since": held_since}]
+    return status, running["end"]
+
+
+def test_a_job_that_stops_with_work_still_running_does_not_stop_the_others():
+    """🔴 A job can fail in one place while another of its operations is still on the
+    machine -- and a running operation is never aborted (§6.2). Its abandoned work
+    must be placed *after* that operation: at `now` it would sit before the thing it
+    waits on, which no schedule satisfies, so the whole document went infeasible and
+    took every other job in the laboratory with it."""
+    workflow, env = _two_branch()
+    plan = schedule_jobs(_jobs(workflow), env).plan
+    status, running = _stop_mid_flight(plan)
+
+    report = schedule_jobs(_jobs(workflow), env, document_path=status)
+    assert report.ok, [d.code for d in report.diagnostics]
+    cancelled = [a for a in report.plan["activities"] if a.get("status") == "cancelled"]
+    assert cancelled
+    # Abandoned where the job actually stopped: once its last operation came off,
+    # not at `now` -- and as a zero-length interval, as it always was.
+    assert {a["start"] for a in cancelled} == {running}
+    assert all(a["start"] == a["end"] for a in cancelled)
+    # And job2 was planned regardless, which is the whole point.
+    assert any(
+        a.get("job") == "job2" and a.get("status") is None
+        for a in report.plan["activities"]
+    )
+
+
+def test_cancelled_work_holds_no_spot():
+    """🔴 It never ran, so it takes no spot and no machine -- and being zero-length is
+    not enough to arrange that. A point strictly inside another interval is still a
+    point inside it, and CP-SAT refuses the pair: a cancelled activity landing inside
+    a spot's `occupied` hold made the document infeasible."""
+    workflow, env = _two_branch()
+    plan = schedule_jobs(_jobs(workflow), env).plan
+    status, _running = _stop_mid_flight(plan, held_since=0)
+    report = schedule_jobs(_jobs(workflow), env, document_path=status)
+    assert report.ok, [d.code for d in report.diagnostics]
