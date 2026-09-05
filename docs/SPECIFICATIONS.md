@@ -26,8 +26,10 @@ and produces an **execution plan** (what runs where and when).
 Several workflows may be planned **together** against one environment, as separate
 **jobs** in a single solve (§6.11). They then compete for the same machines and draw
 on the same consumable stocks, so a refill that neither needs on its own is planned
-once for both. What v0 does not yet give them is any way to differ: no priorities, no
-per-job release times, no per-job objective.
+once for both. Jobs differ in when they may start (`release`) and in what an earlier
+solve promised them (`bound`, which is the whole of the priority guarantee); what they
+do not have is an objective of their own — what is minimised is stated once for the
+document (§4.8).
 
 It also supports **replanning**: given the workflows, an environment, and an
 **execution status** describing what has happened so far, it produces an updated
@@ -668,10 +670,10 @@ environment.
   entries each carrying an `id`. Present exactly on a joint plan: a document for a
   single workflow has no roster, and no activity in it carries a `job`. Where the
   roster is present every workflow activity **must** name one of its entries (a
-  `replenishment` never does, §6.9). The order is the order the jobs were given and
-  is preserved, though nothing reads it yet. Generated on the initial plan from the
-  workflows given, then carried through replans; a replan whose given workflows are
-  not the roster's is refused (§9.3, `job_roster_mismatch`).
+  `replenishment` never does, §6.9). The order is the order the jobs were given, is
+  preserved, and **is** read: it is the priority order (§6.11). Generated on the
+  initial plan from the workflows given, then carried through replans; a replan whose
+  given workflows are not the roster's is refused (§9.3, `job_roster_mismatch`).
 - `interface` (§6.8) — the boundary spots for the workflow's Object-bearing entry
   inputs and final outputs (a planning constraint, §3). **Required** for every
   Object-bearing entry input; optional per output. Supplied for the initial plan
@@ -749,8 +751,14 @@ environment.
   one job, so a terminal status there stops the whole document, and feeding it to the
   scheduler is `terminal_status_not_replannable` (§9.3) — which is also what a joint
   plan reports once *every* one of its jobs has stopped and there is nothing left to
-  plan. A stopped job's unfinished work comes back `cancelled`, pinned to a zero-length
-  interval at `now`: it holds no spot, no device, and draws no consumption.
+  plan. A stopped job's unfinished work comes back `cancelled`, as a zero-length
+  interval at the moment that job's last still-running activity comes off — `now`
+  when nothing of it is in flight, which is every single-workflow case. It is placed
+  there rather than at `now` because a job need not stop with nothing running: one
+  branch of it can fail while another is still on the machine, and abandoned work put
+  at `now` would sit *before* the activity it waits on, which no schedule satisfies.
+  Cancelled work holds no spot, no device, and draws no consumption — because it
+  never ran, not because its interval is empty.
 
   What such a job leaves *behind* is not expressed by its activities — a completed
   interval has ended, so the material it put somewhere is invisible. See `occupied`
@@ -1243,12 +1251,15 @@ every relabelling of one schedule is another schedule, and an implementation may
 their order rather than search them all — this scheduler orders their start times by
 the roster. Doing so keeps one representative of each relabelling and so reaches the
 same objective; what makes it sound is being strict about *when* two jobs are
-indistinguishable. All four of these must hold:
+indistinguishable. All five of these must hold:
 
 - they run the same workflow (`fingerprint`);
 - they have the same `release`;
 - neither has been promised a `bound`;
-- neither has any started activity.
+- neither has any started activity;
+- neither has stopped (§6.2). Cancelled work is not *started* work, so this does not
+  follow from the previous condition -- and a job whose work was abandoned has none
+  left to order, which is not the same position as one that still has all of it.
 
 In practice that means an initial plan, which is also where it matters: once jobs carry
 bounds and history they are not interchangeable at all. This is an implementation
@@ -1301,7 +1312,8 @@ usually apparent rather than real: material a stopped job left behind is describ
 twice, once by the activity that put it there and once by this section, and nothing in
 the model can tell that from a genuine conflict. The two are composed instead: the
 history accounts for the spot up to `now`, this section accounts for it from `now` on.
-The stated `since` is preserved in the plan (§6.2), so what it records is not lost.
+The stated `since` is echoed unchanged in the plan (§6.1), so what it records is
+not lost.
 
 `job` is **traceability, not provenance**: it records which job left the material, for
 a reader and for a later withdrawal that would free the spot. It may be omitted —
@@ -1645,6 +1657,26 @@ leg is pinned like any committed leg; a pending one is re-derived).
   and it is this check that rejects an input whose completion alone would overflow
   the resource.
 
+- **Jobs** (§6.11), where the document has a roster. The workflows handed to the
+  scheduler must be exactly the ones the roster names, compared as a set
+  (`job_roster_mismatch`), and each entry's `fingerprint`, where it has one, must be
+  the digest of the workflow handed over for it (`job_workflow_mismatch`) — matching
+  a history against the wrong workflow would pin it onto activities that never ran
+  it. A top-level `interface` is refused when the call names jobs
+  (`multi_job_interface`): it binds one workflow's ports, and a joint plan carries
+  one per job. Across jobs, two entry bindings on the same spot are a **warning**
+  (`interface_shared_input_spot`) rather than an error — legitimate where the
+  releases leave the first job's material time to be collected — while two *output*
+  bindings on one spot stay `interface_duplicate_spot`, since no schedule can deliver
+  both there.
+- **Promises and stopping** (§6.11, §6.2). A promise that no schedule can keep is
+  relaxed and reported (`job_bound_relaxed`, a warning: a plan is still produced). If
+  nothing can be planned even with every promise lifted, the job whose removal would
+  let the rest be planned is named (`jobs_not_plannable_together`) — a report, never a
+  removal. And a document is refused as unreplannable only when **every** job has
+  stopped (`terminal_status_not_replannable`); one stopped job among several is
+  ordinary input, not an error.
+
 ### 9.4 Implementation extension keys (`x-`)
 
 A key using the reserved `x-` prefix is an **implementation extension point**: an
@@ -1779,6 +1811,7 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `missing_inventories` | the resource model is in effect but the document has no `inventories` (§6.10). An empty `initial` is the way to say every stock starts empty |
 | `inventory_exceeds_capacity` | an `inventories.levels` level is above its resource's `capacity` |
 | `resources_ignored` | the resource model was disabled (§4.7.3) where it would otherwise have been in effect, so nothing was applied. Not raised for an environment that merely declares a stock nothing draws on — switching that off changes nothing (*warning*) |
+| `pending_replenishment_in_status` | a replanning input carries a `pending` replenishment; how many refills to run is re-decided every solve, so one in the input states a decision that is not the caller's to make (§6.9) |
 | `infeasible` | the solver proved the instance has no feasible schedule |
 
 `unknown_device` and `unknown_resource` (§10.2) are reused here for an

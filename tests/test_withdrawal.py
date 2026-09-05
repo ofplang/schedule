@@ -359,10 +359,13 @@ def _two_branch():
     )
 
 
-def _stop_mid_flight(plan, held_since=None):
+def _stop_mid_flight(plan, held_spot=None, held_since=None):
     """`job1` has stopped: one of its bakes failed, while its *other* bake is still on
     the oven. `now` is the moment the first one gave out. Returns the status and the
-    moment the still-running bake is due to come off."""
+    moment the still-running bake is due to come off.
+
+    `held_spot` is named by the caller rather than hard-coded, because which tray each
+    bake lands on is the solver's choice and need not be the same from run to run."""
     status = copy.deepcopy(plan)
     bakes = [a for a in _of(status, "job1") if a.get("process") == "assay"]
     assert len(bakes) == 2, bakes
@@ -386,7 +389,7 @@ def _stop_mid_flight(plan, held_since=None):
         a for a in status["activities"] if a.get("job") != "job1" or "status" in a
     ]
     if held_since is not None:
-        status["occupied"] = [{"spot": "oven.tray_1", "since": held_since}]
+        status["occupied"] = [{"spot": held_spot, "since": held_since}]
     return status, running["end"]
 
 
@@ -397,7 +400,7 @@ def test_a_job_that_stops_with_work_still_running_does_not_stop_the_others():
     waits on, which no schedule satisfies, so the whole document went infeasible and
     took every other job in the laboratory with it."""
     workflow, env = _two_branch()
-    plan = schedule_jobs(_jobs(workflow), env).plan
+    plan = schedule_jobs(_jobs(workflow), env, random_seed=0).plan
     status, running = _stop_mid_flight(plan)
 
     report = schedule_jobs(_jobs(workflow), env, document_path=status)
@@ -421,7 +424,14 @@ def test_cancelled_work_holds_no_spot():
     point inside it, and CP-SAT refuses the pair: a cancelled activity landing inside
     a spot's `occupied` hold made the document infeasible."""
     workflow, env = _two_branch()
-    plan = schedule_jobs(_jobs(workflow), env).plan
-    status, _running = _stop_mid_flight(plan, held_since=0)
+    plan = schedule_jobs(_jobs(workflow), env, random_seed=0).plan
+    # The tray the stopped job's own cancelled bake would have used: the one its
+    # abandoned work lands on, which is exactly the case at issue.
+    cancelled_tray = [
+        a["input_spots"]["plate"]
+        for a in _of(plan, "job1")
+        if a.get("process") == "assay"
+    ]
+    status, _running = _stop_mid_flight(plan, held_spot=cancelled_tray[0], held_since=0)
     report = schedule_jobs(_jobs(workflow), env, document_path=status)
     assert report.ok, [d.code for d in report.diagnostics]

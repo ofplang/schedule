@@ -6,27 +6,45 @@ This document defines the scheduling problem as a mathematical optimization
 model. It is the theory `ofplang.schedule` implements, ported from the
 `ofp-scheduler` prototype.
 
-The model covers the current `ofplang.schedule` scope: a **single workflow**
-scheduled onto devices and spots, with mode selection, transport, and
-device-local consumable resources with replenishment. `ofp-scheduler`'s final
-model additionally covers multiple concurrent runs, which is outside the current
-scope (SPEC §1: a single workflow at a time) and is omitted here.
+The model covers the current `ofplang.schedule` scope: workflows scheduled onto
+devices and spots, with mode selection, transport, and device-local consumable
+resources with replenishment — one workflow at a time, or several planned together
+against the same laboratory (SPEC §6.11).
+
+**The document is in two parts, and the second is written as a delta.**
+
+- **Part I — a single workflow** (§Activities through §CP-SAT implementation notes)
+  is the whole model for one workflow, and reads straight through without Part II.
+  Where a joint plan changes something it says so in a parenthesis, which a reader
+  who only ever plans one workflow can ignore.
+- **Part II — several jobs** (§J0 through §J8) says what changes when more than one
+  is planned at once. Every section there names the Part I sections it touches. Most
+  only add — a set, a constraint, an objective stage; two generalise something Part I
+  states as a constant, and say which constant.
+
+That shape is not an editorial convenience — it is the property the implementation
+holds itself to. Part II ends by showing that with one job every one of its
+constraints is vacuous or identical to Part I's, which is why a single-workflow plan
+is unchanged, to the byte, by everything in Part II existing.
 
 > The resource and replenishment part of this model (§10, §11, and the terms they
 > add to §7, §8 and §9) is implemented. One deliberate departure: where **no refill
 > can reach a stock**, its level is monotone and §11's reservoir is replaced by the
 > single inequality it collapses to — everything still to be drawn must fit in what
 > is left. That is an exact equivalence, not an approximation, and it keeps an
-> environment with stocks and no replenisher (§5.6) from paying for event machinery
+> environment with stocks and no replenisher (SPEC §5.6) from paying for event machinery
 > it cannot use.
 
 Terminology follows `SPECIFICATIONS.md`: **activity**, **processing activity**,
 **transport activity**, **replenishment activity**, **device**, **spot**,
 **resource**, **mode**, **transporter**, **replenisher**,
-**workflow**, and the `pending` / `running` / `completed` statuses. This document
+**workflow**, **job**, and the `pending` / `running` / `completed` statuses together
+with the terminal `failed` / `cancelled` (SPEC §6.2, used in §J4). This document
 covers the optimization model only; the scheduler input, environment schema,
 execution-document schema, identifiers, and validator scope are in
 `SPECIFICATIONS.md`.
+
+# Part I — a single workflow
 
 ## Activities
 
@@ -84,7 +102,9 @@ same schedule without interacting.
 - $T$: the processing-activity set. It includes the two **boundary nodes** (the
   input node and the output node, above) when `interface` is present; they are
   ordinary members of $T$ with a single mode, distinguished only by their pinned
-  times (§3-bis) and empty device set.
+  times (§3-bis) and empty device set. Write $T^{\mathrm{bnd}} \subseteq T$ for the
+  boundary nodes. (A joint plan adds one more kind of member, the **held node** of
+  §J5, on the same footing.)
 - $A \subseteq T \times T$: dependency (precedence) relation; $(i,j) \in A$ means
   "$j$ may start after $i$ completes".
 - $R$: Object-bearing arc set (Object-bearing connections, each realised as a
@@ -182,11 +202,15 @@ Resources and replenishment:
 Replanning:
 
 - $now \in \mathbb{Z}_{\ge 0}$: replan time.
-- $m \in \mathbb{Z}_{\ge 0}$: running-task safety margin (`running_task_margin`,
-  default $0$); see §9.
+- $\mu \in \mathbb{Z}_{\ge 0}$: running-task safety margin (`running_task_margin`,
+  default $0$); see §9. (Written $\mu$ and not $m$: $m$ is the mode index, and §9
+  would otherwise use one letter for both in a single equation.)
 - $T^{\mathrm{done}}, T^{\mathrm{run}}, T^{\mathrm{pend}}$: completed, running,
   and pending processing activities;
   $T^{\mathrm{pend}} = T \setminus (T^{\mathrm{done}} \cup T^{\mathrm{run}})$.
+  (A joint plan carves a fourth set out of $T^{\mathrm{pend}}$ — the work of a job
+  that has stopped, §J4. With one job it is empty and the partition is the one
+  above.)
 - $\hat{s}_i, \hat{e}_i$: actual / fixed start and end times.
 - $\hat{x}_{i,m}$: actual mode assignment of a fixed activity. For a running
   activity, $\hat{e}_i$ is the expected finish (SPEC §6.2).
@@ -319,7 +343,8 @@ s_{\mathrm{in}} = e_{\mathrm{in}} = 0, \qquad e_{\mathrm{out}} = C_{\max}
 $$
 
 The input node sits at time 0 (its output-spot occupancy over $[0, b_r]$ via the
-outgoing arc reserves each entry spot until the Object is picked up). The output
+outgoing arc reserves each entry spot until the Object is picked up); with several
+jobs the same pin is at that job's release instead (§J1). The output
 node's end is the makespan, so a delivered Object holds its spot from arrival
 until the schedule ends (its input-spot occupancy over $[s_{\mathrm{out}},
 C_{\max}]$ joins the incoming arc's $[a_r, s_{\mathrm{out}}]$ into $[a_r,
@@ -427,8 +452,12 @@ L^{\mathrm{rp}}$ works the same way with $y_{\omega,t}$.
 ### 8. Makespan
 
 $$
-C_{\max} \ge e_i, \quad \forall i \in T
+C_{\max} \ge e_i, \quad \forall i \in T \setminus T^{\mathrm{held}}
 $$
+
+Held nodes (§J5) are excluded: their end is the horizon, and a spot being taken is
+not work. Without several jobs $T^{\mathrm{held}}$ is empty and this is the plain
+$\forall i \in T$ it has always been.
 
 Each boundary-output delivery is also counted: the `producer → output node`
 transport ends at $b_r$, and the output node's end is pinned to $C_{\max}$
@@ -466,19 +495,23 @@ s_i = \hat{s}_i,\ e_i = \hat{e}_i,\ x_{i,m} = \hat{x}_{i,m},
 \quad \forall i \in T^{\mathrm{done}}
 $$
 $$
-s_i = \hat{s}_i,\ e_i = \max(\hat{e}_i,\ now + m),\ x_{i,m} = \hat{x}_{i,m},
+s_i = \hat{s}_i,\ e_i = \max(\hat{e}_i,\ now + \mu),\ x_{i,m} = \hat{x}_{i,m},
 \quad \forall i \in T^{\mathrm{run}}
 $$
 
 A running activity's end is fixed to its expected finish $\hat{e}_i$ (SPEC §6.2),
-clamped up to $now + m$ by the safety margin $m$ so that an overrunning task
+clamped up to $now + \mu$ by the safety margin $\mu$ so that an overrunning task
 (one whose expected finish is already in the past, $\hat{e}_i < now$) is never
-fixed to a finish before $now$; it holds its resources until $now + m$. With the
-default $m = 0$ the clamp is simply $\max(\hat{e}_i, now)$.
+fixed to a finish before $now$; it holds its resources until $now + \mu$. With the
+default $\mu = 0$ the clamp is simply $\max(\hat{e}_i, now)$.
 
 $$
 s_i \ge now, \quad \forall i \in T^{\mathrm{pend}}
 $$
+
+A third case exists once a document carries several jobs: work belonging to a job
+that has **stopped** is neither fixed history nor pending, and is fixed to a
+zero-length interval instead (§J4).
 
 Pending activities' mode assignment is not fixed and may change on replan; the
 spot occupancy of a pending activity follows automatically from its selected
@@ -514,7 +547,7 @@ $$
 \quad \forall \omega \in W^{\mathrm{done}}
 $$
 $$
-\gamma_\omega = \hat{s}_\omega,\ \delta_\omega = \max(\hat{e}_\omega,\ now + m),
+\gamma_\omega = \hat{s}_\omega,\ \delta_\omega = \max(\hat{e}_\omega,\ now + \mu),
 \quad \forall \omega \in W^{\mathrm{run}}
 $$
 
@@ -665,7 +698,7 @@ completion first and checking the level after *each* change. A reservoir cannot
 express that on its own — it checks its bounds between time points, so two changes
 at one time point are read as a single net change and the level between them is
 never checked. That level is real: it is what the device holds when the refill
-finishes, and §4.7 requires it to fit. So the events are handed to the reservoir on
+finishes, and SPEC §4.7 requires it to fit. So the events are handed to the reservoir on
 a doubled axis — a completion at $2t$, a start at $2t+1$ — and the bound is checked
 between them. Without the separation the solver admits a refill that takes a full
 stock past $c_{\ell,g}$ whenever a draw shares the instant, and the normalisation
@@ -719,11 +752,14 @@ passes on a model that is already the scalability bottleneck. Where replenishmen
 is disabled or no candidate exists, $W = \emptyset$ and the objective degenerates
 to $\min C_{\max}$.
 
-$C_{\max}$ is the maximum over the ends of **all** activities, replenishments
-included (SPEC §4.8), so a refill cannot be parked after the productive work.
+$C_{\max}$ is the maximum over the ends of **all** activities that are work,
+replenishments included (SPEC §4.8), so a refill cannot be parked after the
+productive work. The two things that are not work are excluded: the output boundary
+node, whose end *is* $C_{\max}$ (§3-bis), and a held spot (§J5).
 
 The objective is declared in the execution document (SPEC §6.1), which also records
-the achieved values as `objective.value`.
+the achieved values as `objective.value`. A joint plan adds one stage ahead of these
+two (§J3); the weighted encoding above generalises to it unchanged.
 
 ## CP-SAT implementation notes
 
@@ -769,7 +805,7 @@ structure more directly with optional intervals.
   and set each selected $\Delta_{\omega,g}$ to $c_{\ell,g}$ minus the level before
   it; drop any replenishment left with all-zero amounts, and recompute the reported
   $N_{\mathrm{repl}}$ if it did.
-- **Horizon.** The trivial upper bound on any end time is a fully serial schedule,
+- **Horizon $\mathcal{H}$.** The trivial upper bound on any end time is a fully serial schedule,
   so it must now include replenishment: adding $\max_t \rho_{t,\ell_\omega}$ for
   every $\omega \in W$ keeps it a valid bound. Doing exactly that is also the
   hazard — $|W|$ grows with the consuming activities, and the horizon is already
@@ -779,3 +815,325 @@ structure more directly with optional intervals.
   between its own consuming activities. Getting this wrong in either direction is a
   real defect: too small silently turns feasible instances infeasible, too large
   slows every solve.
+
+# Part II — several jobs, planned together
+
+Several workflows may be planned in one solve, as **jobs** competing for the same
+machines and drawing on the same stocks (SPEC §6.11). Everything in Part I still
+holds: the same activities, the same modes, the same spot and device exclusion, the
+same replenishment and inventory model. What follows is only what is *added*.
+
+Each section names the Part I sections it touches: §J0 adds sets, §J2, §J4, §J5 and
+§J6 add constraints, §J3 adds an objective stage, §J7 widens a bound. Two generalise
+a constant rather than adding: §J1 replaces the $0$ that §3-bis pins the input node
+at, and §J4 carves the abandoned work of a stopped job out of §9's pending set. §J8
+collects what is deliberately outside the model, and the closing section shows that
+with one job the whole of Part II is vacuous.
+
+## J0. Jobs (adds to §Sets and indices, §Parameters)
+
+- $J$: the **job** set — the workflows this solve covers, in the order they were
+  given (SPEC §6.11). A single workflow is $|J| = 1$.
+- $j(\cdot)$: which job an activity's **work** belongs to. It is defined for every
+  activity that came from a workflow — every $i \in T \setminus T^{\mathrm{held}}$ and
+  every arc $r \in R$ — and $\bot$ for the two kinds that did not: a replenishment
+  candidate $\omega \in W$ and a held node $h \in T^{\mathrm{held}}$ (§J5). A held
+  node's document entry *may* name the job that left the material, but that is
+  traceability and not ownership (SPEC §6.12): it is nobody's work, and nothing
+  job-scoped below reads it.
+- $J^{\mathrm{stop}} \subseteq J$: the jobs that have **stopped** (§J4).
+
+Ownership is by construction, not inference: the activities of one workflow are
+built from that workflow, so $j$ is fixed when the instance is. An arc belongs to
+the job of its endpoints; a **boundary arc** has one endpoint in a boundary node,
+and both belong to the same job in any case, since a boundary node is that job's
+interface.
+
+**A boundary node belongs to a job but is not its work.** It is in $T$, it holds its
+spot, and it belongs to $j$ — but it is excluded from that job's completion time
+(§J2), because the output node's end is $C_{\max}$ by §3-bis and counting it would
+make every job finish exactly when the last one does.
+
+**A replenishment belongs to no job.** One refill commonly serves several, and which
+jobs draw from it afterwards is the solver's decision, not a property of the
+candidate. That is also why $C_{\max}$ stays in the objective beside the sum of
+completion times (§J3): the sum cannot see a refill, so nothing else would stop one
+being parked after all the work.
+
+Per-job parameters (SPEC §6.11):
+
+- $rel_j \in \mathbb{Z}_{\ge 0}$: the job's **release** — the earliest time any of
+  its activities may start. Default $0$.
+- $B_j \in \mathbb{Z}_{\ge 0} \cup \{\infty\}$: the completion time this job was
+  **promised** by an earlier solve, read back from the roster. $\infty$ (absent)
+  for a job that has not been promised anything yet.
+
+## J1. Release times (adds to §3-bis and §9)
+
+A job's release holds back every activity of it that has not already run:
+
+$$
+s_i \ge rel_{j(i)}, \quad \forall i \in T^{\mathrm{pend}}, \; j(i) \ne \bot
+$$
+
+and the job's **input boundary node** is pinned at its release rather than at $0$,
+replacing the first pin of §3-bis:
+
+$$
+s_{\mathrm{in}(j)} = e_{\mathrm{in}(j)} = rel_j
+$$
+
+**Pinned, not merely bounded.** The entry material is a fact about the world: it is
+*there*, given, from the moment the job is released (SPEC §6.8, §6.11). The solver
+does not get to decide when it appears. That is what lets one loading bay serve two
+jobs whose releases leave room for it — job 1 holds it over $[rel_1, b_{r_1}]$ and
+job 2 over $[rel_2, b_{r_2}]$, which do not overlap once $b_{r_1} \le rel_2$ — and
+equally what makes two jobs released *together* onto one bay infeasible rather than
+queued. A model in which entry material appears when convenient would be the other
+reading, and cannot express the first.
+
+**Transports need no rule of their own.** §3 already starts a transport after its
+source ends, and that source is either an activity of the same job (held above) or
+that job's input node (pinned above), so $a_r \ge rel_{j(r)}$ follows rather than
+being imposed.
+
+**Fixed activities are not re-held.** A release constrains the future, not the past:
+history that already ran is pinned by §9, and applying $rel_j$ to it would make the
+past infeasible rather than say anything about what remains.
+
+## J2. Completion times and the promise (adds to §Decision variables, §Constraints)
+
+Each job has a completion time — the last end among its own work:
+
+$$
+C_j = \max\Bigl(
+  \{\, e_i \;\mid\; j(i) = j,\ i \notin T^{\mathrm{bnd}} \,\} \cup
+  \{\, b_r \;\mid\; j(r) = j \,\}
+\Bigr), \quad \forall j \in J \setminus J^{\mathrm{stop}}
+$$
+
+where $T^{\mathrm{bnd}}$ is the boundary nodes (§Sets and indices). Replenishments
+are absent by construction, having no job.
+
+A job that carries a promise must keep it:
+
+$$
+C_j \le B_j, \quad \forall j \in J \setminus J^{\mathrm{stop}}
+$$
+
+🔴 **This single inequality is the whole of "a job already being planned is not
+disturbed by one that arrives later."** It is a *constraint*, deliberately, and not
+a term in the objective: an objective can trade one job's lateness against another's
+and would make the guarantee a preference. Being a constraint, it can also be
+*refused* — if no schedule keeps every promise, they are relaxed in **roster order
+and by as little as possible** (SPEC §6.11), rather than quietly broken.
+
+A stopped job is excluded from both. It is not going to complete, so it has no
+completion time to bound, and holding it to a promise it can never reach would make
+every plan that continues past a failure infeasible.
+
+## J3. The sum of completion times (adds to §Objective)
+
+Joint planning adds one objective stage:
+
+$$
+\Sigma C = \sum_{j \in J \setminus J^{\mathrm{stop}}} C_j
+$$
+
+and the default stage sequence depends on the job count (SPEC §4.8):
+
+| jobs | default stages, most significant first |
+|---|---|
+| one | $(C_{\max},\ N_{\mathrm{repl}})$ |
+| several | $(\Sigma C,\ C_{\max},\ N_{\mathrm{repl}})$ |
+
+With one workflow there is nothing for $\Sigma C$ to trade off against, and leading
+with it would change what an existing plan means: $C_{\max}$ counts refills (§8)
+while a completion time does not, so a refill could be parked after all the work.
+With several, minimising the makespan alone says nothing about *which* job finishes
+when — every schedule with the same last end is equally good, including the one that
+finishes nothing until the end.
+
+The weighted encoding of Part I generalises unchanged. For stages $g_1, \dots, g_k$
+most significant first, each with a known bound $0 \le g_\sigma \le U_\sigma$:
+
+$$
+\min \sum_{\sigma=1}^{k} w_\sigma\, g_\sigma,
+\qquad w_\sigma = \prod_{\sigma' > \sigma} (U_{\sigma'} + 1)
+$$
+
+which is exact for the same reason: one unit of a stage outweighs every attainable
+value of everything below it. Part I's $(|W| + 1)\,C_{\max} + N_{\mathrm{repl}}$ is
+this with $k = 2$ and $U_2 = |W|$.
+
+## J4. Stopped jobs (adds to §9, §6, §7, §11)
+
+A terminal status — `failed` or `cancelled` — stops the **job** it belongs to
+(SPEC §6.2). Its history stays; its remaining work is not planned.
+
+$$
+J^{\mathrm{stop}} = \{\, j(\alpha) \;\mid\; \alpha \text{ has a terminal status} \,\}
+$$
+
+The work of a stopped job that has not already run is neither fixed history nor
+pending: it is taken out of $T^{\mathrm{pend}}$ (so §9's $s_i \ge now$ does not
+apply to it) and fixed to a **zero-length interval** at that job's stopping instant:
+
+$$
+s_i = e_i = stop_j, \quad
+a_r = b_r = stop_j, \qquad \forall \alpha \text{ of } j \in J^{\mathrm{stop}},\
+\alpha \notin \text{fixed}
+$$
+$$
+stop_j = \max\Bigl(now,\ \max\{\, \max(\hat{e}_i,\ now + \mu) \;\mid\;
+  i \in T^{\mathrm{run}},\ j(i) = j \,\}\Bigr)
+$$
+
+🔴 **Not at $now$: at the moment the job's last running operation comes off.** A job
+does not necessarily stop with nothing in flight — one branch of it can fail while
+another is still on the machine, and a running operation is never aborted. Its
+abandoned work has to be placed *after* that operation, because §3 orders it after
+it. At $now$ it would sit before the thing it waits on, which no schedule satisfies,
+so the whole document would be infeasible — taking every other job with it, the
+exact opposite of what stopping one job is for. One instant per job, rather than a
+per-activity walk, also keeps chains of abandoned work consistent among themselves:
+zero-length intervals at one instant satisfy §3 against each other.
+
+🔴 **Cancelled work occupies nothing.** It never ran, so it is removed from every
+spot's non-overlap set in §6, from $\mathcal{A}_\ell$ in §7, and from §11's event
+table — it draws no consumption and frees none. Being zero-length is *not* enough to
+arrange that: a point strictly inside another interval is still a point inside it,
+and §6's disjunction refuses the pair. That is not a modelling nicety, it is what
+"cancelled" means.
+
+A stopped job is also excluded from $C_j$ and $C_j \le B_j$ (§J2), from $\Sigma C$
+(§J3), and from the interchangeability of §J6 — cancelled work is not started work,
+so a job whose work was abandoned is not interchangeable with one that still has all
+of it to do.
+
+**The document is unplannable only when every job has stopped.** A single workflow is
+one job, so its stopping is the whole document stopping, which is what a terminal
+status has always meant for one workflow (SPEC §6.2).
+
+## J5. Held spots (adds to §Sets and indices, §6, §8)
+
+A spot may be physically occupied by something the plan does not otherwise account
+for — material a stopped job left behind (SPEC §6.12). §6 knows a spot is taken only
+while some activity's interval covers it, and the interval of the activity that put
+the material there has ended, so without saying otherwise the model believes the spot
+free and will send other work to a place that is full.
+
+- $T^{\mathrm{held}} \subseteq T$: one **held node** per `occupied` entry. Like a
+  boundary node it is a single-mode processing activity in $T$, with no device and no
+  consumption; unlike one it has no arcs, is in no dependency pair, and is excluded
+  from the makespan (§8). It is nobody's work: its entry may name the job that left
+  the material, for a reader and for a later withdrawal, but nothing job-scoped reads
+  that (§J0).
+- $p_h \in P$: the spot it holds. $since_h \in \mathbb{Z}_{\ge 0}$: when the document
+  says it became occupied.
+
+$$
+s_h = \max(since_h,\ now), \qquad e_h = \mathcal{H}, \qquad \forall h \in T^{\mathrm{held}}
+$$
+
+It occupies $p_h$ over $[s_h, e_h]$ in §6 like any other activity, and no device in
+§7.
+
+**It ends at the horizon $\mathcal{H}$ (§J7), not at $C_{\max}$.** Its start is
+pinned, so tying its end to the makespan would force $C_{\max} \ge since_h$ and
+report a makespan for a run that finished long before. A spot being taken is not
+work and must not be timed as though it were; held nodes are therefore also excluded
+from §8. The horizon is past every activity by construction, so holding to it says
+"for the rest of this plan", which is what the document is claiming.
+
+🔴 **It starts at $since_h$ or $now$, whichever is later.** A $since$ in the past can
+constrain nothing — pending work starts at or after $now$ (§9), and fixed work is
+pinned by its own history — so the only thing pinning the hold there could do is
+collide with that history and refuse the document. And the document refused is the
+ordinary one: a stopped job's material is described *twice*, once by the activity
+that put it there and once by this section, and nothing in the model can tell that
+from a genuine contradiction, having no identity for material. The two descriptions
+are composed instead — the history accounts for the spot up to $now$, the held node
+from $now$ on. The stated $since_h$ is echoed unchanged in the rendered plan (SPEC §6.1), so
+what it records is not lost.
+
+## J6. Symmetry among interchangeable jobs (adds to §CP-SAT implementation notes)
+
+Two jobs running the same workflow with nothing to tell them apart make the search
+explore every relabelling of one schedule. Jobs $g$ and $g'$ are **interchangeable**
+when all of:
+
+- their workflows have the same structure (equal fingerprints, SPEC §6.11);
+- $rel_g = rel_{g'}$ — a job held back until later is not the same job as one that
+  may start now;
+- neither carries a promise ($B = \infty$) — a bound is exactly a thing that tells
+  two jobs apart, and once bounds exist they break the symmetry anyway;
+- neither has started, and neither has stopped — reported history is what tells two
+  otherwise identical jobs apart.
+
+For an interchangeable group $(g_1, \dots, g_k)$ in roster order:
+
+$$
+\min\{\, s_i \mid j(i) = g_\kappa \,\} \;\le\;
+\min\{\, s_i \mid j(i) = g_{\kappa+1} \,\},
+\quad \kappa = 1, \dots, k-1
+$$
+
+This keeps one representative of each equivalence class and loses no optimum:
+relabelling interchangeable jobs is an exact automorphism of the instance, so every
+schedule it forbids has an equally good permitted twin. It is only sound where the
+jobs really are interchangeable — an order imposed on jobs that differ would prune
+schedules that are perfectly legitimate — which is why the conditions above are
+strict rather than convenient.
+
+In practice it applies to the initial plan, which is also where it is needed: on a
+replan the jobs carry bounds and history and are no longer interchangeable at all.
+
+## J7. Horizon (adds to §CP-SAT implementation notes)
+
+Part I's horizon $\mathcal{H}$ is a fully serial schedule. Two more terms are needed
+before it is still an upper bound on every end time:
+
+- $\max_j rel_j$ — a job released beyond the bound would have nowhere to be
+  scheduled, and the instance would read as infeasible;
+- $\max_h since_h$ — a held node stated as taken from a moment beyond the bound
+  likewise has nowhere to start.
+
+$now$ and the fixed ends are already in it from Part I's replan case, which is what
+keeps $s_h = \max(since_h, now)$ inside the horizon as well.
+
+## J8. Not part of the model
+
+**Which job made a plan impossible.** When the promises cannot all be kept and
+relaxing them does not help, each job is taken out in turn and the rest re-solved; a
+job whose removal makes the remainder feasible is named (SPEC §6.11, §10.4). This is
+an outer procedure over the model, not a constraint in it — and it **reports and
+does nothing else**, because discarding work somebody asked for is the caller's
+decision, not the scheduler's.
+
+**Withdrawing a job.** Nothing removes a job from a plan. A job's roster entry exists
+as long as anything of it is still in the laboratory — unfinished work, or material
+nobody has collected — so removing one is only sound when neither is true. Until
+then a finished or stopped job stays in the roster, which is also what says its
+material still occupies its spot (§J5).
+
+## Reduction to Part I
+
+With one job, everything above is vacuous or identical to Part I:
+
+| | with $|J| = 1$ |
+|---|---|
+| §J0 | one job, named by the empty string; $j$ distinguishes nothing |
+| §J1 | $rel = 0$, so $s_i \ge 0$ and the input node is pinned at $0$ — §3-bis exactly |
+| §J2 | no promise, so $C_j \le B_j$ is absent; $C_j$ itself is unused |
+| §J3 | the default stages are $(C_{\max}, N_{\mathrm{repl}})$ — Part I's objective |
+| §J4 | a terminal status stops the only job, so the document is unplannable, as it always was |
+| §J5 | no `occupied` section, so $T^{\mathrm{held}} = \emptyset$ |
+| §J6 | one job forms no group |
+| §J7 | both added terms are $0$ |
+
+So a single workflow is not *a case of* the joint problem that happens to coincide
+with Part I — it **is** Part I's problem, with every addition above switched off by
+its own definition. The implementation holds itself to the same statement by
+measurement: the plans, charts and diagnostics of every single-workflow example are
+byte-for-byte what they were before any of Part II existed.
