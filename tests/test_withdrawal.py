@@ -186,6 +186,51 @@ def test_an_occupancy_does_not_become_the_makespan():
     assert report.makespan == 5  # what the work takes, not when the spot was taken
 
 
+def _oven():
+    """One workflow, and a two-tray oven -- so a held tray still leaves somewhere to
+    work, which `simple` (one spot per device) does not."""
+    return (
+        yaml.safe_load(
+            (EXAMPLES / "shared_refill.workflow.yaml").read_text(encoding="utf-8")
+        ),
+        yaml.safe_load((EXAMPLES / "stopped_job.env.yaml").read_text(encoding="utf-8")),
+    )
+
+
+def test_an_occupancy_stated_from_the_past_holds_from_now():
+    """🔴 A `since` before `now` constrains nothing -- pending work starts at or after
+    `now` and reported work is pinned by its history -- so pinning the hold there could
+    only collide with that history and refuse the document. And the document refused is
+    the ordinary one: a stopped job's material is described twice over, once by the
+    activity that put it there and once by this section.
+
+    Measured here as the thing that matters: every `since` up to `now` gives the *same*
+    plan, so nothing is lost by declining to re-litigate the past."""
+    workflow, env = _oven()
+
+    def planned(since):
+        document = _held("oven.tray_1", since)
+        document["now"] = 20
+        report = schedule(copy.deepcopy(workflow), env, document_path=document)
+        assert report.ok, [d.code for d in report.diagnostics]
+        return report.plan["activities"]
+
+    reference = planned(20)
+    for since in (0, 5, 12, 19):
+        assert planned(since) == reference
+
+
+def test_an_occupancy_keeps_the_date_it_was_given():
+    """It holds from `now`, but the plan echoes what the document said: when the spot
+    was taken is a fact about the run, and this section is where it is recorded."""
+    workflow, env = _oven()
+    document = _held("oven.tray_1", 3)
+    document["now"] = 20
+    report = schedule(copy.deepcopy(workflow), env, document_path=document)
+    assert report.ok
+    assert report.plan["occupied"] == [{"spot": "oven.tray_1", "since": 3}]
+
+
 def test_an_occupancy_belongs_to_no_work_and_round_trips():
     workflow, env = _simple()
     document = _held("station_1.core", 40, job="job2")

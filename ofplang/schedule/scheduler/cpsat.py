@@ -250,7 +250,24 @@ def solve(
                 # work, and must not be timed as though it were. The horizon is past
                 # every activity by construction, so holding to it is "for the rest of
                 # this plan", which is what the document is saying.
-                model.Add(s == (boundary.since or 0))
+                #
+                # 🔴 It starts at `since` **or now, whichever is later**. A `since` in
+                # the past constrains nothing -- pending work cannot start before `now`
+                # and fixed work is pinned by its history -- so the only thing pinning
+                # it there could do is collide with that history and refuse the
+                # document. Measured: every `since <= now` yields the identical plan,
+                # and the ones below `now` were simply rejected.
+                #
+                # And the document being refused is the ordinary one. A stopped job's
+                # material is described twice over -- once by the activity that put it
+                # there, whose interval the model runs to `now`, and once by this
+                # section, saying it is still there. Nothing here can tell that apart
+                # from a genuine contradiction, because the model has no identity for
+                # the material; and the refusal it produced said only `infeasible`,
+                # naming neither the section nor the spot. So the two descriptions are
+                # composed -- the history holds the spot up to `now`, this holds it from
+                # `now` on -- rather than made to fight.
+                model.Add(s == max(boundary.since or 0, now))
                 model.Add(e == horizon)
             else:
                 model.Add(e == c_max)

@@ -1293,6 +1293,16 @@ already ended.
 `since` is required. Without it there is no interval to hold, and "occupied from the
 beginning" is a different claim from "occupied since the failure".
 
+A `since` earlier than `now` holds the spot **from `now`**. Nothing can be scheduled
+into the past — pending work starts at or after `now`, and reported work is pinned by
+its history — so an earlier `since` cannot constrain a plan; all it could do is
+contradict the history and make the document unschedulable. And the contradiction is
+usually apparent rather than real: material a stopped job left behind is described
+twice, once by the activity that put it there and once by this section, and nothing in
+the model can tell that from a genuine conflict. The two are composed instead: the
+history accounts for the spot up to `now`, this section accounts for it from `now` on.
+The stated `since` is preserved in the plan (§6.2), so what it records is not lost.
+
 `job` is **traceability, not provenance**: it records which job left the material, for
 a reader and for a later withdrawal that would free the spot. It may be omitted —
 nobody may know, and the spot is taken either way — and where a roster exists it must
