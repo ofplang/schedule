@@ -346,6 +346,17 @@ def test_the_committed_example_shows_what_the_occupancy_costs():
 # ---------------------------------------------------------------------------
 
 
+def _consuming():
+    """The one-plate workflow and a reader that holds a consumable, so a stopped job
+    has abandoned work whose mode draws something."""
+    return (
+        yaml.safe_load(
+            (EXAMPLES / "shared_refill.workflow.yaml").read_text(encoding="utf-8")
+        ),
+        yaml.safe_load((EXAMPLES / "consumable.env.yaml").read_text(encoding="utf-8")),
+    )
+
+
 def _two_branch():
     """A workflow whose job has two independent branches, and the two-tray oven. A
     linear job can never fail with its own work still running -- whatever fails is
@@ -435,3 +446,41 @@ def test_cancelled_work_holds_no_spot():
     status, _running = _stop_mid_flight(plan, held_spot=cancelled_tray[0], held_since=0)
     report = schedule_jobs(_jobs(workflow), env, document_path=status)
     assert report.ok, [d.code for d in report.diagnostics]
+
+
+def test_cancelled_work_draws_no_consumption():
+    """🔴 A stopped job's abandoned work never ran, so it drew nothing (§6.2) -- and
+    its `consumption` echo (§6.3) must not say otherwise. It did: the solver modelled
+    the draw as absent while the rendered plan echoed it, the levels replay believed
+    the echo, and the plan's own self-check reported the document it had just produced
+    as inconsistent (`plan_inventory_inconsistent`).
+
+    Only a stopped job can put a `cancelled` activity in a plan at all, which is why
+    nothing before joint planning met this.
+    """
+    workflow, env = _consuming()
+    stock = {"inventories": {"levels": {"reader": {"reagent": 2}}}, "activities": []}
+    plan = schedule_jobs(
+        _jobs(workflow), env, document_path=copy.deepcopy(stock), random_seed=0
+    ).plan
+    status = _stop(plan, "job1", failed_node=["Make"], at=4)
+    # A status reports what started; the refill that ran by then is history, and
+    # anything still pending is re-derived (a `pending` refill in the input is
+    # refused outright, §6.9).
+    for a in status["activities"]:
+        if a["kind"] == "replenishment" and a["end"] <= 4:
+            a["status"] = "completed"
+    status["activities"] = [a for a in status["activities"] if a.get("status")]
+
+    report = schedule_jobs(_jobs(workflow), env, document_path=status, random_seed=0)
+    assert report.ok, [d.code for d in report.diagnostics]
+    cancelled = [
+        a for a in report.plan["activities"]
+        if a.get("status") == "cancelled" and a["kind"] == "processing"
+    ]
+    assert cancelled, "the stopped job should have abandoned work"
+    assert all("consumption" not in a for a in cancelled)
+    # ... and the work that did run still says what it drew.
+    ran = [a for a in report.plan["activities"] if a.get("process") == "assay"
+           and a.get("status") != "cancelled"]
+    assert ran and all("consumption" in a for a in ran)

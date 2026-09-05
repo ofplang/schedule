@@ -54,7 +54,7 @@ pip install -e ".[test]"
 
 ```sh
 ofp-schedule validate <file>...                 # validate an environment or a plan/status
-ofp-schedule schedule <workflow> --env <env> [--document doc.yaml] [--running-margin N] [--max-time SECONDS] [--seed N] [--no-validate] [-o plan.yaml] [--format yaml|json]
+ofp-schedule schedule <workflow>... --env <env> [--document doc.yaml] [--running-margin N] [--max-time SECONDS] [--seed N] [--no-validate] [-o plan.yaml] [--format yaml|json]
 ofp-schedule visualize <plan|status> [--view device|workflow|lane] [--theme light|dark|auto] [--format svg|html] [-o FILE]
 ```
 
@@ -62,12 +62,22 @@ ofp-schedule visualize <plan|status> [--view device|workflow|lane] [--theme ligh
 execution document (pass `--kind` to force it); diagnostics are reported as
 `file:line:col: <severity> <code>`. `schedule` produces an execution plan (§6),
 minimising the objective the document declares (§4.8; makespan, then the number of
-refills). A `--document` (execution document, §6) supplies the `interface` boundary
+refills). **Give several workflows to plan them together** as separate **jobs** (§6.11):
+they compete for the same machines and draw on the same stocks, so a refill neither
+needs alone is planned once for both. They are numbered `job1`, `job2`, ... in the
+order written, or write `ID=FILE` to name one yourself; every activity in the plan
+then carries the job it belongs to. A job may be given its own `interface` and a
+`release` time in the document's `jobs` roster, and each is promised the completion
+its first plan achieves (`bound`) — which later plans keep, so a job already being
+planned is not disturbed by one that arrives later.
+
+A `--document` (execution document, §6) supplies the `interface` boundary
 constraint (§6.8, where a workflow's entry inputs / final outputs sit), the
 `inventories` a run starts with (§6.10) where devices hold consumables, the
-`objective` (§6.1, now its only declaration site) and, when it sets `now`, the prior status to replan from (§7) —
-emitting the full timeline (fixed history + re-optimised future) that round-trips
-as the next status input. By default the solve is non-deterministic
+`objective` (§6.1, now its only declaration site), the `jobs` roster (§6.11) and the
+`occupied` spots something is physically holding (§6.12), and, when it sets `now`,
+the prior status to replan from (§7) — emitting the full timeline (fixed history +
+re-optimised future) that round-trips as the next status input. By default the solve is non-deterministic
 (a multi-worker search that may return a different equally-optimal schedule each
 run); `--seed N` makes it reproducible by fixing the CP-SAT seed and using a
 single worker. `--max-time SECONDS` caps the search: the best schedule found so

@@ -117,7 +117,15 @@ def render_plan(
         # otherwise leave the plan shaped unlike one from an environment that never
         # declared a resource -- which is the whole point of switching off, since a
         # reader that predates resources rejects the key outright.
-        if p.mode.consumption and not ignore_resources:
+        #
+        # 🔴 And never on **cancelled** work. The echo says what this activity drew;
+        # cancelled work never ran and drew nothing (§6.2), so echoing its mode's
+        # consumption states a draw that did not happen — and the levels replay
+        # believes it, which the plan's own self-check then reports as an
+        # inconsistency (`plan_inventory_inconsistent`, §10.4). The solver already
+        # models it as drawing nothing, so the echo was the only place the two
+        # disagreed.
+        if p.mode.consumption and not ignore_resources and p.status != "cancelled":
             entry["consumption"] = dict(p.mode.consumption)
         activities.append(entry)
 
