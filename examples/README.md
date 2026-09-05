@@ -7,7 +7,12 @@ inputs used to drive and eyeball the scheduler.
 Generated artifacts live under `outputs/`: for each example a solved execution
 plan (`<name>.plan.yaml`, §6) and a rendered `device`-view chart
 (`<name>.device.svg`), plus the `plate_batch` generator's produced workflow and
-environment. The committed plans are a saved snapshot of one optimal solve (the
+environment. Regenerated with `--seed 0`, each is reproduced **byte for byte**, which is what
+makes them a regression check and not merely an illustration: a change that leaves
+a single-workflow plan alone can be seen to have done so. That property is load
+bearing — planning several workflows together (§6.11) was built and shipped under
+it, and every single-workflow plan and chart here came back identical.
+The committed plans are a saved snapshot of one optimal solve (the
 concrete schedule among equal-makespan optima is not unique); each is a valid
 execution document (checked by `test_plan.py`), and each example's optimal makespan
 is pinned in `test_example_makespans.py` so a change that was not meant to move a

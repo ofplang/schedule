@@ -1068,8 +1068,11 @@ when all of:
   may start now;
 - neither carries a promise ($B = \infty$) — a bound is exactly a thing that tells
   two jobs apart, and once bounds exist they break the symmetry anyway;
-- neither has started, and neither has stopped — reported history is what tells two
-  otherwise identical jobs apart.
+- neither has started — reported history is what tells two otherwise identical jobs
+  apart;
+- neither has **stopped** (§J4). 🔴 This does not follow from the one above:
+  cancelled work is not *started* work, so a job whose work was abandoned passes that
+  test while being in a quite different position — it has none left to order.
 
 For an interchangeable group $(g_1, \dots, g_k)$ in roster order:
 
