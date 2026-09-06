@@ -58,10 +58,16 @@ def _build(data: dict) -> Environment:
 
     # Transporters and the (transporter, from, to) -> duration table (both
     # optional; absent when the workflow has no Object-bearing arcs).
+    #
+    # A route whose `transporter` is an explicit null needs no transporter at all
+    # (SPEC section 5.4) -- a device moving material between its own spots, a chute --
+    # and is keyed by None. The key is *required* to be written, so a forgotten
+    # `transporter` is still a schema error rather than a route that silently frees
+    # the arm; `get` here reads the null the schema admits, not an absent key.
     transporters = tuple(t["id"] for t in data.get("transporters", []))
-    transports: dict[tuple[str, str, str], int] = {}
+    transports: dict[tuple[str | None, str, str], int] = {}
     for entry in data.get("transports", []):
-        transports[(entry["transporter"], entry["from"], entry["to"])] = entry["duration"]
+        transports[(entry.get("transporter"), entry["from"], entry["to"])] = entry["duration"]
 
     # Per-process capabilities; a mode without an explicit id is numbered by its
     # position (D21 / §5.5) so the plan can reference the selected mode stably.

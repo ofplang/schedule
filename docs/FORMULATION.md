@@ -114,7 +114,12 @@ same schedule without interacting.
 - $L$: device set. A device is an exclusive resource that owns spots and carries
   out work (SPEC §4.4).
 - $L^{\mathrm{tr}} \subseteq L$: transporters — individual devices used for moves
-  (SPEC §4.6). Each transport activity is assigned to exactly one transporter.
+  (SPEC §4.6). Each transport activity is assigned to exactly one transporter, or
+  to **none**. Write $L^{\mathrm{tr}}_\bot = L^{\mathrm{tr}} \cup \{\bot\}$ for the
+  transporter choices available to a move, $\bot$ standing for "no transporter"
+  (SPEC §5.4): a move some device performs on its own, which holds its endpoints
+  like any other move but enters no transporter's exclusion. $\bot \notin L$,
+  so it is not a resource and §7 never sees it.
 - $L^{\mathrm{rp}} \subseteq L$: replenishers — individual devices that perform
   refills (SPEC §5.6). Like a transporter, a replenisher is an ordinary member of
   $L$, so §7 serialises it without a rule of its own. $L^{\mathrm{tr}}$,
@@ -160,16 +165,18 @@ Processing and transport:
   \cup \{\sigma^{\mathrm{out}}_{i,m,k} \mid k \in O_i\}$: spots occupied by
   activity $i$ under mode $m$.
 - $d_{t,p,q} \in \mathbb{Z}_{\ge 0}$: duration for transporter $t \in
-  L^{\mathrm{tr}}$ to move from spot $p$ to spot $q$ (SPEC §5.4). Durations are
-  per-transporter (transporters may differ in speed). May be treated as symmetric;
-  $d_{t,p,p} = 0$. A missing entry means transporter $t$ **cannot** perform that
-  move — the pair $(t,p,q)$ is then simply excluded from the route choice below
+  L^{\mathrm{tr}}_\bot$ to move from spot $p$ to spot $q$ (SPEC §5.4). Durations are
+  per-transporter (transporters may differ in speed), and $d_{\bot,p,q}$ is the
+  duration of the transporter-less route where the environment declares one. May be
+  treated as symmetric; $d_{t,p,p} = 0$. A missing entry means $t$ **cannot** perform
+  that move — the pair $(t,p,q)$ is then simply excluded from the route choice below
   (reachability is expressed by presence in the table).
 - $L_{r,m,n,t} \subseteq L$: devices occupied by the transport activity for arc
   $r = (i,j)$ under source mode $m \in M_i$, destination mode $n \in M_j$, and
-  transporter $t \in L^{\mathrm{tr}}$. It contains the source device, the
+  transporter $t \in L^{\mathrm{tr}}_\bot$. It contains the source device, the
   destination device, and the transporter $t$ (so typically $|L_{r,m,n,t}| = 3$;
-  SPEC §4.5).
+  SPEC §4.5). For $t = \bot$ it contains the two endpoint devices and nothing else
+  ($|L_{r,m,n,\bot}| \le 2$): there is no transporter to hold.
 - $k_r^{\mathrm{out}}$, $k_r^{\mathrm{in}}$: the source output port and
   destination input port of arc $r$.
 
@@ -243,16 +250,18 @@ Transport activities:
 
 - $q_{r,m,n,t} \in \{0,1\}$: arc $r=(i,j)$'s transport uses source mode
   $m \in M_i$, destination mode $n \in M_j$, and transporter $t \in
-  L^{\mathrm{tr}}$. A variable exists only for a **feasible** combination — one
+  L^{\mathrm{tr}}_\bot$. A variable exists only for a **feasible** combination — one
   whose duration $d_{t,\sigma^{\mathrm{out}}_{i,m,k_r^{\mathrm{out}}},\,
   \sigma^{\mathrm{in}}_{j,n,k_r^{\mathrm{in}}}}$ is defined; infeasible
   combinations are omitted, which is how reachability enters the model. A boundary
   arc is no different: one endpoint is a boundary node, whose single mode fixes its
   spot, so its $q_{r,m,n,t}$ ranges over that node's one mode, the other endpoint's
-  modes, and the transporters.
+  modes, and the transporter choices (including $\bot$).
 - $z_{r,t} = \sum_{m \in M_i}\sum_{n \in M_j} q_{r,m,n,t} \in \{0,1\}$: whether
-  arc $r$'s transport uses transporter $t$ (derived; the per-transporter resource
-  in §7).
+  arc $r$'s transport uses transporter $t \in L^{\mathrm{tr}}$ (derived; the
+  per-transporter resource in §7). Only real transporters have one: $\bot$ is not a
+  resource, so no $z_{r,\bot}$ exists and a move that chose it contributes to no
+  transporter's non-overlap.
 - $a_r, b_r \in \mathbb{Z}_{\ge 0}$: start and end of transport activity
   $\tau_r$.
 
@@ -358,25 +367,26 @@ Exactly one feasible route (source mode, destination mode, transporter) is chose
 per arc, and it must agree with the endpoint activities' mode selection:
 
 $$
-\sum_{n \in M_j}\sum_{t \in L^{\mathrm{tr}}} q_{r,m,n,t} = x_{i,m},
+\sum_{n \in M_j}\sum_{t \in L^{\mathrm{tr}}_\bot} q_{r,m,n,t} = x_{i,m},
 \quad \forall r=(i,j)\in R,\ \forall m \in M_i
 $$
 $$
-\sum_{m \in M_i}\sum_{t \in L^{\mathrm{tr}}} q_{r,m,n,t} = x_{j,n},
+\sum_{m \in M_i}\sum_{t \in L^{\mathrm{tr}}_\bot} q_{r,m,n,t} = x_{j,n},
 \quad \forall r=(i,j)\in R,\ \forall n \in M_j
 $$
 
 Summed over all $m,n,t$, these force exactly one $q_{r,m,n,t} = 1$ per arc, so
-each transport selects one transporter. An arc with no feasible combination has
+each transport selects one transporter, or $\bot$ where the environment declares a
+route needing none. An arc with no feasible combination has
 no route to select and the instance is infeasible (SPEC §9.3 `arc_unreachable`).
 A boundary arc is included: its boundary node has a single mode $M = \{0\}$, so
 the coupling on that side degenerates to $x_{\cdot,0} = 1$ and the sum ranges over
-the other endpoint's modes and the transporters.
+the other endpoint's modes and the transporter choices (including $\bot$).
 
 ### 5. Transport duration
 
 $$
-b_r = a_r + \sum_{m \in M_i}\sum_{n \in M_j}\sum_{t \in L^{\mathrm{tr}}}
+b_r = a_r + \sum_{m \in M_i}\sum_{n \in M_j}\sum_{t \in L^{\mathrm{tr}}_\bot}
 d_{t,\sigma^{\mathrm{out}}_{i,m,k_r^{\mathrm{out}}},\ \sigma^{\mathrm{in}}_{j,n,k_r^{\mathrm{in}}}}\,
 q_{r,m,n,t}, \quad \forall r=(i,j) \in R
 $$
@@ -420,7 +430,8 @@ For each device $\ell \in L$, the activities occupying it are mutually
 non-overlapping. A processing activity occupies its mode's devices $L_{i,m}$ over
 $[s_i,e_i]$; a transport activity occupies $L_{r,m,n,t}$ over its transport
 interval $[a_r,b_r]$ (the conservative formulation: source device, destination
-device, and the chosen transporter are all held during transport). A boundary node
+device, and the chosen transporter are all held during transport; a route with
+$t = \bot$ holds the two devices and no transporter). A boundary node
 has an **empty device set**, so it holds no device — only its spot(s) (§6). So does a
 **non-accessing** mode (SPEC §4.4.2): $L_{i,m} = \emptyset$ where the mode declares
 `device_access: false`, though it binds its spots in §6 like any other. The device the

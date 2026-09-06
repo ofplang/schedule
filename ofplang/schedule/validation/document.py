@@ -591,13 +591,18 @@ def _check_transport(amap: YMap, base: str, diags: Diagnostics) -> None:
     _check_qualified_spot(from_spot, shape.join(base, "from_spot"), diags)
     _check_qualified_spot(to_spot, shape.join(base, "to_spot"), diags)
     # `transporter` is required for a real move, but a same-spot move (§5.4) is a
-    # physical no-op that no transporter carries, so it may be omitted (§6.4). When
-    # present it must still be a string.
+    # physical no-op that no transporter carries, so it may be omitted (§6.4).
+    #
+    # Its value may be **null**, which says the move is carried by no transporter --
+    # the environment declares such routes (§5.4) and there is then no id to write.
+    # Null rather than an absent key, because the field is what says "nothing carries
+    # this": a real move that merely forgot to name its transporter stays an error,
+    # which is the only way the two can be told apart.
     if _same_spot(from_spot, to_spot):
         if "transporter" in amap:
-            _require_str(amap, "transporter", base, diags)
+            _require_str_or_null(amap, "transporter", base, diags)
     else:
-        _require_str(amap, "transporter", base, diags)
+        _require_str_or_null(amap, "transporter", base, diags)
     arc = shape.require(amap, "arc", base, diags)
     if arc is not None:
         _check_arc(arc, shape.join(base, "arc"), diags)
@@ -732,3 +737,14 @@ def _require_str(amap: YMap, key: str, base: str, diags: Diagnostics) -> None:
     node = shape.require(amap, key, base, diags)
     if node is not None and not (isinstance(node, YScalar) and node.is_str):
         diags.error(errors.WRONG_TYPE, f"{key} must be a string", shape.join(base, key), at=node)
+
+
+def _require_str_or_null(amap: YMap, key: str, base: str, diags: Diagnostics) -> None:
+    """Like `_require_str`, but an explicit null passes: the key must be written,
+    and null is one of the values it may carry (a transport no transporter carries,
+    §6.4)."""
+    node = shape.require(amap, key, base, diags)
+    if node is not None and not (isinstance(node, YScalar) and (node.is_str or node.is_null)):
+        diags.error(
+            errors.WRONG_TYPE, f"{key} must be a string or null", shape.join(base, key), at=node
+        )

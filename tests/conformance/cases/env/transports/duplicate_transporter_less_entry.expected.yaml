@@ -1,0 +1,5 @@
+outcome: invalid
+match: exact
+errors:
+- {code: duplicate_transport_entry}
+notes: A null transporter is a value in the (transporter, from, to) key like any other; spec §5.4, §9.1.

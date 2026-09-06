@@ -1,0 +1,53 @@
+# A device that loads its own block — a route with no transporter (SPEC §4.6, §5.4).
+#
+# The thermal cycler is reachable by the arm at one position only, its door. It
+# shifts the plate from the door onto the block itself: that move takes time and
+# occupies the cycler, but no transporter performs it. The workflow says nothing
+# about any of it — `dispense`, `thermal_cycle` and `measure` are three ordinary
+# atomic steps, and where each runs (and what carries the plate between them) is
+# the environment's to say.
+#
+#   ofp-schedule schedule internal_move.workflow.yaml --env internal_move.env.yaml
+spec_version: "0.0"
+
+types:
+  Plate:
+    domain: object
+
+processes:
+
+  dispense:                                     # fills the plate at the door
+    kind: atomic
+    outputs:
+      plate: { type: Plate, phase: data }
+    objects:
+      create:
+        - outputs.plate
+
+  thermal_cycle:                                # runs on the block
+    kind: atomic
+    inputs:
+      plate: { type: Plate, phase: data }
+    outputs:
+      out: { type: Plate, phase: data }
+    objects:
+      map:
+        outputs.out: inputs.plate
+
+  measure:                                      # read out, and done with it
+    kind: atomic
+    inputs:
+      plate: { type: Plate, phase: data }
+    objects:
+      consume:
+        - inputs.plate
+
+  main:
+    kind: composite
+    body:
+      nodes:
+        - { id: Fill, process: dispense }
+        - { id: Cycle, process: thermal_cycle, state: { plate: { from: Fill.plate } } }
+        - { id: Read, process: measure, state: { plate: { from: Cycle.out } } }
+
+entry: main

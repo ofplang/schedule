@@ -162,9 +162,23 @@ def _device_layout(activities):
             label = _xfer_label(a)
             if tr and ("tr", tr) in index:
                 bars.append(_Bar(index[("tr", tr)], s, e, label, "xfer"))
+            # The endpoints are ghosted because the move itself is drawn on the
+            # transporter's lane. A move that needs no transporter (§5.4) has no such
+            # lane, so its endpoints are not a ghost of anything -- they *are* the
+            # move, and are drawn as one. A same-spot no-op names no transporter
+            # either but is not a move at all, so it keeps the ghost it always had.
+            self_carried = not tr and a.get("from_spot") != a.get("to_spot")
             for d in (src, dst):
                 if d and ("dev", d) in index:
-                    bars.append(_Bar(index[("dev", d)], s, e, "", "xfer-ghost"))
+                    bars.append(
+                        _Bar(
+                            index[("dev", d)],
+                            s,
+                            e,
+                            label if self_carried else "",
+                            "xfer" if self_carried else "xfer-ghost",
+                        )
+                    )
         elif kind == "replenishment":
             # Two machines, drawn the way a transport's are: solid on the machine
             # doing the work, ghosted on the one it is done to.

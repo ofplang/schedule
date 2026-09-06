@@ -185,7 +185,9 @@ A transport activity from source spot `p` to destination spot `q`, with
 transport start `a` and end `b`, source activity end `e_i`, and destination
 activity start `s_j`:
 
-- selects one **transporter** capable of moving `p → q`;
+- selects one **transporter** capable of moving `p → q`, or **no transporter** if
+  the route needs none (§5.4) — a device shifting material between its own spots, a
+  chute, a conveyor: something the move needs nothing else to perform;
 - has duration `d(transporter, p, q)` (see §5), so `b = a + d`;
 - occupies:
   - the **source spot** over `[e_i, b]` — material stays in the source spot from
@@ -195,7 +197,8 @@ activity start `s_j`:
   - the **source device**, the **destination device**, and the **transporter**
     (all devices, §4.4 / §4.6) over `[a, b]` — the transporter is busy for the
     whole move, and accessing the source and destination spots occupies their
-    devices for that interval.
+    devices for that interval. A move that needs no transporter occupies the two
+    devices exactly as above and no transporter; nothing else about it differs.
 - If `p == q` the two spot intervals collapse to `[e_i, s_j]` and the duration is
   zero.
 
@@ -230,6 +233,13 @@ distinct ids, and each transport activity is assigned to one of them.
 - The transporter's position and any empty-travel (repositioning) time are **not**
   modelled. Transport duration depends only on the chosen transporter and the
   source/destination spot pair.
+- A transport is **not** obliged to have a transporter. A route the environment
+  declares with none (§5.4) is performed by no transporter at all: it still occupies
+  its source and destination devices (§4.5), so moves through the same machine
+  serialise on that machine, but it enters no transporter's exclusion. This is how a
+  device that shifts material between its own spots is described — the device is not
+  a transporter, and inventing one for it would make an exclusive machine out of
+  something that is not there.
 
 ### 4.7 Device-local consumable resources
 
@@ -446,13 +456,18 @@ A list of transporters (§4.6). Each entry is an individual transporter:
 - `id` — unique transporter id.
 
 One or more transporters may be listed; each transport is assigned to one of them
-(§4.6). A single-transporter list is allowed and serialises all transports.
+(§4.6), except one whose route needs no transporter (§5.4). A single-transporter
+list is allowed and serialises all transports.
 
 ### 5.4 `transports`
 
 The transport-duration table, keyed by `(transporter, from_spot, to_spot)`:
 
-- `transporter` — a defined transporter id.
+- `transporter` — a defined transporter id, or **`null`** for a route that needs
+  no transporter (§4.6). The key is **required**: writing null is how an
+  environment says "nothing carries this", and a missing key is an error rather
+  than the same statement, so that a forgotten transporter cannot quietly declare a
+  route that occupies none.
 - `from` — source spot, a defined spot in qualified form `<device>.<spot>` (§8).
 - `to` — destination spot, a defined spot in qualified form `<device>.<spot>` (§8).
 - `duration` — a non-negative integer, in `time.unit`.
@@ -460,8 +475,9 @@ The transport-duration table, keyed by `(transporter, from_spot, to_spot)`:
 Semantics:
 
 - A missing `(transporter, from, to)` entry means that transporter **cannot**
-  perform that move (reachability is expressed by presence in the table). At
-  least one transporter must be able to perform each required move.
+  perform that move (reachability is expressed by presence in the table). Each
+  required move must be performable by at least one transporter, or by a
+  transporter-less route.
 - Same-spot moves (`from == to`) are treated as duration `0` and may be omitted.
 
 ### 5.5 `processes`
@@ -808,11 +824,17 @@ environment.
 - `from_spot` (required) — the qualified source spot `<device>.<spot>`.
 - `to_spot` (required) — the qualified destination spot.
 - `transporter` (required, except for a same-spot move) — the selected
-  transporter id. The activity also occupies the source and destination devices
-  (§4.5); all three are derivable (from `transporter`, `from_spot`, `to_spot`), so
-  there is no `devices` field. A **same-spot move** (`from_spot == to_spot`, always
-  duration 0 per §5.4) is a physical no-op that no transporter performs, so
-  `transporter` is **omitted** for it; the devices still derive from the spots.
+  transporter id, or **`null`** when the route taken needs no transporter (§4.6).
+  The activity also occupies the source and destination devices (§4.5); all three
+  are derivable (from `transporter`, `from_spot`, `to_spot`), so there is no
+  `devices` field. A **same-spot move** (`from_spot == to_spot`, always duration 0
+  per §5.4) is a physical no-op that no transporter performs, so `transporter` is
+  **omitted** for it; the devices still derive from the spots.
+  - Null, not an omission, for a real move: the field is what says nothing carries
+    it, so it has to be written to say so. Which routes need a transporter is the
+    environment's to know, so a reader given the document alone cannot tell an
+    omission meant that way from one that forgot — and a move that quietly occupied
+    no transporter is precisely the mistake worth catching.
 - `arc` (required) — provenance: the Object-bearing arc served (the logical
   connection), as `from` / `to`, each `{ node: <path>, port: <name> }`. When the
   arc's Object is moved in a single leg, `arc` and the `from_spot` / `to_spot`
@@ -1463,7 +1485,8 @@ given a valid v0 workflow.
   `time.unit` is a non-empty string.
 - Retired sections: `objective` is rejected with `objective_in_environment` (§5.8),
   its shape unchecked.
-- Env-internal references: each `transports.transporter` is a defined transporter;
+- Env-internal references: each `transports.transporter` is a defined transporter
+  (or null, §5.4);
   each `replenishments.replenisher` is a defined replenisher and its `device` is a
   defined device that declares `resources`; every entry of a mode's `devices` is a
   defined device; every `from` / `to` and every `input_spots` / `output_spots` value
@@ -1540,7 +1563,8 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
   - transport: `from_spot`, `to_spot` (qualified spots) and `arc` (`from` / `to`,
     each `{ node: <list>, port: <id> }`) are required; `transporter` is required
     unless the move is same-spot (`from_spot == to_spot`), where it may be omitted
-    (§6.4); `seq` (if present) is a non-negative integer. A **boundary** transport's
+    (§6.4), and its value is a transporter id **or null** (a move no transporter
+    carries, §6.4); `seq` (if present) is a non-negative integer. A **boundary** transport's
     `arc` has one endpoint with an **empty** node path (`node: []`, the workflow
     interface, §6.4/§6.8); an empty node path is allowed there (but not as a
     processing `node`, which stays non-empty). More than one transport
@@ -1580,11 +1604,17 @@ environment for processes the workflow never invokes are not checked.
   workflow has at least one mode (`no_capability` otherwise), and every mode maps
   every Object-bearing port of its process (`mode_ports_incomplete` otherwise).
 - **Reachability / solvability**: for each Object-bearing arc, a feasible
-  combination of endpoint modes and a transporter that can move between the
-  chosen spots exists (`arc_unreachable` otherwise). This depends on mode
-  selection and is a solvability concern, not a schema check. A **boundary** arc
-  (from `interface`, §6.8) is included: no transporter able to move between its
-  fixed spot and the consuming/producing mode's spot is likewise `arc_unreachable`.
+  combination of endpoint modes and a route — some transporter, or the
+  transporter-less route (§5.4) — that can move between the chosen spots exists
+  (`arc_unreachable` otherwise). This depends on mode selection and is a solvability
+  concern, not a schema check. A **boundary** arc (from `interface`, §6.8) is
+  included: no route able to move between its fixed spot and the consuming/producing
+  mode's spot is likewise `arc_unreachable`.
+  - Whether a document's *reported* route actually exists in the environment is
+    **not** checked, for a transporter-less leg no more than for any other: a
+    completed leg is history, and a replan may withdraw the very route it took
+    (§6.6). The requirement that the `transporter` key be written (§6.4) is what
+    keeps a forgotten one from reading as a deliberate one.
 - **Interface** (§6.8): each bound port is an Object-bearing boundary port of the
   workflow on the correct side — an entry input under `inputs`, a final output
   under `outputs` (`interface_unknown_port` if it is not that port, or is mapped on
@@ -1738,7 +1768,7 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `cross_kind_id_coincidence` | a spot or resource name shares an id with a machine (*warning*) |
 | `nonpositive_duration` | a device-occupying or non-accessing (§4.4.2) processing mode `duration` is not positive, a replenishment `duration` is not positive, or any mode `duration` is negative (a device-less pure-data mode may be zero). A `capacity` or `consumption` that is not positive is `nonpositive_value` (§10.1) — the same rule, but this code names a duration |
 | `empty_time_unit` | `time.unit` is empty or not a string |
-| `unknown_transporter` | `transports.transporter` is not a defined transporter |
+| `unknown_transporter` | `transports.transporter` is neither a defined transporter nor null |
 | `unknown_replenisher` | `replenishments.replenisher` is not a defined replenisher |
 | `unknown_device` | a mode's `devices` entry, a `replenishments.device`, or the device part of a qualified spot or resource, is not a defined device |
 | `unknown_spot` | the spot part of a qualified spot is not defined on that device |
@@ -1797,7 +1827,7 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `wrong_port_direction` | a port is mapped on the wrong side (an output under `input_spots`, or an input under `output_spots`) |
 | `pure_data_port_mapped` | a mode maps a Pure Data (non-Object-bearing) port to a spot |
 | `mode_ports_incomplete` | a mode does not map every Object-bearing port of its process |
-| `arc_unreachable` | no endpoint-mode pair and transporter can serve an Object-bearing arc (interior or boundary, §6.8) |
+| `arc_unreachable` | no endpoint-mode pair and route (transporter or transporter-less, §5.4) can serve an Object-bearing arc (interior or boundary, §6.8) |
 | `interface_unknown_port` | an `interface` binding names a port that is not an Object-bearing boundary port on that side (§6.8) |
 | `interface_pure_data_port` | an `interface` binding names a Pure Data port (occupies no spot) |
 | `interface_duplicate_spot` | two bindings on one side (two inputs, or two outputs) bind the same spot |

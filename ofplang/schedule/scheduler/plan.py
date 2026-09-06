@@ -141,6 +141,12 @@ def render_plan(
         # A same-spot move (§5.4) is a physical no-op: no transporter carries it,
         # so the field is omitted (§6.4). The occupied devices still derive from
         # the spots, and the route (from == to) is unambiguous without it.
+        #
+        # A real move always writes the field, and writes **null** when the route it
+        # took needs no transporter (§5.4). Omitting it there would make it
+        # indistinguishable from a document that forgot to say -- and the reader has
+        # no way to recover the difference, since which routes need a transporter is
+        # the environment's to know, not the document's.
         if t.option.from_spot != t.option.to_spot:
             entry["transporter"] = t.option.transporter
         entry["arc"] = _arc(t.arc, job_ids)

@@ -73,6 +73,17 @@ CASES = [
         EXAMPLES / "shared_refill.document.yaml",
         18,
     ),
+    # internal_move: the cycler shifts the plate from its door onto its block over a
+    # route with no transporter (§4.6, §5.4). 400 = 30 + 5 + 300 + 20 + 45, fully
+    # serial -- the internal move holds the cycler, so it cannot overlap the work at
+    # either end of it. The arm carries only the move out to the reader.
+    (
+        "internal_move",
+        EXAMPLES / "internal_move.workflow.yaml",
+        EXAMPLES / "internal_move.env.yaml",
+        None,
+        400,
+    ),
 ]
 
 

@@ -482,12 +482,19 @@ def _check_transports(
             continue
         shape.unknown_keys(tmap, TRANSPORT_KEYS, base, diags)
 
+        # `transporter` is required to be *written*, but its value may be null: a
+        # route that needs no transporter at all (§5.4). Requiring the key is what
+        # keeps a forgotten transporter an error -- were absence itself to mean
+        # "needs none", a typo would quietly declare a route that occupies no
+        # transporter, and the arm it was meant to name would stay free in every
+        # plan made from this environment.
         tr = shape.require(tmap, "transporter", base, diags)
-        if tr is not None:
+        no_transporter = isinstance(tr, YScalar) and tr.is_null
+        if tr is not None and not no_transporter:
             if not (isinstance(tr, YScalar) and tr.is_str):
                 diags.error(
                     errors.WRONG_TYPE,
-                    "transporter must be a string",
+                    "transporter must be a string or null",
                     shape.join(base, "transporter"),
                     at=tr,
                 )
@@ -506,7 +513,15 @@ def _check_transports(
         )
 
         # Duplicate (transporter, from, to) triple — compared on raw scalar text.
-        triple = tuple(_scalar(tmap.get(k)) for k in ("transporter", "from", "to"))
+        # A null transporter is a value here like any other, so it gets a marker of
+        # its own: read through `_scalar` it would come back as None, which this
+        # check reads as "missing" and skips, and two identical transporter-less
+        # routes would escape it.
+        triple = (
+            _NO_TRANSPORTER if no_transporter else _scalar(tmap.get("transporter")),
+            _scalar(tmap.get("from")),
+            _scalar(tmap.get("to")),
+        )
         if None not in triple:
             if triple in seen:
                 diags.error(
@@ -874,6 +889,11 @@ def _check_retired(root: YMap, diags: Diagnostics) -> None:
         "objective",
         at=node,
     )
+
+
+# Stands for an explicit null transporter in a duplicate-detection key (§5.4),
+# where None already means "not a scalar / absent".
+_NO_TRANSPORTER = object()
 
 
 def _scalar(node: YNode | None):

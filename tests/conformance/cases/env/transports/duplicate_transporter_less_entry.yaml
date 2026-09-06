@@ -1,0 +1,13 @@
+time: {unit: second}
+devices:
+- id: incubator_0
+  spots: [slot_0, slot_1]
+processes:
+  incubate:
+    modes:
+    - devices: [incubator_0]
+      duration: 600
+      input_spots: {plate: incubator_0.slot_0}
+transports:
+- {transporter: null, from: incubator_0.slot_0, to: incubator_0.slot_1, duration: 5}
+- {transporter: null, from: incubator_0.slot_0, to: incubator_0.slot_1, duration: 9}

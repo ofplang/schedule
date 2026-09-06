@@ -59,6 +59,37 @@ the device is free, the *slot* is not, so the third plate waits for one to open.
   says "on this machine, not holding it" — three pale bars overlapping where a solid
   bar could never overlap another.
 
+## `internal_move` — a device that loads its own block (no transporter)
+
+- `internal_move.workflow.yaml` — `dispense → thermal_cycle → measure`, three
+  ordinary atomic steps. It says nothing about positions or carriers.
+- `internal_move.env.yaml` — the `cycler` has a **door** (the arm can reach it) and
+  a **block** (it cannot). The cycler shifts the plate between them itself, which
+  the transport table says by writing **`transporter: null`** (SPEC §4.6, §5.4):
+
+  ```yaml
+  - { transporter: null, from: cycler.door, to: cycler.block, duration: 5 }
+  - { transporter: arm,  from: cycler.block, to: reader.stage, duration: 20 }
+  ```
+
+What the example is for: a transport **need not have a transporter**. The internal
+move is a transport in every other respect — it takes 5 seconds, it holds the
+cycler over its whole interval (§4.5), and it is ordered after `dispense` and before
+`thermal_cycle` — but it occupies no transporter, so the arm is free for other work
+while the cycler loads itself. Makespan **400** = 30 + 5 + 300 + 20 + 45, fully
+serial, because everything but the read happens on the one machine.
+
+The `transporter` key is **required** even here. Writing null is how the environment
+says "nothing carries this"; a missing key is `missing_required_field` instead, so a
+route that merely forgot to name its arm cannot pass for one that needs no arm. The
+plan echoes it the same way: a real move always writes `transporter`, as null when
+nothing carried it, and only a same-spot no-op omits the field (§6.4).
+
+Modelling the cycler's move with a made-up transporter (`cycler_internal`) would
+schedule identically — every internal move holds the cycler anyway, so the invented
+machine's exclusivity adds nothing — but it would put a machine in the plan that no
+lab has, and hand the runner an id to go looking for.
+
 ## `plate_batch` — a parametric generator (workflow + environment)
 
 - `gen_plate_batch.py` — generates **both** a v0 workflow and a matching

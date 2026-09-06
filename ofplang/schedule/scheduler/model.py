@@ -83,8 +83,9 @@ class Environment:
     time_unit: str
     devices: dict[str, Device]
     transporters: tuple[str, ...]
-    # (transporter, from_spot, to_spot) -> duration, both spots qualified.
-    transports: dict[tuple[str, str, str], int]
+    # (transporter, from_spot, to_spot) -> duration, both spots qualified. The
+    # transporter is None for a route that needs none (SPEC section 5.4).
+    transports: dict[tuple[str | None, str, str], int]
     processes: dict[str, ProcessCapability]
     # No `objective` here. How a run is to be optimised is a property of that run,
     # not of the lab, so it is declared in the execution document (§6.1); this
@@ -95,9 +96,12 @@ class Environment:
     replenishers: tuple[str, ...] = ()
     replenishments: dict[tuple[str, str], int] = field(default_factory=dict)
 
-    def transport_duration(self, transporter: str, frm: str, to: str) -> int | None:
+    def transport_duration(self, transporter: str | None, frm: str, to: str) -> int | None:
         """Duration for one transporter to move `frm` -> `to`, or None if it
-        cannot (no table entry). A same-spot move is always 0 (§5.4)."""
+        cannot (no table entry). `transporter` is None to ask for the route that
+        needs no transporter (§5.4). A same-spot move is always 0 (§5.4) -- for
+        every transporter and for None alike, a hand-off within one spot being a
+        physical no-op the table need not mention."""
         if frm == to:
             return 0
         return self.transports.get((transporter, frm, to))

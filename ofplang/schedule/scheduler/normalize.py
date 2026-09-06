@@ -90,7 +90,9 @@ class _Leg:
     end: int
     from_spot: str
     to_spot: str
-    transporter: str
+    # None when the leg took a route that needs no transporter (§5.4), and for a
+    # same-spot no-op, which names none either.
+    transporter: str | None
 
 
 def normalize(

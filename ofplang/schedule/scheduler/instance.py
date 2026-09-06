@@ -218,7 +218,7 @@ def build_instance(
         if not options and check_reachability:
             diags.error(
                 errors.ARC_UNREACHABLE,
-                f"no transporter can serve the arc {format_endpoint(arc.src.node, arc.src.port)}"
+                f"no route can serve the arc {format_endpoint(arc.src.node, arc.src.port)}"
                 f" -> {format_endpoint(arc.dst.node, arc.dst.port)}",
             )
         arcs.append(ArcInstance(arc, si, di, tuple(options)))
@@ -395,7 +395,7 @@ def merge_instances(instances: Sequence[Instance]) -> Instance:
 
 def report_unreachable(instance: Instance, fixed_arc_indices: set[int], diags: Diagnostics) -> None:
     """Emit `arc_unreachable` for every **pending** leg (an arc not in
-    `fixed_arc_indices`) that no transporter can serve. Committed (fixed) legs are
+    `fixed_arc_indices`) that no route can serve. Committed (fixed) legs are
     facts and are not re-checked (SPEC §9.3). Used on the augmented instance after
     normalization, so a re-routed move is judged per pending leg, not by whether
     the original arc had a direct route."""
@@ -405,7 +405,7 @@ def report_unreachable(instance: Instance, fixed_arc_indices: set[int], diags: D
         leg = f" (leg seq {arc.seq})" if arc.seq is not None else ""
         diags.error(
             errors.ARC_UNREACHABLE,
-            f"no transporter can serve the arc "
+            f"no route can serve the arc "
             f"{format_endpoint(arc.arc.src.node, arc.arc.src.port)} -> "
             f"{format_endpoint(arc.arc.dst.node, arc.arc.dst.port)}{leg}",
         )
@@ -490,7 +490,7 @@ def _add_boundary_inputs(
         if not options and check_reachability:
             diags.error(
                 errors.ARC_UNREACHABLE,
-                f"no transporter can serve the boundary input {name!r} -> "
+                f"no route can serve the boundary input {name!r} -> "
                 f"{format_endpoint(consumer.node, consumer.port)}",
             )
         arc = Arc(Endpoint((), name), Endpoint(consumer.node, consumer.port))
@@ -575,7 +575,7 @@ def _add_boundary_outputs(
         if not options and check_reachability:
             diags.error(
                 errors.ARC_UNREACHABLE,
-                f"no transporter can serve the boundary output "
+                f"no route can serve the boundary output "
                 f"{format_endpoint(producer.node, producer.port)} -> {name!r}",
             )
         arc = Arc(Endpoint(producer.node, producer.port), Endpoint((), name))
@@ -706,8 +706,9 @@ def transport_options(
     dst_port: str,
     env: Environment,
 ) -> list[TransportOption]:
-    """Enumerate viable transport options over the endpoint mode pairs and the
-    transporters. A same-spot move is free (duration 0).
+    """Enumerate viable transport options over the endpoint mode pairs, the
+    transporters, and the transporter-less route (§5.4). A same-spot move is free
+    (duration 0).
 
     Public because `normalize` enumerates the same options when it re-creates the
     boundary and relay arcs of a replan: one definition of what routes are viable,
@@ -722,6 +723,22 @@ def transport_options(
             if to_spot is None:
                 continue
             served = False
+            # A route the environment declares with no transporter (§5.4): the move
+            # needs none at all -- a device shifting material between its own spots,
+            # a chute. It occupies the source and destination devices like any other
+            # move (§4.5) and simply enters no transporter's non-overlap set.
+            #
+            # Only for two *different* spots. A same-spot pair is left to the no-op
+            # fallback below, which is where it has always been handled; routing it
+            # through here instead would put a second, identical option in front of
+            # the ones an environment that declares a same-spot route already
+            # produces, and the option list of an existing environment has to stay
+            # exactly as it was.
+            if from_spot != to_spot:
+                duration = env.transport_duration(None, from_spot, to_spot)
+                if duration is not None:
+                    options.append(TransportOption(m, n, None, from_spot, to_spot, duration))
+                    served = True
             for transporter in env.transporters:
                 duration = env.transport_duration(transporter, from_spot, to_spot)
                 if duration is not None:
