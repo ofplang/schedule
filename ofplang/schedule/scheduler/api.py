@@ -504,13 +504,19 @@ def schedule_jobs(
     the jobs compete for machines, and a refill that neither workflow needs on its
     own is planned once for both.
 
-    Every other argument means what it does for `schedule`. What a joint plan does
-    *not* have yet is anything that distinguishes the jobs from one another: there
-    are no priorities, no release times and no per-job objective, so the makespan
-    minimised is the one over all of them (design.md D38 stages this deliberately).
-    Per-job `interface` is likewise not there yet, so a joint plan cannot use the
-    document's single boundary constraint (`multi_job_interface`); workflows whose
-    entry inputs are Object-bearing therefore cannot be planned jointly yet.
+    Every other argument means what it does for `schedule`. What tells the jobs
+    apart from one another lives in the document's roster (§6.11): their order is
+    their priority, `release` is the earliest any of a job's activities may start,
+    and `bound` is the completion time an earlier job was promised, which a later
+    arrival may not spoil (design.md D38). Each job carries its own `interface`
+    too, because a boundary binds one workflow's ports and two jobs of the same
+    workflow bind the same port names to different spots -- so a document that
+    lists jobs and still puts `interface` at the top level is refused
+    (`multi_job_interface`), and an entry whose inputs are Object-bearing is
+    planned jointly like any other.
+
+    What a joint plan does *not* have yet is a per-job objective: the stages the
+    document names are minimised over all the jobs at once (§4.8).
     """
     jobs = list(jobs)
     if not jobs:
