@@ -215,9 +215,17 @@ Object has arrived there and is available for the next leg. It carries no
 processing; it exists only so that consecutive transports can be described (a
 transport connects a producing point to a consuming point, and a relay is such a
 point that is neither a source nor a final consumer). This is a general feature of
-the model, independent of why a multi-leg move arises; the scheduler introduces
-relays when replanning re-routes an Object whose transport has already committed
-its arrival spot (§9.3 / FORMULATION §9).
+the model, independent of why a multi-leg move arises. Two things give rise to one:
+
+- **Reach.** An arc whose endpoint spots are further apart than a single move is
+  carried in as many legs as the shortest chain of moves between them takes — a
+  device the transporter reaches at one position only, a plate that has to cross a
+  hand-off station. How many legs are permitted is the scheduler's to offer (§9.3);
+  only chains of the **fewest possible moves** are, so a pair of spots one move
+  apart is never sent round by way of somewhere else, whatever that would cost.
+- **Re-routing.** Replanning may re-route an Object whose transport has already
+  committed its arrival spot; the committed leg stands and the rest is planned from
+  where it arrived (§9.3 / FORMULATION §9).
 
 ### 4.6 Transporters
 
@@ -887,6 +895,14 @@ single-leg same-spot transport that has no preceding relay (a direct
 producer-to-consumer hop within one spot) is **not** folded — there is no committed
 leg to reconstruct it from — but it carries no `transporter` (above).
 
+Where folding leaves an arc with exactly **one leg and that leg is pending**, its
+`seq` is omitted as well. Such a leg is the single move an arc whose endpoints are
+one move apart has always been described by, and stating a position for it would
+make two identical plans differ over a difference that is not in either of them: an
+omitted `seq` *is* position 0 (§6.6). A **committed** leg keeps its `seq` — that
+position was assigned by an earlier plan and is stable across replans (§6.6), being
+the identity the reported leg is matched by.
+
 ### 6.5 Placements (removed)
 
 `placements` has been **removed**. Boundary material (entry inputs, final outputs)
@@ -916,7 +932,9 @@ arc keys distinctly from any interior arc. `seq` is a **stable** position: once 
 to a chain element it is carried unchanged across replans (a fresh element takes
 the next unused position for that arc), so a status lines up against the prior
 plan even when a spot is revisited (the same `spot` can appear at two positions).
-`seq` is an ordinal, not an encoded value — nothing reads meaning from it.
+`seq` is an ordinal, not an encoded value — nothing reads meaning from it. A
+**pending** leg that is its arc's only one may omit it (§6.4.1): position 0 is what
+an omission means, and no earlier plan assigned it anything to be stable with.
 
 On a replan the scheduler fixes `completed` and `running` activities to their
 reported times and assignments, takes boundary positions from `interface` (§6.8)
@@ -1610,6 +1628,13 @@ environment for processes the workflow never invokes are not checked.
   concern, not a schema check. A **boundary** arc (from `interface`, §6.8) is
   included: no route able to move between its fixed spot and the consuming/producing
   mode's spot is likewise `arc_unreachable`.
+  - A route may take **several legs** through relays (§4.5). How many are permitted
+    is the scheduler's to offer and is not part of the document: one leg per arc is
+    the default, and a scheduler that offers more finds a route where one offering
+    fewer reports `arc_unreachable`. Neither answer is wrong about the laboratory;
+    they are answers to different questions about it. An endpoint mode pair beyond
+    what is offered is simply not among the arc's routes, so an arc keeps whatever
+    pairs it can serve rather than being refused for the one that is out of reach.
   - Whether a document's *reported* route actually exists in the environment is
     **not** checked, for a transporter-less leg no more than for any other: a
     completed leg is history, and a replan may withdraw the very route it took

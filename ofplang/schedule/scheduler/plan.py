@@ -70,7 +70,12 @@ def render_plan(
                     "start": p.start,
                     "end": p.end,
                     "seq": p.relay.seq,
-                    "spot": p.relay.spot,
+                    # The spot is the chosen mode's: a planned relay offers one
+                    # candidate per route the chain may take, and which it occupies
+                    # is what the solver decided. A relay derived from a committed
+                    # leg has the one mode carrying that leg's arrival spot, so the
+                    # same reading serves both.
+                    "spot": p.mode.input_spots["in"],
                     "arc": _arc(p.relay.arc, job_ids),
                 }
             )
@@ -323,7 +328,37 @@ def _fold_relayed_zero_distance(activities: list[dict]) -> list[dict]:
         if j is not None:
             drop.add(i)
             drop.add(j)
-    return [a for i, a in enumerate(activities) if i not in drop]
+    kept = [a for i, a in enumerate(activities) if i not in drop]
+    _drop_lone_pending_seq(kept, drop_count=len(drop))
+    return kept
+
+
+def _drop_lone_pending_seq(activities: list[dict], *, drop_count: int) -> None:
+    """Where folding left an arc with one **pending** leg, stop stating its `seq`.
+
+    A chain is built whenever *some* endpoint mode pair is more than one move from
+    its destination (§4.5); the pairs that are not are served by the real move plus a
+    same-spot no-op, which the fold above then removes. What is left is one leg -- the
+    same single move a laboratory whose every route is direct would have planned -- and
+    saying `seq: 0` about it would make the two differ in the output over a difference
+    that is not in the plan. An omitted `seq` *is* position 0 (§6.6), so nothing is
+    lost, and a replan reads it back the same way.
+
+    Only for a **pending** leg. A `seq` on a committed one was assigned by an earlier
+    plan, and §6.6 makes that position stable across replans: it is the identity the
+    reported leg is matched by, and history keeps what it was given. That is also why
+    this changes no plan made before chains existed -- there, a fold's survivor is
+    always the committed leg that produced the relay.
+    """
+    if not drop_count:
+        return
+    legs: dict[tuple, list[dict]] = {}
+    for a in activities:
+        if a["kind"] == "transport":
+            legs.setdefault((a.get("job"), _arc_key(a["arc"])), []).append(a)
+    for group in legs.values():
+        if len(group) == 1 and group[0].get("status") is None:
+            group[0].pop("seq", None)
 
 
 def to_yaml(doc: dict) -> str:

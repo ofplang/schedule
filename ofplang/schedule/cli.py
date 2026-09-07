@@ -117,6 +117,19 @@ def _build_parser() -> argparse.ArgumentParser:
         "it never turns a solvable instance unsolvable)",
     )
     s.add_argument(
+        "--max-transport-legs",
+        type=int,
+        default=1,
+        metavar="N",
+        help="how many transport activities one Object-bearing arc may be moved in "
+        "(SPEC §4.5); default 1, a single hop per arc. Above 1, an arc whose "
+        "endpoints are further apart is moved through relays (§6.4.1) -- a device "
+        "reachable at one position only, a plate crossing a hand-off station. Only "
+        "routes of the fewest possible moves are offered, so raising it never sends "
+        "a move that could be direct round by way of somewhere else; it only makes "
+        "reachable what was refused as arc_unreachable",
+    )
+    s.add_argument(
         "--max-time",
         type=float,
         default=None,
@@ -381,6 +394,17 @@ def _cmd_schedule(args) -> int:
                 return EXIT_INVALID
             workflows.append(validated)
 
+    # A move takes at least one transport activity, so a cap below that says no arc
+    # may be served at all -- which would report every one of them unreachable and
+    # read as a defect rather than as what was asked for.
+    if args.max_transport_legs < 1:
+        print(
+            f"ofp-schedule: --max-transport-legs must be at least 1, "
+            f"got {args.max_transport_legs}",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+
     try:
         # One workflow keeps the single-job entry point, so its plan is exactly what
         # it has always been -- no `job` on any activity (SPEC §6.11).
@@ -393,6 +417,7 @@ def _cmd_schedule(args) -> int:
                 max_time_seconds=args.max_time,
                 random_seed=args.seed,
                 ignore_resources=args.ignore_resources,
+                max_transport_legs=args.max_transport_legs,
                 workflow_source=specs[0][1],
             )
         else:
@@ -407,6 +432,7 @@ def _cmd_schedule(args) -> int:
                 max_time_seconds=args.max_time,
                 random_seed=args.seed,
                 ignore_resources=args.ignore_resources,
+                max_transport_legs=args.max_transport_legs,
             )
     except yaml.YAMLError as exc:
         # Malformed workflow / environment / document YAML is an input error.

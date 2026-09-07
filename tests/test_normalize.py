@@ -143,7 +143,9 @@ def test_committed_transport_derives_relay_and_retransport():
     relays = [(i, a) for i, a in enumerate(inst.activities) if a.relay is not None]
     assert len(relays) == 1
     idx, relay = relays[0]
-    assert relay.relay.spot == "station_1.core"
+    # The spot a relay occupies is its chosen mode's; a derived one has exactly one.
+    (relay_mode,) = relay.modes
+    assert relay_mode.input_spots["in"] == "station_1.core"
     assert idx in fix.activities and fix.activities[idx].status == "completed"
     # Two legs on the arc: the committed leg (fixed) and a pending re-transport.
     assert len(inst.arcs) == 2
@@ -254,4 +256,5 @@ def test_multi_input_each_arrived_input_gets_its_own_relay(tmp_path):
     inst, fix, diags = normalize(base, yamlnode.loads(status), env)
     assert [d.code for d in diags.items] == []
     relays = [a for a in inst.activities if a.relay is not None]
-    assert {r.relay.spot for r in relays} == {"dt.a", "dt.b"}  # one relay per arrived input
+    # one relay per arrived input, each at the spot its leg delivered to
+    assert {r.modes[0].input_spots["in"] for r in relays} == {"dt.a", "dt.b"}

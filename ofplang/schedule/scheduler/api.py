@@ -422,6 +422,7 @@ def schedule(
     max_time_seconds: float | None = None,
     random_seed: int | None = None,
     ignore_resources: bool = False,
+    max_transport_legs: int = 1,
     collect_solutions: bool = False,
     workflow_source: str | None = None,
     environment_source: str | None = None,
@@ -446,6 +447,14 @@ def schedule(
     resources -- though such a caller has to pass it, so driving `ofplang.run` this
     way is not possible until run does.
 
+    `max_transport_legs` is how many transport activities one Object-bearing arc may
+    be moved in (SPEC §4.5). One -- the default -- is a single hop per arc, which is
+    what this has always planned. Above one, an arc whose endpoints are further apart
+    is moved through **relays** (§6.4.1): a device reachable at one position only, a
+    plate that has to cross a hand-off station. Only routes of the fewest possible
+    moves are offered, so raising it never makes a move that could be direct go
+    round; it only makes reachable what was `arc_unreachable`.
+
     `collect_solutions` records every improving solution the search found, into
     `report.stats.phases[-1].history`, which is what an anytime measurement (how good
     was the schedule at time t?) reads. Off by default: a solution callback runs
@@ -465,6 +474,7 @@ def schedule(
         max_time_seconds=max_time_seconds,
         random_seed=random_seed,
         ignore_resources=ignore_resources,
+        max_transport_legs=max_transport_legs,
         collect_solutions=collect_solutions,
         environment_source=environment_source,
         document_source=document_source,
@@ -480,6 +490,7 @@ def schedule_jobs(
     max_time_seconds: float | None = None,
     random_seed: int | None = None,
     ignore_resources: bool = False,
+    max_transport_legs: int = 1,
     collect_solutions: bool = False,
     environment_source: str | None = None,
     document_source: str | None = None,
@@ -517,6 +528,7 @@ def schedule_jobs(
         max_time_seconds=max_time_seconds,
         random_seed=random_seed,
         ignore_resources=ignore_resources,
+        max_transport_legs=max_transport_legs,
         collect_solutions=collect_solutions,
         environment_source=environment_source,
         document_source=document_source,
@@ -532,6 +544,7 @@ def _run(
     max_time_seconds: float | None = None,
     random_seed: int | None = None,
     ignore_resources: bool = False,
+    max_transport_legs: int = 1,
     collect_solutions: bool = False,
     environment_source: str | None = None,
     document_source: str | None = None,
@@ -691,6 +704,7 @@ def _run(
         root,
         env,
         ignore_resources=ignore_resources,
+        max_transport_legs=max_transport_legs,
         jobs=tuple(spec.id for spec in specs if spec.id),
     )
     diagnostics += norm_diags.items

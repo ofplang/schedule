@@ -47,11 +47,14 @@ from ofplang.schedule.scheduler.instance import (
     ActivityInstance,
     ArcInstance,
     BoundaryInfo,
+    HopIndex,
     Instance,
     RefillCandidate,
     RefillOption,
     RelayInfo,
+    TransportOption,
     job_membership,
+    routes,
     transport_options,
 )
 from ofplang.schedule.scheduler.model import Arc, Mode, NodePath
@@ -102,6 +105,7 @@ def normalize(
     *,
     ignore_resources: bool = False,
     jobs: tuple[str, ...] = (),
+    max_transport_legs: int = 1,
 ) -> tuple[Instance | None, Fixation | None, Diagnostics]:
     """Build the augmented instance and fixation from `base` (the workflow
     instance, built with `check_reachability=False`) and the status `root`.
@@ -151,6 +155,9 @@ def normalize(
         return None, None, diags
     now = now_node.value if isinstance(now_node, YScalar) and now_node.is_int else 0
 
+    # How far apart two spots are, for the chains below. Built once: it memoises per
+    # source spot, and the same source is asked about once per endpoint mode pair.
+    hops = HopIndex(env)
     node_index = {act.node: i for i, act in enumerate(base.activities)}
     arc_keys = {_arc_key_of(a.arc) for a in base.arcs}
     if isinstance(root, YMap):
@@ -199,6 +206,7 @@ def normalize(
         _build_chain(
             arc_inst, legs_by_arc.get(key, []), fixed_proc, node_index,
             now, env, activities, act_fix, arcs, arc_fix, diags,
+            hops, max_transport_legs,
         )
     if _has_error(diags):
         return None, None, diags
@@ -690,12 +698,205 @@ def _read_status(root, node_index, arc_keys, now, diags):
 
 
 # --------------------------------------------------------------------------
+# One logical move, as one leg or as a chain.
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Route:
+    """One way to serve a logical move: a source mode, a destination mode, the spots
+    they bind, and how many moves apart those spots are (`legs`).
+
+    `legs` is at least 1 even when the spots coincide: a same-spot hand-off is zero
+    *moves* (§5.4) but is still described by one transport activity (§6.4).
+    """
+
+    src_mode: int
+    dst_mode: int
+    from_spot: str
+    to_spot: str
+    legs: int
+
+
+def _viable_routes(src, src_port, dst, dst_port, hops, max_legs) -> list[_Route]:
+    """The (mode pair, hop count) combinations a move may be served by, keeping only
+    those within `max_legs`.
+
+    A pair further apart than the cap is simply not offered -- the same thing that
+    happens today to a pair with no route at all -- so a move keeps whatever pairs
+    it can serve rather than being refused because one of them is out of reach.
+    """
+    viable: list[_Route] = []
+    for m, src_mode in enumerate(src.modes):
+        from_spot = src_mode.output_spots.get(src_port)
+        if from_spot is None:
+            continue
+        for n, dst_mode in enumerate(dst.modes):
+            to_spot = dst_mode.input_spots.get(dst_port)
+            if to_spot is None:
+                continue
+            distance = hops.distance(from_spot, to_spot)
+            if distance is None:
+                continue
+            legs = max(distance, 1)
+            if legs <= max_legs:
+                viable.append(_Route(m, n, from_spot, to_spot, legs))
+    return viable
+
+
+def _waypoints(route: _Route, position: int, hops) -> list[str]:
+    """The spots `route` may occupy at `position` of a chain of `chain` legs.
+
+    Before the route's own last move, these are the spots on a shortest path: `position`
+    moves from the source and the remaining moves from the destination. At or after it,
+    the route has already arrived, and the only spot is the destination -- the object
+    stays where it was delivered and the leg that follows is a same-spot no-op.
+
+    That padding is what lets one chain serve routes of different lengths, which it
+    has to: the number of legs is the model's shape and cannot depend on which mode
+    the solver picks. It is why the padding goes at the **end** -- §6.4.1 folds a
+    relay together with the zero-distance leg that *follows* it, so a chain padded
+    there disappears from the output, while one padded at the front would not.
+    """
+    if position >= route.legs:
+        return [route.to_spot]
+    return [
+        spot
+        for spot in hops.at_distance(route.from_spot, position)
+        if hops.distance(spot, route.to_spot) == route.legs - position
+    ]
+
+
+def _append_move(
+    logical,
+    src_i: int,
+    src_port: str,
+    dst_i: int,
+    dst_port: str,
+    seq0: int | None,
+    *,
+    activities,
+    arcs,
+    env,
+    hops,
+    max_legs: int,
+) -> None:
+    """Append the pending transport(s) that serve one logical move.
+
+    One leg where the endpoints are one move apart, which is every move a
+    single-transporter laboratory makes and every move at all under the default cap
+    of one leg -- and then this is exactly the enumeration it always was, option for
+    option and in the same order.
+
+    Where some endpoint mode pair is further apart than that, a **chain** is built:
+    `K - 1` relays (§6.4.1) and `K` legs, `K` being the largest number of moves any
+    offered pair needs. Only routes of the fewest possible moves are offered, so a
+    pair that can be served directly is never sent round by way of somewhere else.
+
+    A relay carries **one mode per (route, spot)**, not one per spot. The spot alone
+    would lose which pair the candidate was a candidate for, and two pairs' candidate
+    sets share the union: a spot one pair passes through, reachable in one move from
+    another pair's source, would offer that other pair a two-move detour -- which is
+    precisely what "fewest moves" forbids. Keyed by the route, choosing the relay's
+    mode chooses the whole route, and the mode agreement the solver already applies
+    to a transport's endpoints (FORMULATION §4) holds the chain together.
+
+    If no pair is within the cap, one option-less arc is appended, exactly as an
+    unreachable arc has always been: `report_unreachable` finds it there.
+    """
+    viable = _viable_routes(activities[src_i], src_port, activities[dst_i], dst_port,
+                            hops, max_legs)
+    if not viable:
+        # Nothing within the cap: one option-less arc, which is exactly how an arc no
+        # route could serve has always been left. `report_unreachable` finds it there,
+        # so there is one place that says so and it needs to know nothing about chains.
+        arcs.append(ArcInstance(logical, src_i, dst_i, (), seq=seq0))
+        return
+    chain = max(route.legs for route in viable)
+    if chain == 1:
+        # Nothing is further than one move: the enumeration this has always used.
+        options = transport_options(
+            activities[src_i], src_port, activities[dst_i], dst_port, env
+        )
+        arcs.append(ArcInstance(logical, src_i, dst_i, tuple(options), seq=seq0))
+        return
+
+    base_seq = seq0 or 0
+    # Per position: the relay's index among the activities, and the (route, spot)
+    # each of its modes stands for -- in the order they were built, which is the order
+    # the mode indices the legs refer to are counted in.
+    relay_index: list[int] = []
+    relay_modes: list[list[tuple[int, str]]] = []
+    for position in range(1, chain):
+        keyed = [
+            (r, spot)
+            for r, route in enumerate(viable)
+            for spot in _waypoints(route, position, hops)
+        ]
+        modes = tuple(
+            Mode(
+                id="relay",
+                devices=(),
+                duration=0,
+                input_spots={"in": spot},
+                output_spots={"out": spot},
+            )
+            for _r, spot in keyed
+        )
+        relay_index.append(len(activities))
+        relay_modes.append(keyed)
+        activities.append(
+            ActivityInstance((), "", modes, relay=RelayInfo(logical, base_seq + 2 * position - 1))
+        )
+
+    # Leg `position` runs from waypoint `position - 1` to waypoint `position`, where
+    # waypoint 0 is the source activity and waypoint `chain` the destination. A leg's
+    # option names the mode at each end, so a route's legs agree by construction.
+    for position in range(1, chain + 1):
+        leg_options: list[TransportOption] = []
+        for r, route in enumerate(viable):
+            for src_mode, from_spot in _leg_ends(route, r, position - 1, chain, relay_modes):
+                for dst_mode, to_spot in _leg_ends(route, r, position, chain, relay_modes):
+                    for transporter, duration in routes(env, from_spot, to_spot):
+                        leg_options.append(
+                            TransportOption(
+                                src_mode, dst_mode, transporter, from_spot, to_spot, duration
+                            )
+                        )
+        leg_src = src_i if position == 1 else relay_index[position - 2]
+        leg_dst = dst_i if position == chain else relay_index[position - 1]
+        arcs.append(
+            ArcInstance(logical, leg_src, leg_dst, tuple(leg_options),
+                        seq=base_seq + 2 * (position - 1))
+        )
+
+
+def _leg_ends(route: _Route, r: int, position: int, chain: int, relay_modes):
+    """The `(mode index, spot)` a leg may start or end at, for one route.
+
+    Position 0 is the source activity and `chain` the destination -- there the mode is
+    the route's own, and the spot the one it binds. In between it is the relay at that
+    position, whose modes are keyed by route, so only this route's are offered.
+    """
+    if position == 0:
+        return [(route.src_mode, route.from_spot)]
+    if position == chain:
+        return [(route.dst_mode, route.to_spot)]
+    return [
+        (index, spot)
+        for index, (owner, spot) in enumerate(relay_modes[position - 1])
+        if owner == r
+    ]
+
+
+# --------------------------------------------------------------------------
 # Building one arc's chain.
 # --------------------------------------------------------------------------
 
 
 def _build_chain(
-    arc_inst, legs, fixed_proc, node_index, now, env, activities, act_fix, arcs, arc_fix, diags
+    arc_inst, legs, fixed_proc, node_index, now, env, activities, act_fix, arcs, arc_fix, diags,
+    hops, max_legs,
 ):
     logical = arc_inst.arc
     src_i, dst_i = arc_inst.src_activity, arc_inst.dst_activity
@@ -704,13 +905,14 @@ def _build_chain(
     legs = sorted(legs, key=lambda leg: leg.seq)
 
     if not legs:
-        # No committed leg: a single pending transport, resolved against the
-        # (possibly frozen) endpoints. Reachability of pending legs is checked
-        # by the caller after normalization.
-        options = transport_options(
-            activities[src_i], logical.src.port, activities[dst_i], logical.dst.port, env
+        # No committed leg: the whole move is still to be planned, resolved against
+        # the (possibly frozen) endpoints -- one leg, or a chain where they are
+        # further apart than one move. Reachability is checked by the caller after
+        # normalization, which finds an option-less arc either way.
+        _append_move(
+            logical, src_i, logical.src.port, dst_i, logical.dst.port, None,
+            activities=activities, arcs=arcs, env=env, hops=hops, max_legs=max_legs,
         )
-        arcs.append(ArcInstance(logical, src_i, dst_i, tuple(options)))
         return
 
     # A committed leg means the source transport started, so the source processing
@@ -781,10 +983,10 @@ def _build_chain(
     # After the committed legs: if the destination is still pending, add a
     # pending re-transport from the last committed spot to the successor.
     if not dst_fixed:
-        options = transport_options(
-            activities[prev_i], "out", activities[dst_i], logical.dst.port, env
+        _append_move(
+            logical, prev_i, "out", dst_i, logical.dst.port, legs[-1].seq + 2,
+            activities=activities, arcs=arcs, env=env, hops=hops, max_legs=max_legs,
         )
-        arcs.append(ArcInstance(logical, prev_i, dst_i, tuple(options), seq=legs[-1].seq + 2))
 
 
 def _append_relay(activities, act_fix, logical, leg, now) -> int:
@@ -800,7 +1002,7 @@ def _append_relay(activities, act_fix, logical, leg, now) -> int:
         output_spots={"out": leg.to_spot},
     )
     activities.append(
-        ActivityInstance((), "", (mode,), relay=RelayInfo(logical, leg.seq + 1, leg.to_spot))
+        ActivityInstance((), "", (mode,), relay=RelayInfo(logical, leg.seq + 1))
     )
     if leg.status == "completed":
         act_fix[idx] = ActivityFixation("completed", leg.end, leg.end, 0)

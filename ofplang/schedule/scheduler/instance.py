@@ -13,6 +13,7 @@ needs without touching the raw documents again.
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
@@ -32,13 +33,18 @@ from ofplang.schedule.validation import errors
 @dataclass(frozen=True)
 class RelayInfo:
     """Output provenance of a relay activity (a transport junction, SPEC §6.4.1):
-    the logical arc it belongs to, its chain position `seq`, and the spot it
-    occupies. A relay is not a workflow node, so this — not `node` — is its
-    identity. Present only on relay activities (added by `normalize`)."""
+    the logical arc it belongs to and its chain position `seq`. A relay is not a
+    workflow node, so this — not `node` — is its identity. Present only on relay
+    activities (added by `normalize`).
+
+    The **spot** is not a field here: a planned relay offers several (one candidate
+    per route the chain may take), so which one it occupies is the solver's to decide
+    and is read off the chosen mode. A relay derived from a committed leg has a
+    single mode carrying the spot that leg arrived at, so one reading serves both.
+    """
 
     arc: Arc
     seq: int
-    spot: str
 
 
 @dataclass(frozen=True)
@@ -699,6 +705,93 @@ def _check_side(
             )
 
 
+class HopIndex:
+    """How many **moves** it takes to get from one spot to another (SPEC §4.5).
+
+    A move is one transport activity, so this counts edges of the environment's
+    transport table with the transporter forgotten: how far apart two spots are does
+    not depend on who does the carrying, and the rule a chain is built under -- only
+    routes of the fewest possible moves are offered -- is stated over the union of
+    every transporter's reach, including the transporter-less routes (§5.4).
+
+    Distances are memoised per source spot. A laboratory has few spots, and the same
+    source is asked about once per endpoint mode pair.
+    """
+
+    def __init__(self, env: Environment) -> None:
+        # Sorted adjacency, so a walk over it is the same walk on every run. The
+        # distances themselves do not depend on the order, but what is *built* from
+        # them does, and Python's set iteration order is not stable across processes.
+        outgoing: dict[str, set[str]] = {}
+        for _transporter, frm, to in env.transports:
+            outgoing.setdefault(frm, set()).add(to)
+        self._out = {frm: sorted(tos) for frm, tos in outgoing.items()}
+        self._reach: dict[str, dict[str, int]] = {}
+
+    def distance(self, from_spot: str, to_spot: str) -> int | None:
+        """Fewest moves from `from_spot` to `to_spot`, or None if no chain of moves
+        connects them. A same-spot hand-off is **0** moves: nothing is carried."""
+        if from_spot == to_spot:
+            return 0
+        return self._from(from_spot).get(to_spot)
+
+    def at_distance(self, from_spot: str, steps: int) -> list[str]:
+        """The spots exactly `steps` moves from `from_spot`, in sorted order."""
+        return sorted(s for s, d in self._from(from_spot).items() if d == steps)
+
+    def _from(self, from_spot: str) -> dict[str, int]:
+        known = self._reach.get(from_spot)
+        if known is None:
+            known = {from_spot: 0}
+            queue = deque([from_spot])
+            while queue:
+                spot = queue.popleft()
+                for nxt in self._out.get(spot, ()):
+                    if nxt not in known:
+                        known[nxt] = known[spot] + 1
+                        queue.append(nxt)
+            self._reach[from_spot] = known
+        return known
+
+
+def routes(env: Environment, from_spot: str, to_spot: str) -> list[tuple[str | None, int]]:
+    """Every way to move `from_spot` -> `to_spot`, as `(transporter, duration)`.
+
+    One definition of what routes exist, **in one order**, for whoever needs it: a
+    single-leg transport, and every leg of a multi-leg one. The order is part of the
+    answer -- it decides the order of a transport's options, and which of several
+    equally optimal schedules CP-SAT returns depends on how its variables were
+    built, so reordering here changes plans that were not meant to change.
+    """
+    found: list[tuple[str | None, int]] = []
+    # A route the environment declares with no transporter (§5.4): the move needs
+    # none at all -- a device shifting material between its own spots, a chute. It
+    # occupies the source and destination devices like any other move (§4.5) and
+    # simply enters no transporter's non-overlap set.
+    #
+    # Only for two *different* spots. A same-spot pair is left to the no-op fallback
+    # below, which is where it has always been handled; routing it through here
+    # instead would put a second, identical route in front of the ones an
+    # environment that declares a same-spot entry already produces, and that order
+    # has to stay exactly as it was.
+    if from_spot != to_spot:
+        duration = env.transport_duration(None, from_spot, to_spot)
+        if duration is not None:
+            found.append((None, duration))
+    for transporter in env.transporters:
+        duration = env.transport_duration(transporter, from_spot, to_spot)
+        if duration is not None:
+            found.append((transporter, duration))
+    # A same-spot hand-off (§5.4) is a physical no-op that no transporter carries
+    # (§6.4). Ensure it is always schedulable -- even in an environment that defines
+    # no transporters (a purely in-place workflow) -- by synthesizing a
+    # transporter-less zero-duration route, matching the plan output which omits the
+    # transporter for a same-spot move.
+    if from_spot == to_spot and not found:
+        found.append((None, 0))
+    return found
+
+
 def transport_options(
     src: ActivityInstance,
     src_port: str,
@@ -706,13 +799,18 @@ def transport_options(
     dst_port: str,
     env: Environment,
 ) -> list[TransportOption]:
-    """Enumerate viable transport options over the endpoint mode pairs, the
-    transporters, and the transporter-less route (§5.4). A same-spot move is free
-    (duration 0).
+    """Enumerate viable transport options over the endpoint mode pairs and the
+    routes between the spots they bind (`routes`). A same-spot move is free.
 
     Public because `normalize` enumerates the same options when it re-creates the
     boundary and relay arcs of a replan: one definition of what routes are viable,
-    used by whoever needs it, rather than a private one reached across modules."""
+    used by whoever needs it, rather than a private one reached across modules.
+
+    This is the **single-leg** enumeration. A move whose endpoints are further apart
+    than one leg is built by `normalize` as a chain, and its legs cannot come through
+    here: a chain's relay offers one mode per (mode pair, spot), which is a
+    distinction this function -- knowing only spots -- cannot draw (§4.5).
+    """
     options: list[TransportOption] = []
     for m, src_mode in enumerate(src.modes):
         from_spot = src_mode.output_spots.get(src_port)
@@ -722,33 +820,6 @@ def transport_options(
             to_spot = dst_mode.input_spots.get(dst_port)
             if to_spot is None:
                 continue
-            served = False
-            # A route the environment declares with no transporter (§5.4): the move
-            # needs none at all -- a device shifting material between its own spots,
-            # a chute. It occupies the source and destination devices like any other
-            # move (§4.5) and simply enters no transporter's non-overlap set.
-            #
-            # Only for two *different* spots. A same-spot pair is left to the no-op
-            # fallback below, which is where it has always been handled; routing it
-            # through here instead would put a second, identical option in front of
-            # the ones an environment that declares a same-spot route already
-            # produces, and the option list of an existing environment has to stay
-            # exactly as it was.
-            if from_spot != to_spot:
-                duration = env.transport_duration(None, from_spot, to_spot)
-                if duration is not None:
-                    options.append(TransportOption(m, n, None, from_spot, to_spot, duration))
-                    served = True
-            for transporter in env.transporters:
-                duration = env.transport_duration(transporter, from_spot, to_spot)
-                if duration is not None:
-                    options.append(TransportOption(m, n, transporter, from_spot, to_spot, duration))
-                    served = True
-            # A same-spot hand-off (§5.4) is a physical no-op that no transporter
-            # carries (§6.4). Ensure it is always schedulable -- even in an
-            # environment that defines no transporters (a purely in-place workflow)
-            # -- by synthesizing a transporter-less zero-duration route, matching the
-            # plan output which omits the transporter for a same-spot move.
-            if from_spot == to_spot and not served:
-                options.append(TransportOption(m, n, None, from_spot, to_spot, 0))
+            for transporter, duration in routes(env, from_spot, to_spot):
+                options.append(TransportOption(m, n, transporter, from_spot, to_spot, duration))
     return options
