@@ -272,17 +272,65 @@ def test_two_jobs_released_together_onto_one_bay_do_not_queue():
     assert report.outcome == "infeasible"
 
 
-def test_two_jobs_may_not_deliver_to_one_spot():
-    """A delivered result holds its rack until the run is over, so this could never
-    work however the schedule was arranged -- said plainly rather than as `infeasible`."""
+def test_two_jobs_delivering_to_one_spot_are_warned_not_refused():
+    """A delivered result holds its rack to the end of the plan, so two jobs delivering
+    to one rack works only where one of them never delivers -- which is a fact about the
+    history, not about the bindings. So it is said out loud and the verdict left to the
+    solve. Here both jobs really do deliver, and the instance is infeasible."""
     workflow, env, document = _bay()
     document = copy.deepcopy(document)
     document["jobs"][1]["interface"]["outputs"]["result"] = "output.rack_a"
 
     report = schedule_jobs(_bay_jobs(workflow), env, document_path=document)
     assert not report.ok
-    codes = [d.code for d in report.diagnostics if d.severity == "error"]
-    assert codes == ["interface_duplicate_spot"]
+    assert report.outcome == "infeasible"
+
+    warned = [d for d in report.diagnostics if d.code == "interface_shared_output_spot"]
+    assert [d.severity for d in warned] == ["warning"]
+    # The spot and the ports, which the failure that follows does not name.
+    assert "output.rack_a" in warned[0].message
+    assert "jobs_not_plannable_together" in {d.code for d in report.diagnostics}
+
+
+def test_a_stopped_job_frees_the_output_spot_it_will_never_reach():
+    """🔴 Why that warning is not a refusal. `job1` has failed, so its delivery is
+    cancelled and the model frees its rack -- and `job2` may be sent there after all.
+
+    The rule used to refuse this document outright, on the argument that two deliveries
+    always overlap at the end of the plan. That argument holds only while both jobs
+    still deliver, and the check cannot see whether they do: it is handed the roster and
+    runs before any status is read. So a document with a perfectly good schedule was
+    turned away.
+    """
+    workflow, env, document = _bay()
+    plan = schedule_jobs(_bay_jobs(workflow), env, document_path=document).plan
+
+    # `job1` fails while heating, after its sample had been collected from the bay.
+    status = copy.deepcopy(plan)
+    status["now"] = 12
+    for a in status["activities"]:
+        if a.get("job") != "job1":
+            continue
+        if a["kind"] == "processing":
+            a["status"], a["start"], a["end"] = "failed", 2, 12
+        elif a["arc"]["from"]["node"] == []:
+            a["status"], a["start"], a["end"] = "completed", 0, 2
+        else:
+            a["status"], a["start"], a["end"] = "cancelled", 12, 12
+    # `job2` has not started, and is now sent to the rack `job1` was going to use.
+    status["activities"] = [a for a in status["activities"] if a.get("job") != "job2"]
+    status["jobs"][1]["interface"]["outputs"]["result"] = "output.rack_a"
+
+    report = schedule_jobs(_bay_jobs(workflow), env, document_path=status)
+    assert report.ok, [d.code for d in report.diagnostics]
+    assert "interface_shared_output_spot" in {d.code for d in report.diagnostics}
+    # And it really is delivered there.
+    delivered = [
+        a["to_spot"]
+        for a in report.plan["activities"]
+        if a.get("job") == "job2" and a["kind"] == "transport" and a["arc"]["to"]["node"] == []
+    ]
+    assert delivered == ["output.rack_a"]
 
 
 def test_a_joint_plan_refuses_a_top_level_interface():

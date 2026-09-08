@@ -16,10 +16,14 @@
 # infeasible rather than queued. That is a deliberate reading — v0 says entry material
 # is already placed, not waiting to be placed (design.md).
 #
-# **The racks are not.** A delivered result holds its rack until the run is over
-# (§6.8), so two jobs delivering to one rack overlap however the schedule is arranged.
-# The scheduler refuses that outright (`interface_duplicate_spot`) rather than
-# reporting "no feasible schedule found" — try setting both to `rack_a` to see it.
+# **The racks are not shared here, but they may be.** A delivered result holds its rack
+# to the end of the plan, so two jobs delivering to one rack works only if one of them
+# never delivers — which a job that has stopped (§6.2) does not. Whether that is the
+# case is in the history, not in the bindings, so the scheduler **warns**
+# (`interface_shared_output_spot`) and leaves the verdict to the solve: set both to
+# `rack_a` and this document comes back `infeasible`, with `jobs_not_plannable_together`
+# naming `job1`; do the same after `job1` has failed and the plan is produced, `job2`
+# delivering to the rack `job1` will now never reach.
 #
 # `job1` is first in the roster, so it is first in priority: whatever completion the
 # first plan promises it, `job2` may not push it past.

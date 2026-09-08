@@ -195,10 +195,14 @@ because it only works if the releases leave room: drop `job2`'s release and both
 samples are on one bay at once, which comes back `infeasible` rather than queued. That
 is deliberate — v0 says entry material is already placed, not waiting to be placed.
 
-**The racks are not.** A delivered result holds its rack until the run is over (§6.8),
-so two jobs delivering to one rack overlap however the schedule is arranged. That is
-**refused outright** (`interface_duplicate_spot`) rather than reported as "no feasible
-schedule found" — set both to `rack_a` to see it.
+**The racks are not shared here, but they may be.** A delivered result holds its rack
+to the end of the plan (§6.8), so two jobs delivering to one rack works only if one of
+them never delivers — which a job that has stopped does not. That is in the history
+rather than in the bindings, so the scheduler **warns**
+(`interface_shared_output_spot`) and lets the solve decide: set both to `rack_a` and
+this document comes back `infeasible`, naming `job1` as the job whose removal would let
+the rest be planned; set both to `rack_a` *after* `job1` has failed and the plan is
+produced, with `job2` delivering to the rack `job1` will now never reach.
 
 - `outputs/shared_bay.plan.yaml` (makespan 44) and `outputs/shared_bay.device.svg`.
 

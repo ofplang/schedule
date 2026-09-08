@@ -145,7 +145,12 @@ OBJECTIVE_IN_ENVIRONMENT = "objective_in_environment"
 INTERFACE_UNKNOWN_PORT = "interface_unknown_port"
 # The bound name is a Pure Data boundary port (occupies no spot).
 INTERFACE_PURE_DATA_PORT = "interface_pure_data_port"
-# Two `interface.inputs` bind the same spot (an entry spot holds one Object).
+# Two bindings of *one* interface, on the same side, bind the same spot: two entry
+# Objects cannot start on one spot, and two delivered Objects cannot rest on one. The
+# bindings of an interface are simultaneous by construction -- every input from its
+# job's release, every output to the end of the plan -- so no schedule can separate
+# them and no history can make this true. Across *jobs* the claim is weaker and is a
+# warning instead (`interface_shared_input_spot` / `interface_shared_output_spot`).
 INTERFACE_DUPLICATE_SPOT = "interface_duplicate_spot"
 # An Object-bearing entry input has no `interface` binding (only where interface is
 # required; optional in the current phase).
@@ -185,6 +190,14 @@ JOBS_NOT_PLANNABLE_TOGETHER = "jobs_not_plannable_together"
 # so one loading bay can serve two runs -- but only if the releases leave room. Said
 # out loud because the failure, when it comes, is a bare "no feasible schedule found".
 INTERFACE_SHARED_INPUT_SPOT = "interface_shared_input_spot"
+# A warning: two jobs bind the same final-output spot (§6.8, §6.11). A delivered
+# Object holds its spot to the end of the plan, so this works only if one of the two
+# never delivers -- which a job that has stopped (§6.2) does not, and a job that has
+# left the plan cannot. That is a fact about the history and the run, not about the
+# document, so the verdict belongs to the solver: an instance where both really do
+# deliver comes back `infeasible`, with `jobs_not_plannable_together` naming the job.
+# Said out loud here because that failure names neither the spot nor the ports.
+INTERFACE_SHARED_OUTPUT_SPOT = "interface_shared_output_spot"
 # A joint plan (§6.11) was given a document carrying `interface`. The section binds
 # one workflow's boundary material to spots and says nothing about which job each
 # binding belongs to, so sharing it between jobs would have several boundary nodes
@@ -309,6 +322,7 @@ ERROR_CODES = frozenset(
         JOB_ROSTER_MISMATCH,
         JOB_WORKFLOW_MISMATCH,
         INTERFACE_SHARED_INPUT_SPOT,
+        INTERFACE_SHARED_OUTPUT_SPOT,
         JOBS_NOT_PLANNABLE_TOGETHER,
         MULTI_JOB_INTERFACE,
         STATUS_MISSING_NOW,

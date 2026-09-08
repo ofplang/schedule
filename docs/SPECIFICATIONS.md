@@ -1226,13 +1226,25 @@ loading bay serving two runs — provided their releases leave the first job's m
 time to be collected. Whether they do is the solver's to decide, so this is a warning
 (`interface_shared_input_spot`, §10.4) and not a refusal; released together onto one
 spot, both are on it at once and the instance is infeasible rather than queued (v0
-says entry material is already placed, not waiting to be placed). A delivered Object,
-by contrast, holds its spot until the run is over, so **two jobs may not bind the same
-final-output spot** — no schedule could satisfy it, and it is refused outright
-(`interface_duplicate_spot`, §10.4).
+says entry material is already placed, not waiting to be placed). A delivered Object
+holds its spot to the end of the plan, so **two jobs may bind the same final-output
+spot only where one of them never delivers** — a job that has stopped (§6.2) does not,
+and a job that has left the plan cannot. That is a warning too
+(`interface_shared_output_spot`, §10.4), for the same reason as the entry spot:
+whether both jobs really deliver is what the history says, not what the bindings say.
+Where they both do, the instance is infeasible, and `jobs_not_plannable_together`
+(§10.4) names the job whose removal would let the rest be planned.
 
-Both of those are true *of one plan*. A job that leaves the plan takes its material
-with it, and neither rule would hold across that; nothing in v0 removes a job yet.
+One rule for both sides, then: a boundary spot two jobs share is **stated, not
+refused**. What the warnings add is the spot and the ports, which the failure that may
+follow does not name. Nothing in v0 removes a job from a plan yet; when something does,
+a withdrawn job's output spot is free in exactly the way a stopped job's is, and
+neither warning has to change to say so.
+
+Two bindings of *one* interface on one spot are a different claim and stay refused
+(`interface_duplicate_spot`, §6.8): those bindings are simultaneous by construction —
+every input from its job's release, every output to the end of the plan — so no
+history can separate them.
 
 The roster makes the document self-describing rather than leaving the reader to infer
 the jobs from whichever `job` values happen to appear, and it is what lets a replan be
@@ -1719,11 +1731,12 @@ leg is pinned like any committed leg; a pending one is re-derived).
   a history against the wrong workflow would pin it onto activities that never ran
   it. A top-level `interface` is refused when the call names jobs
   (`multi_job_interface`): it binds one workflow's ports, and a joint plan carries
-  one per job. Across jobs, two entry bindings on the same spot are a **warning**
-  (`interface_shared_input_spot`) rather than an error — legitimate where the
-  releases leave the first job's material time to be collected — while two *output*
-  bindings on one spot stay `interface_duplicate_spot`, since no schedule can deliver
-  both there.
+  one per job. Across jobs, a shared boundary spot is a **warning** rather than an
+  error: two entry bindings on one spot (`interface_shared_input_spot`) are legitimate
+  where the releases leave the first job's material time to be collected, and two
+  output bindings on one spot (`interface_shared_output_spot`) are legitimate where one
+  of the two never delivers (§6.11). Both turn on the history rather than on the
+  bindings, so the verdict is the solver's.
 - **Promises and stopping** (§6.11, §6.2). A promise that no schedule can keep is
   relaxed and reported (`job_bound_relaxed`, a warning: a plan is still produced). If
   nothing can be planned even with every promise lifted, the job whose removal would
@@ -1855,7 +1868,7 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `arc_unreachable` | no endpoint-mode pair and route (transporter or transporter-less, §5.4) can serve an Object-bearing arc (interior or boundary, §6.8) |
 | `interface_unknown_port` | an `interface` binding names a port that is not an Object-bearing boundary port on that side (§6.8) |
 | `interface_pure_data_port` | an `interface` binding names a Pure Data port (occupies no spot) |
-| `interface_duplicate_spot` | two bindings on one side (two inputs, or two outputs) bind the same spot |
+| `interface_duplicate_spot` | two bindings of one `interface`, on the same side (two inputs, or two outputs), bind the same spot. Across *jobs* the claim is weaker and warns instead (below) |
 | `interface_input_missing` | an Object-bearing entry input has no `interface` binding (§6.8) |
 | `job_workflow_mismatch` | a job's workflow is not the one its roster entry's `fingerprint` records (§6.11) |
 | `job_bound_relaxed` | **warning**: a job could no longer finish by the completion it was promised, so the promise was re-derived (§6.11) |
@@ -1863,6 +1876,7 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `multi_job_interface` | a document carrying a top-level `interface` was given to a plan that names jobs: it binds one workflow's ports, so a joint plan carries it per job (§6.11) |
 | `jobs_not_plannable_together` | no schedule exists even with every promise lifted; names the job whose removal would let the rest be planned, or says none does (§6.11) |
 | `interface_shared_input_spot` | **warning**: two jobs bind the same entry spot (§6.11). Legitimate if their releases leave the first job's material time to be collected |
+| `interface_shared_output_spot` | **warning**: two jobs bind the same final-output spot (§6.11). Legitimate if one of them never delivers — a job that has stopped (§6.2), or one that has left the plan. Where both do deliver the instance is `infeasible` |
 | `missing_inventories` | the resource model is in effect but the document has no `inventories` (§6.10). An empty `initial` is the way to say every stock starts empty |
 | `inventory_exceeds_capacity` | an `inventories.levels` level is above its resource's `capacity` |
 | `resources_ignored` | the resource model was disabled (§4.7.3) where it would otherwise have been in effect, so nothing was applied. Not raised for an environment that merely declares a stock nothing draws on — switching that off changes nothing (*warning*) |

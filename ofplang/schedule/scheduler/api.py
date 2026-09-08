@@ -177,26 +177,36 @@ def _boundary_spots(spec: JobSpec, side: str) -> dict[str, str]:
 
 
 def _check_boundary_spots(specs: tuple[JobSpec, ...]) -> list[Diagnostic]:
-    """What two jobs may and may not share at the boundary (SPEC §6.8, §6.11).
+    """Two jobs sharing one boundary spot: said out loud, decided by the solver
+    (SPEC §6.8, §6.11).
 
-    **Outputs cannot be shared.** A delivered Object holds its spot until the run is
-    over, so two jobs delivering to one spot always overlap there -- the instance is
-    infeasible however the schedule is arranged, and saying so beats "no feasible
-    schedule found".
+    One rule for both sides. Sharing an **entry** spot is legitimate where the
+    releases leave room -- entry material holds its spot only from its job's release
+    until the move that collects it, so one loading bay serves two runs. Sharing a
+    **final-output** spot is legitimate where one of the two never delivers -- a job
+    that has stopped (§6.2) does not, and a job that has left the plan cannot.
 
-    **Inputs can be**, and often should: entry material holds its spot only from the
-    job's release until the move that collects it, so a second job released after the
-    first one's material has left uses the same place legitimately -- one loading bay,
-    two runs. Whether the times work out is the solver's to decide, so this only warns.
+    Neither is a property of the document, which is why neither is refused here.
+    Whether the releases leave room, and whether both jobs really do deliver, is what
+    the history says and what the solver decides: an instance where the spot genuinely
+    cannot serve both comes back `infeasible`, with `jobs_not_plannable_together`
+    naming the job whose removal would let the rest be planned. What that failure does
+    not say is *which spot*, so these warnings say it.
 
-    🔴 Both rules are true *of one plan*. A job that leaves the plan takes its material
-    with it (design.md "ジョブの退出"), and then even an output spot is free for the
-    next job. That is why both live in this one function: relaxing them later is
-    editing one place.
+    🔴 The output side used to be an error, on the argument that two delivered Objects
+    always overlap at the end of the plan. That is true only while both jobs deliver,
+    which this function cannot see: it is handed the roster, and runs before any status
+    is read. A job that had stopped -- whose delivery is cancelled and whose spot the
+    model frees -- was refused all the same, so a document with a perfectly good
+    schedule was turned away.
+
+    Refusing two bindings of *one* interface on one spot is a different claim and stays
+    an error (`interface_duplicate_spot`, `instance.py`): those bindings are
+    simultaneous by construction, so no history can separate them.
     """
     out: list[Diagnostic] = []
     for side, code, severity in (
-        ("outputs", errors.INTERFACE_DUPLICATE_SPOT, ERROR),
+        ("outputs", errors.INTERFACE_SHARED_OUTPUT_SPOT, WARNING),
         ("inputs", errors.INTERFACE_SHARED_INPUT_SPOT, WARNING),
     ):
         owner: dict[str, tuple[str, str]] = {}
@@ -205,8 +215,8 @@ def _check_boundary_spots(specs: tuple[JobSpec, ...]) -> list[Diagnostic]:
                 if spot in owner:
                     first_job, first_port = owner[spot]
                     detail = (
-                        "two jobs cannot deliver to one spot: a delivered Object holds "
-                        "it until the run is over"
+                        "a delivered Object holds its spot to the end of the plan, so "
+                        "this works only if one of them never delivers"
                         if side == "outputs"
                         else "their releases must leave the first job's material time "
                         "to be collected before the second's arrives"
