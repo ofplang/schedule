@@ -54,7 +54,7 @@ pip install -e ".[test]"
 
 ```sh
 ofp-schedule validate <file>...                 # validate an environment or a plan/status
-ofp-schedule schedule <workflow>... --env <env> [--document doc.yaml] [--running-margin N] [--max-time SECONDS] [--seed N] [--no-validate] [-o plan.yaml] [--format yaml|json]
+ofp-schedule schedule <workflow>... --env <env> [--document doc.yaml] [--running-margin N] [--max-time SECONDS] [--seed N] [--max-transport-legs N] [--no-validate] [-o plan.yaml] [--format yaml|json]
 ofp-schedule visualize <plan|status> [--view device|workflow|lane] [--theme light|dark|auto] [--format svg|html] [-o FILE]
 ```
 
@@ -84,7 +84,15 @@ single worker. `--max-time SECONDS` caps the search: the best schedule found so
 far is returned instead of the proven optimum, which the plan says by reporting
 `outcome: feasible` rather than `optimal` — and a search that found nothing in
 the budget reports no schedule at all (exit `1`), since an instance is not
-unschedulable merely because time ran out. `--ignore-resources` switches consumables off (§4.7.3): the
+unschedulable merely because time ran out.
+`--max-transport-legs N` is how many transport activities one Object-bearing arc may
+be moved in (§6.4.1). It is **1 by default** — the single hop per arc this has
+always planned. Raise it to describe a device the transporter reaches at one position
+only, or a plate that has to cross a hand-off station: the arc is then carried in as
+many legs as the shortest chain of moves between its endpoint spots takes, joined by
+**relay** activities. Only the fewest possible moves are offered, so an arc one move
+apart is never sent round by way of somewhere else.
+`--ignore-resources` switches consumables off (§4.7.3): the
 declarations are still checked for shape but nothing is applied, and the plan is
 shaped as it would be from an environment that never declared one — a relaxation,
 so it never turns a solvable instance unsolvable. `--no-validate` skips the one-shot `ofplang-validate` front-door

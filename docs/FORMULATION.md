@@ -78,9 +78,12 @@ A boundary connection is then an **ordinary arc**: `input node → consumer` for
 entry input, `producer → output node` for a final output. No special arc form,
 transport variable, or occupancy rule is needed — the boundary node is just an
 activity with a single spot-fixing mode, and the arc is scheduled by the ordinary
-rules below. (Likewise a **relay** — the junction of a multi-leg move on replan —
-is not a model primitive: it is an ordinary spot-occupancy between two transports,
-introduced only by replan construction; see §9.)
+rules below. (Likewise a **relay** — the junction between two consecutive legs of one
+arc's move — is not a model primitive: it is an ordinary spot-occupancy between two
+transports, introduced by construction rather than by the rules below. Two
+constructions introduce one: an arc whose endpoint spots are further apart than a
+single move is expanded into a chain of legs before the model is built (§4), and a
+replan re-routes a committed arrival through one (§9).)
 
 Every activity has, at minimum:
 
@@ -378,7 +381,14 @@ $$
 Summed over all $m,n,t$, these force exactly one $q_{r,m,n,t} = 1$ per arc, so
 each transport selects one transporter, or $\bot$ where the environment declares a
 route needing none. An arc with no feasible combination has
-no route to select and the instance is infeasible (SPEC §9.3 `arc_unreachable`).
+no route to select and the instance is infeasible (SPEC §9.3 `arc_unreachable`) —
+but only once it is presented to the model as a single leg. Where the endpoint spots
+are further apart than a single move reaches, instance construction first replaces the
+arc by the **shortest** chain of moves that does reach, joined by relays (SPEC
+§6.4.1), and it is those legs that are the members of $R$. How many legs one arc may
+take is an input; at its default of one, no chain is built and $R$ is exactly the arcs.
+Nothing above is special-cased for a leg: each selects its own route by these same
+constraints, and the endpoint mode agreement is what holds the chain together.
 A boundary arc is included: its boundary node has a single mode $M = \{0\}$, so
 the coupling on that side degenerates to $x_{\cdot,0} = 1$ and the sum ranges over
 the other endpoint's modes and the transporter choices (including $\bot$).
