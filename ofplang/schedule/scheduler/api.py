@@ -269,7 +269,7 @@ def _unplannable(instance, specs: tuple[JobSpec, ...], solve_kwargs: dict) -> li
 
     🔴 **It reports and does nothing else.** Dropping the job would be the scheduler
     quietly discarding work somebody asked for; whether to withdraw it is the
-    caller's to decide (design.md "ジョブの退出").
+    caller's to decide (design.md, withdrawal).
     """
     if len(specs) < 2:
         return []

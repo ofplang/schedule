@@ -64,7 +64,7 @@ class BoundaryInfo:
     **None means the node belongs to no job**, which is the single-workflow case
     today. It is deliberately expressible: material left behind by a job that has
     left the plan belongs to no job either, and that is the shape a withdrawal will
-    need (design.md "ジョブの退出").
+    need (design.md, withdrawal).
 
     `kind` is `input`, `output`, or **`held`**. A held node is not a workflow boundary
     at all: it is a spot the document says is occupied by something the plan does not
