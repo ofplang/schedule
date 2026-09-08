@@ -207,10 +207,11 @@ Processing and transport:
 - $k_r^{\mathrm{out}}$, $k_r^{\mathrm{in}}$: the source output port and
   destination input port of arc $r$.
 
-The boundary nodes need no special parameters: each has a single mode whose
+The boundary nodes need no special parameters: a mode's
 $\sigma^{\mathrm{out}}$ (input node) or $\sigma^{\mathrm{in}}$ (output node) are the
-interface spots (SPEC §6.8), and whose device set is empty. Their spots enter the
-model as ordinary $\sigma$ values.
+spots that mode stands for — the interface spots where the document binds them (SPEC
+§6.8), a candidate resting spot where the choice is the scheduler's (§Activities) —
+and the device set is empty. Their spots enter the model as ordinary $\sigma$ values.
 
 Resources and replenishment:
 

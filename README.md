@@ -72,7 +72,9 @@ its first plan achieves (`bound`) — which later plans keep, so a job already b
 planned is not disturbed by one that arrives later.
 
 A `--document` (execution document, §6) supplies the `interface` boundary
-constraint (§6.8, where a workflow's entry inputs / final outputs sit), the
+constraint (§6.8, where a workflow's entry inputs / final outputs sit — an entry
+input has to be bound, while a final output left unbound comes to rest wherever the
+schedule finds room, so bind the ones whose destination matters), the
 `inventories` a run starts with (§6.10) where devices hold consumables, the
 `objective` (§6.1, now its only declaration site), the `jobs` roster (§6.11) and the
 `occupied` spots something is physically holding (§6.12), and, when it sets `now`,

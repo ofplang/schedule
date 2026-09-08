@@ -661,7 +661,9 @@ status are the same shape filled differently:
   times and assignments);
 - a **status** carries what has happened so far (some activities `completed` or
   `running`, with actual times) and the `now` reference time; boundary material
-  positions come from `interface` (§6.8), everything else from the activities.
+  positions come from `interface` (§6.8) where it binds them, everything else from
+  the activities — including where an unbound final output came to rest, which its
+  boundary transport records like any other move.
 
 Fields that appear in only one use are optional. Times are non-negative integers
 in `time.unit`.
@@ -856,9 +858,10 @@ environment.
     (node paths run from the entry composite's body down, so `[]` is the workflow
     interface and cannot collide with any atomic node, which always has a non-empty
     path). The empty path on the `from` side names an **entry input** port, on the
-    `to` side a **final output** port. A boundary transport has a fixed spot on its
+    `to` side a **final output** port. A boundary transport carries a spot on its
     interface side (`from_spot` for a boundary input, `to_spot` for a boundary
-    output); the other side is the consuming / producing activity's spot.
+    output) — the bound one, or the one the scheduler chose for an unbound final
+    output (§6.8); the other side is the consuming / producing activity's spot.
 - `seq` (optional) — the leg's position in a multi-leg chain for that arc (§6.6).
   Omitted for a single-leg transport (equivalent to the first position).
 
@@ -937,9 +940,9 @@ plan even when a spot is revisited (the same `spot` can appear at two positions)
 an omission means, and no earlier plan assigned it anything to be stable with.
 
 On a replan the scheduler fixes `completed` and `running` activities to their
-reported times and assignments, takes boundary positions from `interface` (§6.8)
-and every other Object position from the committed activities, and re-optimises the
-rest at or after `now`. The main fields are not identities — a process/mode or a
+reported times and assignments, takes bound boundary positions from `interface`
+(§6.8) and every other Object position — an unbound final output's included — from
+the committed activities, and re-optimises the rest at or after `now`. The main fields are not identities — a process/mode or a
 spot/transporter combination does not distinguish repeated occurrences, and the
 times change from one plan to the next.
 
@@ -1071,17 +1074,19 @@ port maps to exactly one spot; two bindings on the same side (two `inputs`, or t
 two delivered Objects cannot rest at one. An input and an output may share a spot
 (they occupy it at different times).
 
-**Meaning (induces boundary transports).** Each binding adds a boundary transport
-(§6.4): a boundary-**input** transport moves the Object from the fixed spot to
-whatever input spot the consuming activity's chosen mode needs (a real move, or a
-same-spot no-op when they coincide); a boundary-**output** transport moves the
-produced Object to the fixed spot. These are ordinary transports whose `arc` has an
-empty-path endpoint (§6.4). The fixed spot is occupied from the start of the run
-until the input is picked up, and from delivery until the end of the schedule for
-an output; a boundary-output delivery is counted in the makespan. The
-consuming/producing activity's mode is otherwise free — nothing is pruned; the
-transport bridges the fixed spot to the chosen mode's spot (infeasible only if no
-transporter can, surfaced as `arc_unreachable`, §10.4). The full model is in
+**Meaning (induces boundary transports).** Every Object-bearing boundary port adds a
+boundary transport (§6.4) — each binding, and each unbound final output, whose spot
+the scheduler chooses instead (below): a boundary-**input** transport moves the Object
+from its boundary spot to whatever input spot the consuming activity's chosen mode
+needs (a real move, or a same-spot no-op when they coincide); a boundary-**output**
+transport moves the produced Object to its boundary spot. These are ordinary
+transports whose `arc` has an empty-path endpoint (§6.4). The boundary spot is
+occupied from the start of the run until the input is picked up, and from delivery
+until the end of the schedule for an output; a boundary-output delivery is counted in
+the makespan. The consuming/producing activity's mode is otherwise free — nothing is
+pruned; the transport bridges the boundary spot to the chosen mode's spot (infeasible
+only if no transporter can, surfaced as `arc_unreachable`, §10.4 — which an unbound
+output cannot reach, staying put being always available to it). The full model is in
 `FORMULATION.md`.
 
 **Round-trip.** `interface` is supplied for the initial plan and **echoed in the
@@ -1661,9 +1666,11 @@ environment for processes the workflow never invokes are not checked.
   combination of endpoint modes and a route — some transporter, or the
   transporter-less route (§5.4) — that can move between the chosen spots exists
   (`arc_unreachable` otherwise). This depends on mode selection and is a solvability
-  concern, not a schema check. A **boundary** arc (from `interface`, §6.8) is
-  included: no route able to move between its fixed spot and the consuming/producing
-  mode's spot is likewise `arc_unreachable`.
+  concern, not a schema check. A **boundary** arc (§6.8) is included: no route able
+  to move between its boundary spot and the consuming/producing mode's spot is
+  likewise `arc_unreachable`. An **unbound** final output cannot reach that error —
+  its boundary spot is chosen from what its producer can reach, and staying put is
+  always among the choices — so this bites only a spot the document named.
   - A route may take **several legs** through relays (§4.5). How many are permitted
     is the scheduler's to offer and is not part of the document: one leg per arc is
     the default, and a scheduler that offers more finds a route where one offering
