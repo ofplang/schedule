@@ -933,7 +933,15 @@ def _build_chain(
     # cannot end before it starts, and the first leg cannot depart before its source
     # activity completed. Either is a self-contradictory status; report it here so it
     # surfaces as a diagnostic rather than as a bare INFEASIBLE from the pinned model.
-    src_fix = act_fix.get(src_i)
+    # A boundary node (§6.8) is not fixation-managed: whatever fixation it carries, the
+    # solver pins the input node at its job's release and the output node at the makespan
+    # (`cpsat._add_processing`). The only fixation one ever receives is the blanket cancel
+    # a stopped job's activities get, and that zero-length interval at `now` says nothing
+    # about when the entry material was there -- measuring a committed leg against it would
+    # refuse the ordinary history of a job that stopped *after* its material had been
+    # collected. A job that has not stopped already skips the check below, because its
+    # boundary nodes carry no fixation at all; this keeps that true once one stops.
+    src_fix = act_fix.get(src_i) if activities[src_i].boundary is None else None
     for k, leg in enumerate(legs):
         if leg.end < leg.start:
             diags.error(

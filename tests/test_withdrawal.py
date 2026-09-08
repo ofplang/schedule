@@ -484,3 +484,75 @@ def test_cancelled_work_draws_no_consumption():
     ran = [a for a in report.plan["activities"] if a.get("process") == "assay"
            and a.get("status") != "cancelled"]
     assert ran and all("consumption" in a for a in ran)
+
+
+# ---------------------------------------------------------------------------
+# A stopped job that had boundary material (SPEC §6.8).
+# ---------------------------------------------------------------------------
+
+
+def _bay():
+    """Two jobs of one workflow with real boundary material: one shared loading bay,
+    a rack each. Every other stopped-job fixture here uses a workflow that creates its
+    material internally, so this is the only one with boundary nodes at all."""
+    return (
+        yaml.safe_load(
+            (EXAMPLES / "interface_load.workflow.yaml").read_text(encoding="utf-8")
+        ),
+        yaml.safe_load((EXAMPLES / "shared_bay.env.yaml").read_text(encoding="utf-8")),
+        yaml.safe_load(
+            (EXAMPLES / "shared_bay.document.yaml").read_text(encoding="utf-8")
+        ),
+    )
+
+
+def test_a_stopped_job_keeps_the_history_of_its_boundary_move():
+    """🔴 A job whose entry material had already been collected must still be
+    replannable, and so must the laboratory around it.
+
+    Its boundary nodes are not fixation-managed: whatever fixation one carries, the
+    solver pins the input node at the job's release and the output node at the makespan
+    (§6.8). The blanket cancel a stopped job's activities receive put one on them all
+    the same, and the check on committed transport legs then measured the bay move
+    against that zero-length interval at `now`. The move had departed at the release,
+    so the leg read as departing before its own source finished: every stopped job with
+    boundary material was refused as self-contradictory, and the refusal took the whole
+    document with it -- the jobs that had not stopped could not be replanned either.
+
+    A job that has *not* stopped never met this, because its boundary nodes carry no
+    fixation to measure against.
+    """
+    workflow, env, document = _bay()
+    plan = schedule_jobs(_jobs(workflow), env, document_path=document, random_seed=0).plan
+
+    status = _stop(plan, "job1", failed_node=["Heat"], at=12)
+    # `_stop` reports the failed activity as having begun at 0, which is right for the
+    # workflows that start there; this one starts when its sample arrives.
+    heat = [a for a in _of(status, "job1") if a["kind"] == "processing"]
+    assert len(heat) == 1
+    heat[0]["start"] = 2
+    # The bay move actually happened -- the sample was collected, and *then* the heat
+    # failed. That is the case at issue: a committed leg that departed at the job's
+    # release, long before `now`.
+    entry_move = [
+        a
+        for a in status["activities"]
+        if a.get("job") == "job1"
+        and a["kind"] == "transport"
+        and a["arc"]["from"]["node"] == []
+    ]
+    assert len(entry_move) == 1
+    entry_move[0].update(status="completed", start=0, end=2)
+
+    report = schedule_jobs(_jobs(workflow), env, document_path=status)
+    assert report.ok, [d.code for d in report.diagnostics]
+
+    # The move is still history, at the time it happened.
+    kept = [
+        (a["start"], a["end"])
+        for a in _of(report.plan, "job1")
+        if a["kind"] == "transport" and a["arc"]["from"]["node"] == []
+    ]
+    assert kept == [(0, 2)]
+    # And job2 was planned regardless, which is the whole point.
+    assert any(a.get("status") is None for a in _of(report.plan, "job2"))
