@@ -219,6 +219,11 @@ def _bay():
     )
 
 
+def _of(plan, job: str) -> list[dict]:
+    """The activities `plan` attributes to `job`."""
+    return [a for a in plan["activities"] if a.get("job") == job]
+
+
 def _bay_jobs(workflow):
     return [
         JobInput("job1", copy.deepcopy(workflow)),
@@ -1071,3 +1076,47 @@ def test_a_broken_workflow_names_the_job_it_came_from():
     messages = [d.message for d in report.diagnostics if d.code == "no_capability"]
     assert any(m.startswith("job 'first':") for m in messages)
     assert any(m.startswith("job 'second':") for m in messages)
+def test_an_unbound_output_keeps_another_job_off_its_spot():
+    """🔴 The plan used to send one job's plate onto a spot another job's plate was
+    physically sitting on, and report it `optimal`.
+
+    An unbound final output was the hole: a spot is taken only while some activity's
+    interval covers it, and the producing activity has ended, so the delivered Object
+    was invisible. Now it is bound to a spot the scheduler chooses (§6.8) and holds it
+    to the end of the plan, so the two jobs are ordered instead of overlapped.
+    """
+    workflow = _load("interface_load.workflow.yaml")
+    env = _load("shared_bay.env.yaml")
+    document = copy.deepcopy(_load("shared_bay.document.yaml"))
+    # `job1` says nothing about where its result goes. Both jobs heat on the one
+    # heater, so where that result comes to rest decides whether `job2` can run.
+    del document["jobs"][0]["interface"]["outputs"]
+
+    report = schedule_jobs(_bay_jobs(workflow), env, document_path=document, random_seed=0)
+    assert report.ok, [d.code for d in report.diagnostics]
+    assert "interface_output_unbound" in {d.code for d in report.diagnostics}
+    # Not binding it cost nothing: the same 44 as the example that binds both.
+    assert report.makespan == 44
+
+    # 🔴 The plate is carried off the heater stage rather than left on it. Left there
+    # it would hold the stage to the end of the plan and `job2` could never heat --
+    # which is exactly what the plan used to do, silently and without the hold.
+    (delivery,) = [
+        a
+        for a in _of(report.plan, "job1")
+        if a["kind"] == "transport" and a["arc"]["to"]["node"] == []
+    ]
+    assert delivery["from_spot"] == "heater.stage"
+    assert delivery["to_spot"] != "heater.stage"
+
+    # And the two jobs' turns on the stage do not overlap.
+    def heating(job):
+        return [
+            (a["start"], a["end"])
+            for a in _of(report.plan, job)
+            if a.get("output_spots", {}).get("out") == "heater.stage"
+        ]
+
+    (one,) = heating("job1")
+    (two,) = heating("job2")
+    assert one[1] <= two[0] or two[1] <= one[0]

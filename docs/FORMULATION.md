@@ -61,23 +61,46 @@ are scheduled together:
   spot.
 
 **Boundary nodes.** The workflow's boundary Object-bearing material (entry inputs,
-final outputs) is handled by two synthetic **boundary nodes**, added when the
-`interface` constraint (SPEC §3, §6.8) is present:
+final outputs) is handled by synthetic **boundary nodes**:
 
-- the **input node** — a single processing activity whose mode's `output_spots`
-  place every Object-bearing entry-input port at its declared interface spot; it
-  occupies **no device**, has duration 0, and is pinned to start and end at time 0
-  (the initial material is a given, present from the start of the run);
-- the **output node** — a single processing activity whose mode's `input_spots`
-  are every Object-bearing final-output port at its declared interface spot; it
-  occupies **no device**, its start follows its incoming transport(s) like any
-  activity, and its end is pinned to the **makespan** (the delivered result holds
-  its spot until the schedule ends).
+- the **input node** — one processing activity, present where the `interface`
+  constraint (SPEC §3, §6.8) binds entry inputs, whose mode's `output_spots` place
+  every Object-bearing entry-input port at its declared interface spot; it occupies
+  **no device**, has duration 0, and is pinned to start and end at time 0 (the
+  initial material is a given, present from the start of the run);
+- the **output node(s)** — one processing activity holding every **bound**
+  final-output port, its single mode placing each at its declared interface spot,
+  plus **one activity per unbound final-output port**, carrying **one mode per
+  candidate resting spot** (SPEC §6.8: an unbound output is bound to a spot the
+  scheduler chooses, and the candidates are the spots its producer can reach,
+  including the producing spot itself). Each occupies **no device**, its start
+  follows its incoming transport(s) like any activity, and its end is pinned to the
+  **makespan** (the delivered result holds its spot until the schedule ends).
+
+An unbound port takes an activity of its own rather than more modes on the shared
+node, because a mode of that node fixes every one of its ports at once: folding the
+choices together would cost one mode per *combination*, the product over the unbound
+ports, where separate activities cost the sum. Their resting places are independent,
+so nothing is lost by separating them. Where every final output is bound this reduces
+to the single output node of earlier revisions.
+
+**Sufficiency of the candidate set.** Offering an unbound output every spot its
+producer can reach is enough, and each candidate is a spot the delivery could really
+use: the resting spot enters the model only as the $\sigma^{\mathrm{in}}$ of the
+`producer → output node` arc (§4, §5), so a spot no route reaches contributes no
+feasible $q_{r,m,n,t}$ and can be dropped without removing a schedule, while a spot
+some route reaches is selectable exactly when that route is. Staying put is always
+among the candidates — a same-spot move is defined for every transporter and has
+duration 0 (SPEC §5.4) — and it adds nothing to $C_{\max}$, so an unbound output
+comes to rest where it was produced unless another activity needs that spot. Nothing
+else in the model distinguishes these modes from any other: the route selection (§4),
+the transport duration (§5), the spot and device occupancy (§6, §7) and the replanning
+rules (§9) are stated over $M_i$ and $M_j$ and are unchanged.
 
 A boundary connection is then an **ordinary arc**: `input node → consumer` for an
 entry input, `producer → output node` for a final output. No special arc form,
 transport variable, or occupancy rule is needed — the boundary node is just an
-activity with a single spot-fixing mode, and the arc is scheduled by the ordinary
+activity whose modes fix spots and nothing else, and the arc is scheduled by the ordinary
 rules below. (Likewise a **relay** — the junction between two consecutive legs of one
 arc's move — is not a model primitive: it is an ordinary spot-occupancy between two
 transports, introduced by construction rather than by the rules below. Two
@@ -102,10 +125,11 @@ same schedule without interacting.
 
 ## Sets and indices
 
-- $T$: the processing-activity set. It includes the two **boundary nodes** (the
-  input node and the output node, above) when `interface` is present; they are
-  ordinary members of $T$ with a single mode, distinguished only by their pinned
-  times (§3-bis) and empty device set. Write $T^{\mathrm{bnd}} \subseteq T$ for the
+- $T$: the processing-activity set. It includes the **boundary nodes** (above): the
+  input node where `interface` binds entry inputs, and an output node for the bound
+  final outputs together with one per unbound final output. They are ordinary members
+  of $T$, distinguished only by their pinned times (§3-bis) and empty device set — and
+  all but an unbound output's node have a single mode. Write $T^{\mathrm{bnd}} \subseteq T$ for the
   boundary nodes. (A joint plan adds one more kind of member, the **held node** of
   §J5, on the same footing.)
 - $A \subseteq T \times T$: dependency (precedence) relation; $(i,j) \in A$ means
@@ -257,9 +281,10 @@ Transport activities:
   whose duration $d_{t,\sigma^{\mathrm{out}}_{i,m,k_r^{\mathrm{out}}},\,
   \sigma^{\mathrm{in}}_{j,n,k_r^{\mathrm{in}}}}$ is defined; infeasible
   combinations are omitted, which is how reachability enters the model. A boundary
-  arc is no different: one endpoint is a boundary node, whose single mode fixes its
-  spot, so its $q_{r,m,n,t}$ ranges over that node's one mode, the other endpoint's
-  modes, and the transporter choices (including $\bot$).
+  arc is no different: one endpoint is a boundary node, whose modes fix its spot, so
+  its $q_{r,m,n,t}$ ranges over that node's modes, the other endpoint's modes, and the
+  transporter choices (including $\bot$). That node has one mode wherever its spot is
+  given, and one per candidate where it is the scheduler's to choose (§Activities).
 - $z_{r,t} = \sum_{m \in M_i}\sum_{n \in M_j} q_{r,m,n,t} \in \{0,1\}$: whether
   arc $r$'s transport uses transporter $t \in L^{\mathrm{tr}}$ (derived; the
   per-transporter resource in §7). Only real transporters have one: $\bot$ is not a
@@ -389,9 +414,12 @@ arc by the **shortest** chain of moves that does reach, joined by relays (SPEC
 take is an input; at its default of one, no chain is built and $R$ is exactly the arcs.
 Nothing above is special-cased for a leg: each selects its own route by these same
 constraints, and the endpoint mode agreement is what holds the chain together.
-A boundary arc is included: its boundary node has a single mode $M = \{0\}$, so
-the coupling on that side degenerates to $x_{\cdot,0} = 1$ and the sum ranges over
-the other endpoint's modes and the transporter choices (including $\bot$).
+A boundary arc is included. Where the boundary node's spot is given it has a single
+mode $M = \{0\}$, so the coupling on that side degenerates to $x_{\cdot,0} = 1$ and the
+sum ranges over the other endpoint's modes and the transporter choices (including
+$\bot$); where the spot is the scheduler's to choose (an unbound final output,
+§Activities) the node has one mode per candidate and the coupling is the ordinary one
+over both endpoints' modes.
 
 ### 5. Transport duration
 
@@ -401,8 +429,9 @@ d_{t,\sigma^{\mathrm{out}}_{i,m,k_r^{\mathrm{out}}},\ \sigma^{\mathrm{in}}_{j,n,
 q_{r,m,n,t}, \quad \forall r=(i,j) \in R
 $$
 
-This covers boundary arcs unchanged (the boundary node's single mode supplies its
-$\sigma$ — the interface spot). The duration depends on the chosen transporter as
+This covers boundary arcs unchanged (the boundary node's mode supplies its $\sigma$ —
+the interface spot where one is bound, the candidate spot the mode stands for where the
+scheduler chooses). The duration depends on the chosen transporter as
 well as the spot pair. For a zero-distance transport ($d_{t,p,p}=0$) one may fix
 $a_r = b_r = e_i$ by convention to avoid time indeterminacy (for a boundary-input
 arc $e_i = 0$, the input node's end).

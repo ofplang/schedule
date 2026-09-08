@@ -155,6 +155,14 @@ INTERFACE_DUPLICATE_SPOT = "interface_duplicate_spot"
 # An Object-bearing entry input has no `interface` binding (only where interface is
 # required; optional in the current phase).
 INTERFACE_INPUT_MISSING = "interface_input_missing"
+# A warning: an Object-bearing final output has no `interface.outputs` binding (§6.8).
+# Not an error -- an unbound output is bound to a spot the *scheduler* chooses, and is
+# treated exactly like a bound one otherwise, so nothing about it is unaccounted for.
+# Said out loud because the spot is chosen to suit a schedule: nothing tells the
+# scheduler that a spot is a working position rather than somewhere a product may be
+# left, which shelf is refrigerated, or where the next person expects to find the
+# result. Binding every final output is the normal way to write the section.
+INTERFACE_OUTPUT_UNBOUND = "interface_output_unbound"
 # Two entries of the document's `jobs` roster share an id (§6.11). The id is the
 # whole of a job's identity -- it is what every one of its activities carries -- so
 # a repeat would merge two jobs' work on a replan.
@@ -317,6 +325,7 @@ ERROR_CODES = frozenset(
         INTERFACE_PURE_DATA_PORT,
         INTERFACE_DUPLICATE_SPOT,
         INTERFACE_INPUT_MISSING,
+        INTERFACE_OUTPUT_UNBOUND,
         DUPLICATE_JOB_ID,
         UNKNOWN_JOB,
         JOB_ROSTER_MISMATCH,

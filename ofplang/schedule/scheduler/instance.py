@@ -242,13 +242,18 @@ def build_instance(
             )
 
     # Boundary connections (SPEC §6.8): synthesize the input / output nodes and arcs.
+    # Entry inputs need a binding to have a boundary at all, so there is nothing to
+    # build without one. Final outputs are built either way: an unbound one rests on a
+    # spot the *scheduler* chooses, which is not something the document has to mention
+    # -- and a workflow that creates its material internally and returns it has a final
+    # output with no reason to carry an `interface` section at all.
     if interface:
         _add_boundary_inputs(
             workflow, env, interface, activities, arcs, index_by_node, check_reachability, diags
         )
-        _add_boundary_outputs(
-            workflow, env, interface, activities, arcs, index_by_node, check_reachability, diags
-        )
+    _add_boundary_outputs(
+        workflow, env, interface or {}, activities, arcs, index_by_node, check_reachability, diags
+    )
 
     precedence = tuple(
         (index_by_node[s], index_by_node[d])
@@ -513,12 +518,26 @@ def _add_boundary_outputs(
     check_reachability: bool,
     diags: Diagnostics,
 ) -> None:
-    """Append the output boundary node and one boundary arc per bound final output
-    (the mirror of `_add_boundary_inputs`). The output node consumes every bound
-    output at its interface spot; its end is pinned to the makespan by the solver
-    so a delivered Object holds its spot to the end (SPEC §6.8). Invalid bindings
-    are diagnosed and skipped: an unknown / Pure Data / pass-through port, a
-    duplicate spot (within outputs), or a spot the environment does not define.
+    """Append the output boundary node(s) and one boundary arc per final output
+    (the mirror of `_add_boundary_inputs`).
+
+    A **bound** output is delivered to the spot the document names, and the bound ones
+    share a node: a single mode placing each at its spot. An **unbound** output is
+    delivered to a spot the *scheduler* chooses (SPEC §6.8) -- the only difference is
+    who names it -- so it gets a node of its own, with one mode per candidate spot. The
+    choice is then the ordinary mode choice the solver already makes, and the routes are
+    the ordinary enumeration over endpoint mode pairs; nothing in the constraints or the
+    fixation is special-cased for it.
+
+    🔴 **A node per unbound port, not more modes on the shared one.** A mode of the
+    shared node fixes *every* port at once, so folding the choices in there would cost
+    one mode per combination -- the product over the unbound ports, where separate nodes
+    cost the sum. Their resting places are independent, so separating them loses nothing.
+
+    Either way the node's end is pinned to the makespan by the solver, so a delivered
+    Object holds its spot to the end. Invalid bindings are diagnosed and skipped: an
+    unknown / Pure Data / pass-through port, a duplicate spot (within outputs), or a
+    spot the environment does not define.
     """
     outputs = interface.get("outputs") or {}
     valid: list[tuple[str, str, Endpoint]] = []  # (port name, spot, producer endpoint)
@@ -555,26 +574,15 @@ def _add_boundary_outputs(
         spot_owner[spot] = name
         valid.append((name, spot, producer))
 
-    if not valid:
-        return
-
-    # A single output node: one mode placing every bound final output at its spot,
-    # no device, its end pinned to the makespan by cpsat (holds the spots to the end).
-    mode = Mode(
-        id="interface_out",
-        devices=(),
-        duration=0,
-        input_spots={n: s for n, s, _ in valid},
-        output_spots={},
-    )
-    node_index = len(activities)
-    activities.append(ActivityInstance((), "", (mode,), boundary=BoundaryInfo("output")))
-
-    for name, _spot, producer in valid:
+    def add_arc(node_index: int, name: str, producer: Endpoint) -> None:
+        """The `producer -> output node` boundary arc, with the routes that can serve
+        it. An unbound output can always be served -- staying put is among its
+        candidates and a same-spot move is a no-op (§5.4) -- so the reachability error
+        below is reached only by a binding naming somewhere unreachable."""
         si = index_by_node.get(producer.node)
         if si is None:
             # a producer that is not a scheduled activity; cannot happen for a valid workflow
-            continue
+            return
         options = transport_options(
             activities[si], producer.port, activities[node_index], name, env
         )
@@ -586,6 +594,83 @@ def _add_boundary_outputs(
             )
         arc = Arc(Endpoint(producer.node, producer.port), Endpoint((), name))
         arcs.append(ArcInstance(arc, si, node_index, tuple(options)))
+
+    if valid:
+        # One node for the bound outputs: a single mode placing every one of them at its
+        # spot, no device, its end pinned to the makespan by cpsat.
+        mode = Mode(
+            id="interface_out",
+            devices=(),
+            duration=0,
+            input_spots={n: s for n, s, _ in valid},
+            output_spots={},
+        )
+        node_index = len(activities)
+        activities.append(ActivityInstance((), "", (mode,), boundary=BoundaryInfo("output")))
+        for name, _spot, producer in valid:
+            add_arc(node_index, name, producer)
+
+    # An unbound final output (§6.8): bound to a spot the scheduler chooses, which is
+    # every spot its producer can reach. Warned about rather than refused -- the choice
+    # suits the schedule, and nothing tells the scheduler that a spot is a working
+    # position rather than somewhere a product may be left.
+    for name, producer in workflow.exit_outputs.items():
+        if name in outputs:
+            continue  # stated: bound above, or diagnosed and skipped there
+        si = index_by_node.get(producer.node)
+        if si is None:
+            continue
+        candidates = _resting_spots(activities[si], producer.port, env)
+        if not candidates:
+            continue  # its producer places the port nowhere; already diagnosed
+        diags.warning(
+            errors.INTERFACE_OUTPUT_UNBOUND,
+            f"final output {name!r} has no interface.outputs binding, so the schedule "
+            f"decides where it comes to rest; bind it to say where it belongs",
+        )
+        modes = tuple(
+            Mode(
+                id=f"interface_out:{spot}",
+                devices=(),
+                duration=0,
+                input_spots={name: spot},
+                output_spots={},
+            )
+            for spot in candidates
+        )
+        node_index = len(activities)
+        activities.append(ActivityInstance((), "", modes, boundary=BoundaryInfo("output")))
+        add_arc(node_index, name, producer)
+
+
+def _resting_spots(producer: ActivityInstance, port: str, env: Environment) -> list[str]:
+    """Every spot an unbound final output may come to rest on (§6.8): the spots its
+    producer can leave it on, and everywhere reachable from those.
+
+    **Staying put is always among them** -- a same-spot move is a no-op that needs no
+    transporter (§5.4) -- and it costs no move, so it is what the objective settles on
+    unless something else needs that spot. What the rest of the set buys is the ability
+    to get out of the way: where another job needs that spot, the Object is moved aside
+    instead of the plan being unschedulable.
+
+    Spots nothing can reach are left out rather than offered and then ruled out by the
+    route constraints: a mode with no viable option is work the solver would have to do
+    to reach the same answer. Sorted, so the mode order -- and with it which of several
+    equally optimal schedules comes back -- does not follow dict iteration order.
+    """
+    from_spots = {
+        mode.output_spots[port] for mode in producer.modes if port in mode.output_spots
+    }
+    everywhere = (
+        f"{device_id}.{spot}"
+        for device_id, device in env.devices.items()
+        for spot in device.spots
+    )
+    return sorted(
+        spot
+        for spot in everywhere
+        if any(routes(env, from_spot, spot) for from_spot in from_spots)
+    )
 
 
 def _spot_exists(spot: str, env: Environment, name: str, diags: Diagnostics) -> bool:

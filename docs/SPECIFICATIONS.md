@@ -1059,8 +1059,11 @@ port have no such arc, so `interface` supplies the equivalent constraint.
 
 - `inputs` (map) — each Object-bearing **entry input** port of the workflow → the
   qualified spot `<device>.<spot>` where its Object sits at the start.
-- `outputs` (map, optional per port) — each bound Object-bearing **final output**
-  port → the qualified spot its Object must be delivered to.
+- `outputs` (map, optional per port) — each Object-bearing **final output** port →
+  the qualified spot its Object must be delivered to. **Binding every final output is
+  recommended** (below): an unbound one still comes to rest somewhere, but the
+  scheduler picks where, and a spot chosen to suit a schedule is rarely the one a
+  laboratory wants its product left on.
 
 Only Object-bearing boundary ports appear (Pure Data ports occupy no spot). Each
 port maps to exactly one spot; two bindings on the same side (two `inputs`, or two
@@ -1087,16 +1090,37 @@ does not move on its own). It constrains only **pending** boundary activities; o
 a boundary transport or its consuming/producing activity has started, that part is
 a fixed historical fact and is not re-checked against `interface` (§7).
 
-**Required.** A binding is **required** for every Object-bearing entry input — an
-unbound one leaves its consumer's mode unconstrained, which is exactly the error
-this section prevents (`interface_input_missing`, §10.4). Output bindings are
-optional (an unbound output stays where its producer leaves it). The removed
+**Required for inputs.** A binding is **required** for every Object-bearing entry
+input — an unbound one leaves its consumer's mode unconstrained, which is exactly the
+error this section prevents (`interface_input_missing`, §10.4). The removed
 `placements` (§6.5) is superseded by this section.
+
+**Optional for outputs, and what omitting one means.** An output binding may be
+omitted, and doing so does not leave the Object unaccounted for: an unbound final
+output is bound to a spot **the scheduler chooses**, not to no spot at all. Everything
+else is the treatment a bound output gets — a boundary transport carries it there, it
+holds that spot until the end of the plan, and the delivery is counted in the makespan
+(above). The only difference is who names the spot. The choice is over every spot the
+producing spot can reach, **including the producing spot itself**; staying put is
+therefore always available and, costing no move, is what the scheduler settles on
+unless something else needs that spot. So an unbound output does normally come to rest
+where its producer left it. What the choice adds is the ability to get out of the way:
+where another job needs that spot, the Object is moved aside rather than the plan being
+unschedulable. Each unbound output is reported (`interface_output_unbound`, §10.4, a
+warning — a plan is still produced).
+
+**Bind them anyway.** That freedom makes an unbound output *safe*, not *advisable*.
+The scheduler picks a resting place to suit the schedule, and nothing tells it that a
+spot is a working position rather than somewhere a product may be left, which shelf is
+refrigerated, or where the next person expects to find the result. Binding every final
+output is the normal way to write this section; omit one only for a run whose product
+genuinely may be left wherever is convenient.
 
 ```yaml
 interface:
   inputs:  { sample: incubator_0.slot_0 }
-  outputs: { plate:  output_rack.slot_0 }   # optional; omit to leave the output where produced
+  outputs: { plate:  output_rack.slot_0 }   # recommended for every final output;
+                                            # omitted, the scheduler picks the spot
 ```
 
 ### 6.9 Replenishment activity
@@ -1659,7 +1683,10 @@ environment for processes the workflow never invokes are not checked.
   exists in the environment (`unknown_device` / `unknown_spot`, reused from §9.1).
   No two bindings on the same side (two `inputs`, or two `outputs`) bind the same
   spot (`interface_duplicate_spot`). Every Object-bearing entry input must be bound
-  (`interface_input_missing` otherwise); outputs are optional.
+  (`interface_input_missing` otherwise). An output binding may be omitted, and each
+  omitted one is reported (`interface_output_unbound`, a warning): the output is then
+  bound to a spot the scheduler chooses, so the section is checked and applied whether
+  or not the document carries it (§6.8).
 - **Inventories** (§6.10): the resource model is in effect, unless it has been
   disabled (§4.7.3), when **some mode of some invoked process declares
   `consumption`**. Declaring `resources` on a device is not enough on its own: a
@@ -1870,6 +1897,7 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `interface_pure_data_port` | an `interface` binding names a Pure Data port (occupies no spot) |
 | `interface_duplicate_spot` | two bindings of one `interface`, on the same side (two inputs, or two outputs), bind the same spot. Across *jobs* the claim is weaker and warns instead (below) |
 | `interface_input_missing` | an Object-bearing entry input has no `interface` binding (§6.8) |
+| `interface_output_unbound` | **warning**: an Object-bearing final output has no `interface.outputs` binding (§6.8), so the schedule decides where it comes to rest. Binding every final output is the normal way to write the section |
 | `job_workflow_mismatch` | a job's workflow is not the one its roster entry's `fingerprint` records (§6.11) |
 | `job_bound_relaxed` | **warning**: a job could no longer finish by the completion it was promised, so the promise was re-derived (§6.11) |
 | `job_roster_mismatch` | the workflows given to the scheduler are not the ones the document's `jobs` roster names (§6.11) |

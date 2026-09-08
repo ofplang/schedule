@@ -116,9 +116,17 @@ def test_interface_constrains_mode_to_slot_a(tmp_path):
     assert heat["mode"] == "at_a"  # constrained by the sample's actual position
 
     # A boundary transport bridges the interface spot to the consumer; here it is a
-    # 0-distance no-op (same spot), so the transporter is omitted.
+    # 0-distance no-op (same spot), so the transporter is omitted. `result` is not
+    # bound, so it too has a boundary transport -- to the spot the scheduler chose,
+    # which with nothing competing for it is where `heat` left it (§6.8).
     transports = [a for a in report.plan["activities"] if a["kind"] == "transport"]
-    (t,) = transports
+    entry = [a for a in transports if a["arc"]["from"]["node"] == []]
+    delivery = [a for a in transports if a["arc"]["to"]["node"] == []]
+    assert len(transports) == 2
+    (out,) = delivery
+    assert (out["from_spot"], out["to_spot"]) == ("rack.slot_a", "rack.slot_a")
+    assert out["start"] == out["end"] == 10
+    (t,) = entry
     assert t["from_spot"] == "rack.slot_a" and t["to_spot"] == "rack.slot_a"
     assert "transporter" not in t
     assert t["arc"]["from"] == {"node": [], "port": "sample"}  # empty-path = the workflow interface
@@ -411,24 +419,92 @@ processes:
 """
 
 
-def test_output_holds_spot_to_makespan(tmp_path):
-    # Without a binding: make (5) runs early on slot_a, after (5) at [20,25] (held by
-    # the dependency on long, 20). make's output frees slot_a once it ends, so the
-    # two pack -> makespan 25.
-    wf, ev, _ = _write(tmp_path, workflow=WORKFLOW_HOLD, env=ENV_HOLD)
-    base = schedule(wf, ev)
-    assert base.ok and base.makespan == 25
+# ENV_HOLD with one route out of slot_a, so an unbound result has somewhere to go.
+ENV_HOLD_ESCAPE = ENV_HOLD.replace(
+    "transports: []",
+    "transports:\n  - { transporter: arm, from: dev_a.slot_a, to: dev_b.slot_b, duration: 1 }",
+)
 
-    # Binding `result` to dev_a.slot_a makes the delivered Object hold slot_a to the
-    # makespan (§6.8 / ②b). make can no longer sit before `after` (its result would
-    # occupy slot_a across after's [20,25] window), so make is pushed after `after`
-    # -> the makespan grows to 30. This increase is the observable effect of the hold.
+
+def test_a_delivered_object_holds_its_spot_bound_or_not(tmp_path):
+    """A final output holds its spot to the end of the plan either way (§6.8): a
+    binding says *where* it rests, not *whether* it does.
+
+    `make` (5) would like to run early on slot_a and let `after` (5, held to [20,25]
+    by its dependency on `long`) have it afterwards -- makespan 25. It cannot: its
+    result is still sitting there. So `make` is pushed past `after` and the makespan
+    is 30, and that increase is the observable effect of the hold.
+
+    🔴 The unbound case used to give 25, on the strength of the plate vanishing when
+    its producer ended. That was the hole: the plan packed two Objects onto one spot,
+    and nothing in the document said otherwise.
+    """
+    # Unbound, and nowhere to move it (ENV_HOLD declares no transports at all), so
+    # the only spot it can rest on is the one it was produced on.
+    wf, ev, _ = _write(tmp_path, workflow=WORKFLOW_HOLD, env=ENV_HOLD)
+    unbound = schedule(wf, ev)
+    assert unbound.ok and unbound.makespan == 30
+    assert "interface_output_unbound" in {d.code for d in unbound.diagnostics}
+
+    # Bound to that same spot: the identical instance, said out loud.
     wf, ev, doc = _write(
         tmp_path, workflow=WORKFLOW_HOLD, env=ENV_HOLD, document=_oface("dev_a.slot_a")
     )
-    report = schedule(wf, ev, document_path=doc)
+    bound = schedule(wf, ev, document_path=doc)
+    assert bound.ok and bound.outcome == "optimal"
+    assert bound.makespan == 30
+    assert "interface_output_unbound" not in {d.code for d in bound.diagnostics}
+
+
+def test_an_unbound_output_steps_aside_when_the_spot_is_wanted(tmp_path):
+    """What the scheduler's choice buys (§6.8). Given one route off slot_a, the
+    unbound result is carried to slot_b and `after` gets its spot -- makespan 26
+    rather than 30. Binding it to slot_a forbids exactly that, which is the
+    difference between "rest anywhere" and "rest here".
+
+    26 and not 25: the move holds its destination device as well as its source
+    (§4.5), and `long` is on dev_b until 20, so the plate cannot leave before then.
+    """
+    wf, ev, _ = _write(tmp_path, workflow=WORKFLOW_HOLD, env=ENV_HOLD_ESCAPE)
+    report = schedule(wf, ev)
     assert report.ok and report.outcome == "optimal"
-    assert report.makespan == 30
+    assert report.makespan == 26
+
+    (delivery,) = [
+        a
+        for a in report.plan["activities"]
+        if a["kind"] == "transport" and a["arc"]["to"]["node"] == []
+    ]
+    assert (delivery["from_spot"], delivery["to_spot"]) == ("dev_a.slot_a", "dev_b.slot_b")
+
+    # Bound to where it was produced, the move is forbidden and the makespan is back
+    # to 30 -- so the 25 above really is the step aside, not some other rearrangement.
+    wf, ev, doc = _write(
+        tmp_path,
+        workflow=WORKFLOW_HOLD,
+        env=ENV_HOLD_ESCAPE,
+        document=_oface("dev_a.slot_a"),
+    )
+    pinned = schedule(wf, ev, document_path=doc)
+    assert pinned.ok and pinned.makespan == 30
+
+
+def test_a_returned_object_holds_a_spot_with_no_interface_section(tmp_path):
+    """The workflow here has no Object-bearing entry input, so it has no reason to
+    carry an `interface` section at all -- and its final output is still bound, to a
+    spot the scheduler chooses. The boundary output is built either way; only the
+    input side needs a binding to exist."""
+    wf, ev, _ = _write(tmp_path, workflow=WORKFLOW_HOLD, env=ENV_HOLD)
+    report = schedule(wf, ev)
+    assert report.ok
+    assert "interface" not in report.plan  # nothing was supplied, nothing is echoed
+    (delivery,) = [
+        a
+        for a in report.plan["activities"]
+        if a["kind"] == "transport" and a["arc"]["to"]["node"] == []
+    ]
+    assert delivery["arc"]["to"] == {"node": [], "port": "result"}
+    assert delivery["start"] == delivery["end"]  # it rests where it was made
 
 
 # --- replan with interface (phase 1c) -------------------------------------------
@@ -445,7 +521,11 @@ def test_replan_with_interface_input(tmp_path):
     status = dict(initial.plan)
     status["now"] = 5
     for a in status["activities"]:
-        a["status"] = "completed" if a["kind"] == "transport" else "running"
+        if a["kind"] != "transport":
+            a["status"] = "running"
+        elif a["arc"]["from"]["node"] == []:
+            a["status"] = "completed"  # the entry move, at time 0
+        # The delivery of the unbound `result` is at 10, still to come: left pending.
     sp = tmp_path / "status.yaml"
     sp.write_text(yaml.safe_dump(status), encoding="utf-8")
 
@@ -457,7 +537,11 @@ def test_replan_with_interface_input(tmp_path):
     assert heat["mode"] == "at_a" and heat["status"] == "running"
     assert replan.makespan == 10
     assert replan.plan["interface"] == {"inputs": {"sample": "rack.slot_a"}}
-    (t,) = [a for a in replan.plan["activities"] if a["kind"] == "transport"]
+    (t,) = [
+        a
+        for a in replan.plan["activities"]
+        if a["kind"] == "transport" and a["arc"]["from"]["node"] == []
+    ]
     assert t["arc"]["from"] == {"node": [], "port": "sample"}
 
 
