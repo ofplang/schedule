@@ -234,7 +234,9 @@ def normalize(
     if _has_error(diags):
         return None, None, diags
 
-    levels = _derive_levels(instance, act_fix, refills, root, env, diags, ignore_resources)
+    levels = _derive_levels(
+        instance, act_fix, refills, root, env, diags, ignore_resources, now
+    )
     if _has_error(diags):
         return None, None, diags
 
@@ -384,16 +386,25 @@ def _derive_levels(
     env,
     diags: Diagnostics,
     ignore_resources: bool = False,
+    now: int = 0,
 ) -> dict[tuple[str, str], int]:
     """The level of each `(device, resource)` at `now`.
 
-    Levels are replayed, never reported (§4.7.2): the document says what the run
-    started with and the history says what has been drawn since. Every started
-    processing activity has already taken its consumption -- it is taken at the
-    start, and the activity has started -- so the sum over the fixed activities is
-    subtracted from the initial levels. A refill puts stock back the other way: a
+    Levels are replayed, never reported (§4.7.2): the document says what the stocks
+    held at one moment and the history says what has happened to them since. Every
+    started processing activity has already taken its consumption -- it is taken at
+    the start, and the activity has started -- so the sum over the fixed activities
+    is subtracted from the stated levels. A refill puts stock back the other way: a
     completed one has landed and is added here, while a running one has not and
     reaches the solver as a fixed increase at its end instead (§4.7.2).
+
+    **The moment is `inventories.at`** (§6.10), which is 0 -- the start of the run --
+    unless the document says otherwise, and what the replay skips is everything the
+    stated levels already account for: an event *before* `at`. Its own event time is
+    the activity's `start` for a draw and the refill's `end` for an addition, the two
+    the level changes at. At `at = 0` nothing is skipped, every history there can be
+    having happened at or after the start of the run, which is why a document that
+    does not mention the moment replays exactly as it always did.
 
     With `ignore_resources` the model is switched off (§4.7.3) and this returns no
     levels, which is what makes the solver's constraint vanish. Switching off is
@@ -427,12 +438,15 @@ def _derive_levels(
         return {}
 
     levels = _initial_levels(inventories, env, diags)
+    since = _levels_moment(inventories, now, diags)
     if _has_error(diags):
         return levels
 
     for index, fixation in act_fix.items():
         if fixation.status == "cancelled":
             continue  # it never ran, so it never drew anything
+        if fixation.start < since:
+            continue  # already in the stated levels
         mode = instance.activities[index].modes[fixation.mode_index]
         for qualified, amount in mode.consumption.items():
             parsed = parse_qualified_resource(qualified)
@@ -445,6 +459,8 @@ def _derive_levels(
     for refill in refills.values():
         if refill.status != "completed":
             continue
+        if refill.end < since:
+            continue  # already in the stated levels
         for resource, amount in refill.amounts.items():
             levels[(refill.device, resource)] = levels.get((refill.device, resource), 0) + amount
 
@@ -459,6 +475,31 @@ def _derive_levels(
                 at=root,
             )
     return levels
+
+
+def _levels_moment(node: YNode, now: int, diags: Diagnostics) -> int:
+    """`inventories.at` (§6.10): the moment the stated levels are the levels of.
+
+    Absent means 0, the start of the run, which is what every document written before
+    the field existed means and why they replay unchanged. Later than `now` is
+    refused: the history can only have happened before that moment, so nothing would
+    be replayed against levels the run has not reached yet.
+
+    Shape-validated already (a non-negative integer), so anything else here is read
+    as the default rather than diagnosed twice.
+    """
+    stated = node.get("at") if isinstance(node, YMap) else None
+    if not (isinstance(stated, YScalar) and stated.is_int):
+        return 0
+    if stated.value > now:
+        diags.error(
+            errors.INVENTORY_MOMENT_IN_FUTURE,
+            f"inventories.at is {stated.value}, later than now ({now})",
+            "inventories.at",
+            at=stated,
+        )
+        return 0
+    return stated.value
 
 
 def _initial_levels(node: YNode, env, diags: Diagnostics) -> dict[tuple[str, str], int]:

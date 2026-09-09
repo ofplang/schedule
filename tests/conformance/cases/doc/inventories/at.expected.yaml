@@ -1,0 +1,5 @@
+outcome: valid
+notes: >-
+  `inventories.at` is the moment the stated levels are the levels of, and 0 --
+  the start of the run -- when it is omitted; spec §6.10, §9.2. That it is not
+  later than `now` needs `now` and is the execution layer's job.

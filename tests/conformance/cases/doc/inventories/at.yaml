@@ -5,7 +5,8 @@ activities:
   process: measure_od
   mode: fast
   node: [assay]
+now: 120
 inventories:
-  measured_at: 120
+  at: 120
   levels:
     reader_0: {dye: 4}

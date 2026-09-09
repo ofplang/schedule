@@ -110,9 +110,17 @@ def check_plan_inventories(plan: dict, env, inventories: dict | None) -> list[st
         return []
 
     levels = _declared_levels(env, inventories)
+    # The levels are the levels as of `inventories.at` (§6.10, default 0), so the
+    # events they already account for are the ones before it. Replaying those again
+    # would report the plan as driving a stock out of range on the strength of
+    # history the levels had already absorbed.
+    since = (inventories or {}).get("at")
+    since = since if isinstance(since, int) and not isinstance(since, bool) else 0
     reported: dict[tuple[str, str], str] = {}
     for at in sorted(events):
         time, phase = at
+        if time < since:
+            continue
         for key, delta in events[at].items():
             levels[key] = levels.get(key, 0) + delta
         for key in sorted(events[at]):

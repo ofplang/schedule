@@ -112,6 +112,11 @@ INFEASIBLE = "infeasible"
 MISSING_INVENTORIES = "missing_inventories"
 # An `inventories.levels` level is above the capacity its device declares.
 INVENTORY_EXCEEDS_CAPACITY = "inventory_exceeds_capacity"
+# `inventories.at` (§6.10) is later than `now`: the levels are stated as of a moment
+# that has not arrived. Nothing could have been replayed against them -- every event
+# the history records happened before it -- so the document says the run started in
+# the future rather than saying anything about a stock.
+INVENTORY_MOMENT_IN_FUTURE = "inventory_moment_in_future"
 # A replanning input carries a `pending` replenishment. Pending refills are not
 # carried over: the scheduler decides how many to run and re-derives the candidates
 # every solve, so one in the input describes a decision that is not the caller's
@@ -320,6 +325,7 @@ ERROR_CODES = frozenset(
         OBJECTIVE_IN_ENVIRONMENT,
         MISSING_INVENTORIES,
         INVENTORY_EXCEEDS_CAPACITY,
+        INVENTORY_MOMENT_IN_FUTURE,
         PENDING_REPLENISHMENT_IN_STATUS,
         INTERFACE_UNKNOWN_PORT,
         INTERFACE_PURE_DATA_PORT,

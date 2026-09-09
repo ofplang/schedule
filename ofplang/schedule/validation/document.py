@@ -39,7 +39,7 @@ JOB_KEYS = {"id", "release", "bound", "fingerprint", "interface"}
 # One entry of `occupied` (§6.12): a spot something is sitting on, since when, and
 # optionally which job left it there.
 OCCUPIED_KEYS = {"spot", "since", "job"}
-INVENTORIES_KEYS = {"levels"}
+INVENTORIES_KEYS = {"levels", "at"}
 OUTCOMES = {"optimal", "feasible", "infeasible", "unknown"}
 # `failed` / `cancelled` are terminal statuses (§6.2): a run stops on any failure,
 # so they only ever appear in a final status, never fed back to the scheduler (a
@@ -321,18 +321,22 @@ def _check_objective(node: YNode | None, diags: Diagnostics) -> None:
 
 
 def _check_inventories(node: YNode | None, diags: Diagnostics) -> None:
-    """Shape only (§6.10): `inventories` is `{initial}`, a map of device id to a map
-    of resource name to a non-negative level.
+    """Shape only (§6.10): `inventories` is `{levels, at?}` -- `levels` a map of
+    device id to a map of resource name to a non-negative level, `at` the moment
+    those levels are the levels of (a non-negative time, default 0).
 
-    That the devices and resources exist, that no level is above its capacity, and
-    that the section is *required* at all need the environment, so they are the
-    execution layer's job (§9.3). Both maps here are open -- device ids and resource
-    names are the user's -- so `x-` in either is an ordinary entry (§9.4).
+    That the devices and resources exist, that no level is above its capacity, that
+    `at` is not in the future, and that the section is *required* at all need the
+    environment or `now`, so they are the execution layer's job (§9.3). Both maps
+    here are open -- device ids and resource names are the user's -- so `x-` in
+    either is an ordinary entry (§9.4).
     """
     imap = shape.as_map(node, "inventories", diags)
     if imap is None:
         return
     shape.unknown_keys(imap, INVENTORIES_KEYS, "inventories", diags)
+    if "at" in imap:
+        shape.nonneg_int(imap.get("at"), "inventories.at", diags)
     initial = shape.require(imap, "levels", "inventories", diags)
     dmap = shape.as_map(initial, "inventories.levels", diags)
     if dmap is None:
