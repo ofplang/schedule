@@ -109,6 +109,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="safety margin: a running activity's fixed end is clamped up to now + N (default: 0)",
     )
     s.add_argument(
+        "--withdraw",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="a job leaving the plan (repeatable): its roster entry, its history and "
+        "its hold on the spots it was using all go, and the levels are carried "
+        "forward to `now` so the stocks its work drew on stay right. Give no "
+        "workflow for it -- there is nothing left to plan. Refused where the "
+        "document says something of the job is still there: work still to do, or a "
+        "spot it is recorded as occupying",
+    )
+    s.add_argument(
         "--ignore-resources",
         action="store_true",
         help="switch off consumable resources: the environment's declarations are "
@@ -408,7 +420,13 @@ def _cmd_schedule(args) -> int:
     try:
         # One workflow keeps the single-job entry point, so its plan is exactly what
         # it has always been -- no `job` on any activity (SPEC §6.11).
-        if len(specs) == 1:
+        #
+        # 🔴 Unless a job is being withdrawn. Withdrawing is the one way a joint plan
+        # shrinks, and it shrinks to one job more often than to any other number --
+        # so the last one standing has to stay a *job*, keeping its roster entry and
+        # its name, rather than becoming the unnamed single workflow whose plan says
+        # nothing about which job it is.
+        if len(specs) == 1 and not args.withdraw:
             report = run_schedule(
                 workflows[0],
                 args.env,
@@ -433,6 +451,7 @@ def _cmd_schedule(args) -> int:
                 random_seed=args.seed,
                 ignore_resources=args.ignore_resources,
                 max_transport_legs=args.max_transport_legs,
+                withdraw=args.withdraw,
             )
     except yaml.YAMLError as exc:
         # Malformed workflow / environment / document YAML is an input error.

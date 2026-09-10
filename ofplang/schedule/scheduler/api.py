@@ -110,6 +110,120 @@ def _roster_entries(roster) -> dict[str, dict]:
     }
 
 
+def _document_activities(doc_path, root) -> list[dict]:
+    """The document's activities as plain dicts, from whichever form it arrived in."""
+    if isinstance(doc_path, dict):
+        listed = doc_path.get("activities")
+    elif isinstance(root, yamlnode.YMap):
+        listed = yamlnode.to_plain(root.get("activities"))
+    else:
+        return []
+    return [a for a in listed if isinstance(a, dict)] if isinstance(listed, list) else []
+
+
+def _check_withdrawals(withdraw, entries, jobs, activities, occupied) -> list[Diagnostic]:
+    """What must be true before a job may leave the plan (design.md D42).
+
+    Withdrawing is the physical act of collecting what a job left in the laboratory,
+    said out loud: the roster is the set of jobs something of which is still there,
+    and an entry is removed when nothing is. So the refusals here are the ways the
+    document itself says something *is* still there, plus the two ways the call
+    contradicts itself.
+
+    🔴 None of them can check the thing that matters -- whether the material was
+    really collected. That is a fact about the room, not the document, which is why
+    withdrawal is asked for explicitly rather than inferred from a job going quiet.
+    What these do is refuse the cases where the document already knows better.
+    """
+    out: list[Diagnostic] = []
+    known = set(entries or {})
+    given = {job.id for job in jobs if job.id}
+
+    for job_id in withdraw:
+        if job_id not in known:
+            out.append(
+                Diagnostic(
+                    errors.UNKNOWN_WITHDRAWAL,
+                    f"job {job_id!r} is not in the document's roster, so there is no "
+                    f"entry to withdraw"
+                    + (f" (it names {sorted(known)})" if known else " (it names none)"),
+                    "jobs",
+                )
+            )
+            continue
+        if job_id in given:
+            out.append(
+                Diagnostic(
+                    errors.UNKNOWN_WITHDRAWAL,
+                    f"job {job_id!r} was given a workflow to plan and named for "
+                    f"withdrawal; it cannot both leave and be planned",
+                    "jobs",
+                )
+            )
+            continue
+        # Unfinished work is work somebody asked for, and running work is on a
+        # machine now -- `occupied` says a spot is taken, and cannot say that.
+        unfinished = sorted(
+            {
+                (a.get("status") or "pending")
+                for a in activities
+                if a.get("job") == job_id and (a.get("status") or "pending") not in
+                ("completed", "cancelled")
+            }
+        )
+        if unfinished:
+            out.append(
+                Diagnostic(
+                    errors.WITHDRAWAL_NOT_FINISHED,
+                    f"job {job_id!r} still has {', '.join(unfinished)} work: a job "
+                    f"leaves the plan when there is nothing of it left to do",
+                    "activities",
+                )
+            )
+        held = sorted(
+            {
+                str(entry.get("spot"))
+                for entry in (occupied or [])
+                if isinstance(entry, dict) and entry.get("job") == job_id
+            }
+        )
+        if held:
+            out.append(
+                Diagnostic(
+                    errors.WITHDRAWAL_LEAVES_OCCUPANCY,
+                    f"job {job_id!r} is recorded as leaving {', '.join(held)} "
+                    f"occupied (§6.12): withdrawing it would free a spot the document "
+                    f"says is taken. Drop the entry if the material was collected, or "
+                    f"drop its `job` if it is still there",
+                    "occupied",
+                )
+            )
+
+    if known and not (known - set(withdraw)):
+        out.append(
+            Diagnostic(
+                errors.WITHDRAWAL_EMPTIES_ROSTER,
+                f"withdrawing {sorted(withdraw)} would leave no job to plan",
+                "jobs",
+            )
+        )
+    return out
+
+
+def _carried_levels(env, levels: dict[tuple[str, str], int], now: int) -> dict:
+    """`inventories` restated as of `now` (§6.10), for a plan a job has left.
+
+    A level is replayed from the stated one, and the history a withdrawing job takes
+    with it is part of what there was to replay. So the levels move forward to the
+    moment the job leaves and say so: the same numbers the solver just started from,
+    written down where the next replan will read them.
+    """
+    out: dict[str, dict[str, int]] = {}
+    for (device, resource), level in sorted(levels.items()):
+        out.setdefault(device, {})[resource] = level
+    return {"levels": out, "at": now}
+
+
 def _job_specs(jobs, workflows, roster: dict[str, dict] | None, now: int) -> list[JobSpec]:
     """Resolve each job's planning parameters (§6.11) from the roster it appears in.
 
@@ -496,6 +610,7 @@ def schedule_jobs(
     environment_path,
     *,
     document_path=None,
+    withdraw=(),
     running_task_margin: int = 0,
     max_time_seconds: float | None = None,
     random_seed: int | None = None,
@@ -525,6 +640,16 @@ def schedule_jobs(
     (`multi_job_interface`), and an entry whose inputs are Object-bearing is
     planned jointly like any other.
 
+    `withdraw` names jobs that are **leaving** the plan: their entry, their history
+    and their hold on the spots they were using all go, and the document's levels are
+    carried forward to `now` so that the stocks their work drew on stay right
+    (`inventories.at`, §6.10). A job leaves when there is nothing of it left in the
+    laboratory, which the scheduler cannot see -- so it is asked for, never inferred
+    from a job going quiet, and refused where the document itself says otherwise:
+    work still to do, or a spot the job is recorded as still occupying (§6.12). Do
+    not pass a workflow for a job being withdrawn; there is nothing left to plan for
+    it, and needing one would mean it should not be leaving.
+
     What a joint plan does *not* have yet is a per-job objective: the stages the
     document names are minimised over all the jobs at once (§4.8).
     """
@@ -539,6 +664,7 @@ def schedule_jobs(
     return _run(
         jobs,
         environment_path,
+        withdraw=tuple(withdraw),
         document_path=document_path,
         running_task_margin=running_task_margin,
         max_time_seconds=max_time_seconds,
@@ -556,6 +682,7 @@ def _run(
     environment_path,
     *,
     document_path=None,
+    withdraw: tuple[str, ...] = (),
     running_task_margin: int = 0,
     max_time_seconds: float | None = None,
     random_seed: int | None = None,
@@ -647,8 +774,10 @@ def _run(
         # the other way stays an error -- a job the document has history for cannot
         # simply be dropped, or that history would have nowhere to land.
         given_ids = {job.id for job in jobs if job.id}
-        if not set(entries) <= given_ids:
-            missing = sorted(set(entries) - given_ids)
+        # A job being withdrawn is the one kind of entry that may go unmatched: it is
+        # leaving, so there is no workflow to plan for it (design.md D42).
+        if not set(entries) - set(withdraw) <= given_ids:
+            missing = sorted(set(entries) - set(withdraw) - given_ids)
             given = f"{sorted(given_ids)} were given" if given_ids else "one unnamed workflow"
             diagnostics.append(
                 Diagnostic(
@@ -688,6 +817,11 @@ def _run(
         )
         return ScheduleReport(None, None, None, diagnostics)
 
+    if withdraw:
+        diagnostics += _check_withdrawals(
+            withdraw, entries, jobs, _document_activities(doc_path, root), occupied
+        )
+
     diagnostics += _check_boundary_spots(tuple(specs))
     if _has_error(diagnostics):
         return ScheduleReport(None, None, None, diagnostics)
@@ -722,6 +856,7 @@ def _run(
         ignore_resources=ignore_resources,
         max_transport_legs=max_transport_legs,
         jobs=tuple(spec.id for spec in specs if spec.id),
+        withdrawn=frozenset(withdraw),
     )
     diagnostics += norm_diags.items
     if instance is None or fixation is None:
@@ -751,6 +886,29 @@ def _run(
         diagnostics += _unplannable(instance, named, solve_kwargs)
         return ScheduleReport(solution.outcome, None, None, diagnostics, solution.stats)
 
+    # A job that has left took its history with it, and some of that history is what
+    # the stocks are at now. So the plan states the levels as of `now` rather than
+    # echoing the ones it was given, which were the levels of a moment whose history
+    # is no longer all here (§6.10). Only on a withdrawal: every other plan echoes
+    # `inventories` unchanged, which is what keeps the section stable across replans.
+    carried = inventories
+    if withdraw and fixation.levels:
+        carried = _carried_levels(env, fixation.levels, fixation.now)
+    if withdraw:
+        diagnostics.append(
+            Diagnostic(
+                errors.JOB_WITHDRAWN,
+                f"{', '.join(sorted(withdraw))} left the plan"
+                + (
+                    f"; the levels are now stated as of {fixation.now}"
+                    if carried is not inventories
+                    else ""
+                ),
+                "jobs",
+                severity=WARNING,
+            )
+        )
+
     # One job's provenance is the string it always was; a joint plan's is the list of
     # its workflows, in job order, so `meta` still names everything the plan came from.
     provenance = [_provenance(job.workflow, job.source) for job in jobs]
@@ -762,7 +920,7 @@ def _run(
         status=_provenance(doc_path, document_source) if root is not None else None,
         now=fixation.now if had_now else None,
         interface=interface,
-        inventories=inventories,
+        inventories=carried,
         occupied=occupied,
         ignore_resources=ignore_resources,
         jobs=settled,
@@ -774,7 +932,7 @@ def _run(
     # agree are worth checking rather than arguing about. A finding is a defect here,
     # not bad input, but it is reported instead of shipped: a plan that under-fills a
     # stock schedules cleanly, says `optimal`, and runs dry in a real lab.
-    for message in check_plan_inventories(plan, env, inventories):
+    for message in check_plan_inventories(plan, env, carried):
         diagnostics.append(Diagnostic(errors.PLAN_INVENTORY_INCONSISTENT, message, "activities"))
     if _has_error(diagnostics):
         return ScheduleReport(solution.outcome, None, None, diagnostics, solution.stats)

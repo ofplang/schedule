@@ -216,6 +216,30 @@ INTERFACE_SHARED_OUTPUT_SPOT = "interface_shared_output_spot"
 # binding belongs to, so sharing it between jobs would have several boundary nodes
 # claim the same spot. Refused rather than guessed; per-job interface is a later stage.
 MULTI_JOB_INTERFACE = "multi_job_interface"
+# A job named for withdrawal (design.md D42) that the document's roster does not
+# carry. Withdrawing is removing an entry, so there has to be one to remove -- and a
+# mistyped id that silently withdrew nothing would leave the caller believing the
+# laboratory had been cleared of a job that is still in it.
+UNKNOWN_WITHDRAWAL = "unknown_withdrawal"
+# A job cannot leave the plan while it still has work in it: pending work would be
+# discarded without anyone deciding to, and running work is on a machine right now,
+# which no `occupied` entry can express (that says a *spot* is taken, not that a
+# device is busy). Every activity of a withdrawing job must be `completed` or
+# `cancelled`.
+WITHDRAWAL_NOT_FINISHED = "withdrawal_not_finished"
+# The document says the job left something behind (`occupied[].job`, §6.12) and the
+# call says the job is leaving. Withdrawing frees whatever the job was holding, so
+# doing both would quietly empty a spot the document itself says is full. The caller
+# resolves it either way round: drop the entry if the material was collected, or drop
+# its `job` if it is still there and now belongs to nobody.
+WITHDRAWAL_LEAVES_OCCUPANCY = "withdrawal_leaves_occupancy"
+# Withdrawing every job would leave nothing to plan. The call would have to mean
+# either "plan nothing" or "plan one unnamed workflow", and it says neither.
+WITHDRAWAL_EMPTIES_ROSTER = "withdrawal_empties_roster"
+# A warning: a job left the plan, and the levels were carried forward to `now` so its
+# history could go with it (§6.10). Said out loud because the inventory baseline
+# moving is not something that should happen quietly.
+JOB_WITHDRAWN = "job_withdrawn"
 
 # Replanning (§9.3): produced while matching an execution status against the
 # workflow/instance and building the fixation for the solver. A status names a
@@ -340,6 +364,11 @@ ERROR_CODES = frozenset(
         INTERFACE_SHARED_OUTPUT_SPOT,
         JOBS_NOT_PLANNABLE_TOGETHER,
         MULTI_JOB_INTERFACE,
+        UNKNOWN_WITHDRAWAL,
+        WITHDRAWAL_NOT_FINISHED,
+        WITHDRAWAL_LEAVES_OCCUPANCY,
+        WITHDRAWAL_EMPTIES_ROSTER,
+        JOB_WITHDRAWN,
         STATUS_MISSING_NOW,
         STATUS_NODE_UNKNOWN,
         STATUS_ARC_UNKNOWN,

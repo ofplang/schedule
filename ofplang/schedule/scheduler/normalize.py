@@ -106,13 +106,21 @@ def normalize(
     ignore_resources: bool = False,
     jobs: tuple[str, ...] = (),
     max_transport_legs: int = 1,
+    withdrawn: frozenset[str] = frozenset(),
 ) -> tuple[Instance | None, Fixation | None, Diagnostics]:
     """Build the augmented instance and fixation from `base` (the workflow
     instance, built with `check_reachability=False`) and the status `root`.
 
     `ignore_resources` switches the consumable model off (§4.7.3): no levels are
     derived, so nothing constrains the solve and nothing about `inventories` is
-    checked."""
+    checked.
+
+    `withdrawn` names the jobs leaving the plan (design.md D42). `base` was built
+    without them, so their activities have nowhere in the instance to land and are
+    skipped here rather than reported as referring to nothing. Their **draws are
+    still counted**: the levels at `now` are what the whole run did to the stocks,
+    and the caller is about to be handed those levels as the new baseline (§6.10),
+    so a job's history leaves the document without leaving the arithmetic."""
     diags = Diagnostics()
     # `root` is the execution document, or None for an initial plan (no document).
     # An initial plan is the degenerate case of a replan with empty history and
@@ -142,7 +150,7 @@ def normalize(
     # which is what this always meant, and what it still reports when every job has
     # stopped and there is nothing left to plan.
     membership = job_membership(base, jobs)
-    terminal = _terminal_jobs(root) if isinstance(root, YMap) else set()
+    terminal = (_terminal_jobs(root) if isinstance(root, YMap) else set()) - withdrawn
     planned = {job for job in membership if job is not None}
     if terminal and planned <= terminal:
         diags.error(
@@ -161,7 +169,9 @@ def normalize(
     node_index = {act.node: i for i, act in enumerate(base.activities)}
     arc_keys = {_arc_key_of(a.arc) for a in base.arcs}
     if isinstance(root, YMap):
-        fixed_proc, legs_by_arc = _read_status(root, node_index, arc_keys, now, diags)
+        fixed_proc, legs_by_arc = _read_status(
+            root, node_index, arc_keys, now, diags, withdrawn
+        )
     else:
         fixed_proc, legs_by_arc = {}, {}
     if _has_error(diags):
@@ -235,7 +245,7 @@ def normalize(
         return None, None, diags
 
     levels = _derive_levels(
-        instance, act_fix, refills, root, env, diags, ignore_resources, now
+        instance, act_fix, refills, root, env, diags, ignore_resources, now, withdrawn
     )
     if _has_error(diags):
         return None, None, diags
@@ -387,6 +397,7 @@ def _derive_levels(
     diags: Diagnostics,
     ignore_resources: bool = False,
     now: int = 0,
+    withdrawn: frozenset[str] = frozenset(),
 ) -> dict[tuple[str, str], int]:
     """The level of each `(device, resource)` at `now`.
 
@@ -454,6 +465,15 @@ def _derive_levels(
                 continue
             levels[parsed] = levels.get(parsed, 0) - amount
 
+    # A withdrawing job's activities are not in the instance, so its draws are read
+    # from the history itself -- the `consumption` echo each started processing
+    # carries (§6.3), which is there so that history can be interpreted without the
+    # environment. Absent means it drew nothing, the same reading `plancheck` takes
+    # of a plan; a job that drew and did not say so cannot be reconstructed from any
+    # source, its workflow having left with it.
+    if withdrawn:
+        levels = _withdrawn_draws(root, withdrawn, since, levels)
+
     # A completed refill has already raised the level; a running one has not landed
     # and reaches the solver as a fixed increase at its end instead (§4.7.2).
     for refill in refills.values():
@@ -474,6 +494,37 @@ def _derive_levels(
                 f"inventories.levels.{device}.{resource}",
                 at=root,
             )
+    return levels
+
+
+def _withdrawn_draws(root, withdrawn: frozenset[str], since: int, levels: dict) -> dict:
+    """Subtract what the jobs in `withdrawn` have already drawn.
+
+    Read from the document rather than the instance, which no longer has them. A draw
+    is taken at the activity's start (§4.7.2), so the same `>= since` filter applies
+    as everywhere else, and a `cancelled` activity carries no echo because it never
+    ran (§6.2).
+    """
+    activities = root.get("activities") if isinstance(root, YMap) else None
+    if not isinstance(activities, YSeq):
+        return levels
+    for item in activities.items:
+        if not isinstance(item, YMap) or text(item.get("kind")) != "processing":
+            continue
+        if job_of(item) not in withdrawn or status_of(item) not in _STARTED:
+            continue
+        start, _end = times(item)
+        if start < since:
+            continue
+        drawn = item.get("consumption")
+        if not isinstance(drawn, YMap):
+            continue
+        for entry in drawn.entries:
+            parsed = parse_qualified_resource(entry.key)
+            value = entry.value
+            if parsed is None or not (isinstance(value, YScalar) and value.is_int):
+                continue
+            levels[parsed] = levels.get(parsed, 0) - value.value
     return levels
 
 
@@ -649,7 +700,7 @@ class _FixedProc:
     entry: YMap
 
 
-def _read_status(root, node_index, arc_keys, now, diags):
+def _read_status(root, node_index, arc_keys, now, diags, withdrawn=frozenset()):
     """Collect fixed processing (by node) and committed transport legs (by arc)
     from the status; relays and pending entries are ignored (regenerated).
 
@@ -675,6 +726,8 @@ def _read_status(root, node_index, arc_keys, now, diags):
         base = f"activities[{i}]"
         kind = text(item.get("kind"))
         job = job_of(item)
+        if job in withdrawn:
+            continue  # its instance is gone; only its draws are still read (levels)
         start, end = times(item)
         if kind == "processing":
             path = scoped(job, node_path(item.get("node")))
