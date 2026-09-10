@@ -223,29 +223,27 @@ def test_a_job_with_work_left_cannot_leave():
     assert _codes(report) == ["withdrawal_not_finished"]
 
 
-def test_a_job_recorded_as_leaving_something_behind_cannot_leave():
-    """🔴 The worst thing this feature could do is empty a spot that is physically
-    full, and this is the one case the document knows about. Resolved either way
-    round by the caller: drop the entry if the material was collected, or drop its
-    `job` if it is still there and now belongs to nobody (§6.12)."""
+def test_an_occupancy_outlives_the_job_that_left_the_material():
+    """An occupancy is not a claim about a job, so a job leaving does not settle it.
+
+    🔴 Withdrawing used to be refused while an entry named the leaving job, on the
+    reasoning that the document was saying something of it is still here. But residue
+    is declared *because* the job is there and moves into `occupied` *because* it
+    leaves (design.md D42), so requiring the entry to go first ran the same material
+    backwards -- and the section names no job to refuse on. What it does instead is
+    outlast the job: the spot is still held afterwards, which is the whole point of
+    saying so.
+    """
     workflow, env, document = _shared_refill()
     plan = _first_plan(workflow, env, document)
     status = _as_status(plan, 19)
-    status["occupied"] = [{"spot": "reader.slot", "since": 19, "job": "job1"}]
+    status["occupied"] = [{"spot": "reader.slot", "since": 19}]
 
     report = schedule_jobs(
         _jobs(workflow, "job2"), env, document_path=status, withdraw=["job1"], random_seed=0
     )
-    assert not report.ok
-    assert _codes(report) == ["withdrawal_leaves_occupancy"]
-
-    # Saying it belongs to nobody is enough: the spot stays held, the job leaves.
-    status["occupied"] = [{"spot": "reader.slot", "since": 19}]
-    freed = schedule_jobs(
-        _jobs(workflow, "job2"), env, document_path=status, withdraw=["job1"], random_seed=0
-    )
-    assert freed.ok, [d.code for d in freed.diagnostics]
-    assert freed.plan["occupied"] == [{"spot": "reader.slot", "since": 19}]
+    assert report.ok, [d.code for d in report.diagnostics]
+    assert report.plan["occupied"] == [{"spot": "reader.slot", "since": 19}]
 
 
 def test_withdrawing_every_job_is_refused():

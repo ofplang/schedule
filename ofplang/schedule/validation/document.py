@@ -36,9 +36,10 @@ DOC_TOP = {
 # (`interface`) -- the same section a single-workflow document carries at the top
 # level, one per job, because it binds one workflow's ports.
 JOB_KEYS = {"id", "release", "bound", "fingerprint", "interface"}
-# One entry of `occupied` (§6.12): a spot something is sitting on, since when, and
-# optionally which job left it there.
-OCCUPIED_KEYS = {"spot", "since", "job"}
+# One entry of `occupied` (§6.12): a spot something is sitting on, and since when.
+# Not which job left it: a spot can be held for reasons no document records, and
+# nothing read the attribution where one happened to be known.
+OCCUPIED_KEYS = {"spot", "since"}
 INVENTORIES_KEYS = {"levels", "at"}
 OUTCOMES = {"optimal", "feasible", "infeasible", "unknown"}
 # `failed` / `cancelled` are terminal statuses (§6.2): a run stops on any failure,
@@ -249,7 +250,6 @@ def _check_occupied(root: YMap, job_ids: set[str] | None, diags: Diagnostics) ->
             )
         else:
             shape.nonneg_int(since, shape.join(base, "since"), diags)
-        _check_job(omap.get("job"), base, "occupied", job_ids, diags)
 
 
 def _check_activity_ids(activities: YSeq, diags: Diagnostics) -> None:
@@ -457,13 +457,12 @@ def _check_job(
 
     Required exactly where the roster is. A document that lists jobs and then leaves
     an activity unattributed is half-converted -- there is no "the" job to fall back
-    on. Two things are exempt: a `replenishment`, which belongs to no job because one
-    refill may serve several (§6.9), and an `occupied` entry (§6.12), where naming the
-    job that left the material is traceability rather than provenance -- nobody may
-    know, and the occupancy is real either way.
+    on. One thing is exempt: a `replenishment`, which belongs to no job because one
+    refill may serve several (§6.9). An `occupied` entry (§6.12) does not reach here
+    at all -- it names no job, saying only that a spot is held.
     """
     if node is None:
-        if job_ids is not None and kind not in ("replenishment", "occupied"):
+        if job_ids is not None and kind != "replenishment":
             diags.error(
                 errors.MISSING_REQUIRED_FIELD,
                 "job is required where the document lists jobs",

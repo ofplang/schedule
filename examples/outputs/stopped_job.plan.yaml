@@ -13,7 +13,6 @@ jobs:
 occupied:
 - spot: oven.tray_1
   since: 10
-  job: job2
 outcome: optimal
 objective:
   kind:

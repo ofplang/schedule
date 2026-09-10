@@ -1368,13 +1368,20 @@ roster — which is also what says its delivered material still occupies its spo
 occupied:
   - spot: heater.stage      # required, a qualified spot (§8.2)
     since: 120              # required, when it became occupied
-    job: job2               # optional: which job left it there
 ```
 
 The scheduler knows a spot is taken only while some activity's interval covers it
 (§4.4). A completed activity's interval has ended, so material it left somewhere is
 free as far as the model can tell — and the plan will send other work to a place that
 is physically full. This section is how a document says otherwise.
+
+An entry says **that** a spot is held, and nothing else: not what is on it, and not
+whose it is. That is deliberately less than a document usually says. The occupancies
+worth declaring are the ones the plan cannot account for by itself, and those have no
+one form — a job stopped and its material stayed where it was; a final output was
+delivered and nobody has collected it; a plate was left on a bench for reasons no
+document records. A section that described any one of them would not describe the
+others, and the plan needs the same thing from all three.
 
 Each entry holds its spot from `since` **until further notice**: for the rest of the
 plan, like a delivered Object (§6.8), and unlike one it takes no part in the makespan.
@@ -1396,13 +1403,16 @@ history accounts for the spot up to `now`, this section accounts for it from `no
 The stated `since` is echoed unchanged in the plan (§6.1), so what it records is
 not lost.
 
-`job` is **traceability, not provenance**: it records which job left the material, for
-a reader and for a later withdrawal that would free the spot. It may be omitted —
-nobody may know, and the spot is taken either way — and where a roster exists it must
-name one of its entries (§6.11).
+In particular an entry names no job, and an occupancy is not answerable to one. A
+job's residue is declared while the job is running *because* the job is there, by its
+own history; it becomes an occupancy when the job **leaves** (§6.11) and its history
+goes with it. So an occupancy outlives whatever produced it, and a job withdrawing
+neither requires an entry to be dropped nor drops one itself. Clearing the spot is a
+separate act, by whoever collects the material: they delete the entry.
 
 The usual writer is whatever reports a failure: a job stops (§6.2), and what it was
-holding stays where it is until somebody clears it.
+holding stays where it is until somebody clears it. How a writer works out which spots
+those are is its own affair — this section fixes what is said, not how it is found.
 
 ## 7. Execution status
 
@@ -1598,8 +1608,8 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
   `job_roster_mismatch` / `job_workflow_mismatch`) — they need the caller's inputs, not
   just the document.
 - `occupied` (if present): a list of mappings, each with a required `spot` that is a
-  well-formed qualified spot, a required `since` that is a non-negative integer, and an
-  optional `job` that is an identifier naming a roster entry where there is one (§6.12).
+  well-formed qualified spot and a required `since` that is a non-negative integer. No
+  other key is accepted — an entry says a spot is held and nothing more (§6.12).
 - `interface` (if present): `inputs` / `outputs` (each optional) are maps of a port
   identifier to a qualified spot; a spot value is a well-formed qualified spot
   (`<device>.<spot>`, exactly one `.`). (That a port is an Object-bearing boundary

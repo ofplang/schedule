@@ -889,9 +889,8 @@ with one job the whole of Part II is vacuous.
   activity that came from a workflow — every $i \in T \setminus T^{\mathrm{held}}$ and
   every arc $r \in R$ — and $\bot$ for the two kinds that did not: a replenishment
   candidate $\omega \in W$ and a held node $h \in T^{\mathrm{held}}$ (§J5). A held
-  node's document entry *may* name the job that left the material, but that is
-  traceability and not ownership (SPEC §6.12): it is nobody's work, and nothing
-  job-scoped below reads it.
+  node's document entry names no job at all (SPEC §6.12) — it says a spot is held, not
+  whose the material is — so nothing job-scoped below reaches it.
 - $J^{\mathrm{stop}} \subseteq J$: the jobs that have **stopped** (§J4).
 
 Ownership is by construction, not inference: the activities of one workflow are
@@ -1069,7 +1068,8 @@ status has always meant for one workflow (SPEC §6.2).
 ## J5. Held spots (adds to §Sets and indices, §6, §8)
 
 A spot may be physically occupied by something the plan does not otherwise account
-for — material a stopped job left behind (SPEC §6.12). §6 knows a spot is taken only
+for — material a stopped job left behind, a delivered output nobody has collected, a
+plate on a bench for reasons no document records (SPEC §6.12). §6 knows a spot is taken only
 while some activity's interval covers it, and the interval of the activity that put
 the material there has ended, so without saying otherwise the model believes the spot
 free and will send other work to a place that is full.
@@ -1077,9 +1077,9 @@ free and will send other work to a place that is full.
 - $T^{\mathrm{held}} \subseteq T$: one **held node** per `occupied` entry. Like a
   boundary node it is a single-mode processing activity in $T$, with no device and no
   consumption; unlike one it has no arcs, is in no dependency pair, and is excluded
-  from the makespan (§8). It is nobody's work: its entry may name the job that left
-  the material, for a reader and for a later withdrawal, but nothing job-scoped reads
-  that (§J0).
+  from the makespan (§8). It is nobody's work in the literal sense: the entry names
+  no job, so nothing job-scoped (§J0) reaches it — no roster rule, no withdrawal, no
+  status.
 - $p_h \in P$: the spot it holds. $since_h \in \mathbb{Z}_{\ge 0}$: when the document
   says it became occupied.
 

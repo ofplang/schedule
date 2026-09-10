@@ -233,7 +233,7 @@ def test_an_occupancy_keeps_the_date_it_was_given():
 
 def test_an_occupancy_belongs_to_no_work_and_round_trips():
     workflow, env = _simple()
-    document = _held("station_1.core", 40, job="job2")
+    document = _held("station_1.core", 40)
     document["jobs"] = [{"id": "job1"}, {"id": "job2"}]
 
     report = schedule_jobs(_jobs(workflow), env, document_path=document)
@@ -246,13 +246,21 @@ def test_an_occupancy_belongs_to_no_work_and_round_trips():
     assert again.ok, [d.code for d in again.diagnostics]
 
 
-def test_an_occupancy_may_name_a_job_or_not():
-    """Naming the job that left it is traceability, not provenance: nobody may know,
-    and the spot is taken either way."""
+def test_an_occupancy_names_no_job():
+    """It says a spot is held, and nothing more. A spot can be held for reasons no
+    document records -- a plate somebody left there, an earlier run's leavings -- so
+    the section keeps the form that covers those as well as a stopped job's residue.
+    Naming an owner is refused outright (§6.12)."""
     workflow, env = _simple()
     document = _held("station_1.core", 40)
     document["jobs"] = [{"id": "job1"}, {"id": "job2"}]
     assert schedule_jobs(_jobs(workflow), env, document_path=document).ok
+
+    named = _held("station_1.core", 40, job="job2")
+    named["jobs"] = [{"id": "job1"}, {"id": "job2"}]
+    refused = schedule_jobs(_jobs(workflow), env, document_path=named)
+    assert not refused.ok
+    assert "unknown_key" in {d.code for d in refused.diagnostics}
 
 
 # ---------------------------------------------------------------------------

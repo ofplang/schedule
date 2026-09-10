@@ -227,12 +227,6 @@ UNKNOWN_WITHDRAWAL = "unknown_withdrawal"
 # device is busy). Every activity of a withdrawing job must be `completed` or
 # `cancelled`.
 WITHDRAWAL_NOT_FINISHED = "withdrawal_not_finished"
-# The document says the job left something behind (`occupied[].job`, §6.12) and the
-# call says the job is leaving. Withdrawing frees whatever the job was holding, so
-# doing both would quietly empty a spot the document itself says is full. The caller
-# resolves it either way round: drop the entry if the material was collected, or drop
-# its `job` if it is still there and now belongs to nobody.
-WITHDRAWAL_LEAVES_OCCUPANCY = "withdrawal_leaves_occupancy"
 # Withdrawing every job would leave nothing to plan. The call would have to mean
 # either "plan nothing" or "plan one unnamed workflow", and it says neither.
 WITHDRAWAL_EMPTIES_ROSTER = "withdrawal_empties_roster"
@@ -366,7 +360,6 @@ ERROR_CODES = frozenset(
         MULTI_JOB_INTERFACE,
         UNKNOWN_WITHDRAWAL,
         WITHDRAWAL_NOT_FINISHED,
-        WITHDRAWAL_LEAVES_OCCUPANCY,
         WITHDRAWAL_EMPTIES_ROSTER,
         JOB_WITHDRAWN,
         STATUS_MISSING_NOW,

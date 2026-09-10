@@ -121,7 +121,7 @@ def _document_activities(doc_path, root) -> list[dict]:
     return [a for a in listed if isinstance(a, dict)] if isinstance(listed, list) else []
 
 
-def _check_withdrawals(withdraw, entries, jobs, activities, occupied) -> list[Diagnostic]:
+def _check_withdrawals(withdraw, entries, jobs, activities) -> list[Diagnostic]:
     """What must be true before a job may leave the plan (design.md D42).
 
     Withdrawing is the physical act of collecting what a job left in the laboratory,
@@ -134,6 +134,13 @@ def _check_withdrawals(withdraw, entries, jobs, activities, occupied) -> list[Di
     really collected. That is a fact about the room, not the document, which is why
     withdrawal is asked for explicitly rather than inferred from a job going quiet.
     What these do is refuse the cases where the document already knows better.
+
+    An `occupied` entry (§6.12) is not one of them, though it once was. Withdrawing
+    was refused while an entry named the leaving job, on the reasoning that the
+    document was saying something of it is still here. But the residue of a job that
+    stops is declared *because* the job is there and moves into `occupied` *because*
+    it leaves, so requiring the entry to go first ran the same material backwards --
+    and the section no longer names a job to refuse on.
     """
     out: list[Diagnostic] = []
     known = set(entries or {})
@@ -180,25 +187,6 @@ def _check_withdrawals(withdraw, entries, jobs, activities, occupied) -> list[Di
                     "activities",
                 )
             )
-        held = sorted(
-            {
-                str(entry.get("spot"))
-                for entry in (occupied or [])
-                if isinstance(entry, dict) and entry.get("job") == job_id
-            }
-        )
-        if held:
-            out.append(
-                Diagnostic(
-                    errors.WITHDRAWAL_LEAVES_OCCUPANCY,
-                    f"job {job_id!r} is recorded as leaving {', '.join(held)} "
-                    f"occupied (§6.12): withdrawing it would free a spot the document "
-                    f"says is taken. Drop the entry if the material was collected, or "
-                    f"drop its `job` if it is still there",
-                    "occupied",
-                )
-            )
-
     if known and not (known - set(withdraw)):
         out.append(
             Diagnostic(
@@ -819,7 +807,7 @@ def _run(
 
     if withdraw:
         diagnostics += _check_withdrawals(
-            withdraw, entries, jobs, _document_activities(doc_path, root), occupied
+            withdraw, entries, jobs, _document_activities(doc_path, root)
         )
 
     diagnostics += _check_boundary_spots(tuple(specs))

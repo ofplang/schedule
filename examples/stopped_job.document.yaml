@@ -24,6 +24,11 @@
 # `tray_2` and take turns. The nineteen seconds are what the truth costs, and the
 # shorter plan is the one that cannot be run.
 #
+# The entry names no job, and does not need to: it says the tray is taken, which is
+# what the plan has to know. A spot can be held for reasons no document records -- a
+# plate somebody left there, the leavings of an earlier run -- and this section is
+# how any of them are said.
+#
 # `job2` keeps its roster entry. That is not leftover bookkeeping: the entry is what
 # says this job's material is still in the laboratory.
 now: 10
@@ -36,7 +41,6 @@ jobs:
 occupied:
   - spot: oven.tray_1
     since: 10
-    job: job2
 
 activities:
   - kind: processing

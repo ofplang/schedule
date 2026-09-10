@@ -1,0 +1,8 @@
+outcome: invalid
+match: exact
+errors:
+- {code: unknown_key}
+notes: >-
+  An occupancy says a spot is held, and nothing more: it carries `spot` and `since`
+  and no owner. A spot can be held for reasons no document records, so naming the
+  job that left the material made a special case of the ordinary one; spec §6.12.

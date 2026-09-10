@@ -653,7 +653,11 @@ def _held_nodes(root: YNode | None) -> list[ActivityInstance]:
                 (),
                 "",
                 (mode,),
-                boundary=BoundaryInfo("held", job=text(item.get("job")) or None, since=since.value),
+                # No owner: an occupancy says a spot is held, not whose the material
+                # is (§6.12). `job=None` is also what the model wants of it -- a held
+                # node belongs to no job, so nothing holds it to a promise or sweeps
+                # it up when some job stops.
+                boundary=BoundaryInfo("held", since=since.value),
             )
         )
     return out

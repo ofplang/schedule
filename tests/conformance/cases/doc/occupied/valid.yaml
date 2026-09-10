@@ -4,7 +4,6 @@ occupied:
   since: 120
 - spot: bench.slot_a
   since: 0
-  job: morning
 jobs:
 - id: morning
 activities: []

@@ -147,7 +147,7 @@ An Object-bearing entry input with no `interface` binding is an error
 ## `stopped_job` — one job stops, and what it left behind is still there
 
 The example for a failure that is not the end of the world (SPEC §6.2) and for the
-section that says what it left (§6.12).
+section that says the spot it left something on is still held (§6.12).
 
 ```sh
 ofp-schedule schedule shared_refill.workflow.yaml shared_refill.workflow.yaml     shared_refill.workflow.yaml --env stopped_job.env.yaml     --document stopped_job.document.yaml
