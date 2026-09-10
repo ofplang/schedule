@@ -107,6 +107,7 @@ def normalize(
     jobs: tuple[str, ...] = (),
     max_transport_legs: int = 1,
     withdrawn: frozenset[str] = frozenset(),
+    frozen: tuple[dict, ...] = (),
 ) -> tuple[Instance | None, Fixation | None, Diagnostics]:
     """Build the augmented instance and fixation from `base` (the workflow
     instance, built with `check_reachability=False`) and the status `root`.
@@ -120,7 +121,12 @@ def normalize(
     skipped here rather than reported as referring to nothing. Their **draws are
     still counted**: the levels at `now` are what the whole run did to the stocks,
     and the caller is about to be handed those levels as the new baseline (§6.10),
-    so a job's history leaves the document without leaving the arithmetic."""
+    so a job's history leaves the document without leaving the arithmetic.
+
+    `frozen` carries `occupied` entries (§6.12) the caller derived rather than read:
+    what a withdrawing job was still holding, which the document does not say because
+    the job's own boundary said it. They are held here as well as echoed, because a
+    spot the model does not know is taken is a spot **this** plan will use."""
     diags = Diagnostics()
     # `root` is the execution document, or None for an initial plan (no document).
     # An initial plan is the degenerate case of a replan with empty history and
@@ -225,7 +231,7 @@ def normalize(
     # nodes: no work, no arcs, just something sitting there from a stated moment until
     # the run is over. They are appended after the workflow activities, so no index
     # already in `act_fix` / `arc_fix` / `precedence` moves.
-    activities.extend(_held_nodes(root))
+    activities.extend(_held_nodes(root, frozen))
 
     # A move that would carry cancelled work, or carry it away, never happens either.
     for r, arc_inst in enumerate(arcs):
@@ -617,7 +623,7 @@ def _has_started_activities(root: YMap) -> bool:
     return any(isinstance(item, YMap) and status_of(item) in _STARTED for item in activities.items)
 
 
-def _held_nodes(root: YNode | None) -> list[ActivityInstance]:
+def _held_nodes(root: YNode | None, frozen: tuple[dict, ...] = ()) -> list[ActivityInstance]:
     """`occupied` (§6.12) read into the instance: one held node per entry.
 
     The scheduler knows a spot is taken only while some activity's interval covers it,
@@ -626,21 +632,32 @@ def _held_nodes(root: YNode | None) -> list[ActivityInstance]:
     holds that one spot from `since` until the run is over, exactly as a delivered
     Object does (§6.8), and belongs to no work at all.
 
+    `frozen` adds entries the caller derived instead of reading: what a withdrawing
+    job was still holding (design.md D44). They are the same claim in the same form,
+    so they become the same kind of node -- the document is simply not the only place
+    an occupancy can come from.
+
     The document has been shape-validated, so `spot` is a well-formed qualified spot
     and `since` a non-negative integer; anything else is skipped rather than raising.
     """
-    if not isinstance(root, YMap):
-        return []
-    seq = root.get("occupied")
-    if not isinstance(seq, YSeq):
-        return []
+    stated: list[tuple[str, int]] = []
+    if isinstance(root, YMap):
+        seq = root.get("occupied")
+        if isinstance(seq, YSeq):
+            for item in seq.items:
+                if not isinstance(item, YMap):
+                    continue
+                spot, since = text(item.get("spot")), item.get("since")
+                if not spot or not (isinstance(since, YScalar) and since.is_int):
+                    continue
+                stated.append((spot, since.value))
+    for entry in frozen:
+        derived_spot, derived_since = entry.get("spot"), entry.get("since")
+        if isinstance(derived_spot, str) and isinstance(derived_since, int):
+            stated.append((derived_spot, derived_since))
+
     out = []
-    for item in seq.items:
-        if not isinstance(item, YMap):
-            continue
-        spot, since = text(item.get("spot")), item.get("since")
-        if not spot or not (isinstance(since, YScalar) and since.is_int):
-            continue
+    for spot, since_value in stated:
         mode = Mode(
             id="occupied",
             devices=(),
@@ -657,7 +674,7 @@ def _held_nodes(root: YNode | None) -> list[ActivityInstance]:
                 # is (§6.12). `job=None` is also what the model wants of it -- a held
                 # node belongs to no job, so nothing holds it to a promise or sweeps
                 # it up when some job stops.
-                boundary=BoundaryInfo("held", since=since.value),
+                boundary=BoundaryInfo("held", since=since_value),
             )
         )
     return out

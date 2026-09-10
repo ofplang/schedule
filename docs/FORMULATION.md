@@ -1081,7 +1081,15 @@ free and will send other work to a place that is full.
   no job, so nothing job-scoped (§J0) reaches it — no roster rule, no withdrawal, no
   status.
 - $p_h \in P$: the spot it holds. $since_h \in \mathbb{Z}_{\ge 0}$: when the document
-  says it became occupied.
+  says it became occupied. Spots are distinct across $T^{\mathrm{held}}$: two nodes on
+  one spot would contend over the same interval, so the input is refused rather than
+  reported infeasible (SPEC §6.12).
+
+A held node need not come from the document. A job leaving the plan (SPEC §6.11) hands
+over the holds it had that nothing else accounts for — an unbound final output's resting
+spot, whose $\sigma$ was the *solve's* choice and so is stated nowhere — as entries
+with $since_h = now$. They enter $T^{\mathrm{held}}$ like any other: a spot the model
+does not know is taken is a spot the next plan uses.
 
 $$
 s_h = \max(since_h,\ now), \qquad e_h = \mathcal{H}, \qquad \forall h \in T^{\mathrm{held}}

@@ -1,0 +1,6 @@
+occupied:
+- spot: heater.stage
+  since: 10
+- spot: heater.stage
+  since: 40
+activities: []

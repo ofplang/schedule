@@ -1,0 +1,9 @@
+outcome: invalid
+match: exact
+errors:
+- {code: occupied_duplicate_spot}
+notes: >-
+  A spot holds one item, so a second entry for it says nothing the first did not --
+  and it is not merely redundant: each entry holds the spot over the same interval,
+  so the two contend and the document is unschedulable with nothing to say why;
+  spec §6.12.

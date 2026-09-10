@@ -259,3 +259,217 @@ def test_withdrawing_every_job_is_refused():
     )
     assert not report.ok
     assert "withdrawal_empties_roster" in _codes(report)
+
+
+# ---------------------------------------------------------------------------
+# What a leaving job is still holding (design.md D44, SPEC §6.12).
+# ---------------------------------------------------------------------------
+
+
+def _bay(*, bind_job1: bool):
+    """Two jobs with real boundary material over one loading bay and two racks.
+
+    `interface_load` is the only example workflow with a final output at all, so it is
+    the only one that can hold a spot to the end of the plan. `job1`'s output is bound
+    or not per the argument -- the whole question of 2d is which of the two the
+    withdrawal may free.
+    """
+    workflow = _load("interface_load.workflow.yaml")
+    env = _load("shared_bay.env.yaml")
+    job1: dict = {"id": "job1", "interface": {"inputs": {"sample": "loader.stage"}}}
+    if bind_job1:
+        job1["interface"]["outputs"] = {"result": "output.rack_a"}
+    document = {
+        "jobs": [
+            job1,
+            {
+                "id": "job2",
+                "release": 30,
+                "interface": {
+                    "inputs": {"sample": "loader.stage"},
+                    "outputs": {"result": "output.rack_b"},
+                },
+            },
+        ],
+        "activities": [],
+    }
+    return workflow, env, document
+
+
+def _resting_spot(plan, job):
+    """Where a job's final output came to rest, read the way the scheduler reads it:
+    off the boundary arc, whose interface end carries the empty path (§6.8)."""
+    for a in plan["activities"]:
+        arc = a.get("arc") or {}
+        if (
+            a["kind"] == "transport"
+            and a.get("job") == job
+            and arc.get("to", {}).get("node") == []
+        ):
+            return a["to_spot"]
+    raise AssertionError(f"no boundary arc for {job}")
+
+
+def _completed_through(plan, job):
+    """The plan as a status document at the moment `job` has finished."""
+    now = max(a["end"] for a in plan["activities"] if a.get("job") == job)
+    return _as_status(plan, now), now
+
+
+def test_an_unbound_final_output_stays_where_the_schedule_left_it():
+    """🔴 The one thing a withdrawal must not do: free a spot with a plate on it.
+
+    A final output holds its spot to the end of the plan (§6.8), and withdrawing takes
+    the job's activities out and those holds with them. For a **bound** output that is
+    right -- the caller named the spot, so leaving is a statement about a place they
+    chose. For an **unbound** one it cannot be: the schedule picked the spot, so the
+    caller was never told where the material is and cannot have collected it.
+
+    Measured rather than argued. Without the freeze, a later job binding that very
+    spot is planned onto it; the control below is the same document with the job still
+    in it, which is refused as it should be.
+    """
+    workflow, env, document = _bay(bind_job1=False)
+    plan = _first_plan(workflow, env, document)
+    spot = _resting_spot(plan, "job1")
+    status, now = _completed_through(plan, "job1")
+
+    report = schedule_jobs(
+        _jobs(workflow, "job2"), env, document_path=copy.deepcopy(status),
+        withdraw=["job1"], random_seed=0,
+    )
+    assert report.ok, _codes(report)
+    # The occupancy is the material, said the only way that outlives the job (§6.12).
+    assert report.plan["occupied"] == [{"spot": spot, "since": now}]
+    # And it is named out loud: the caller never said where this output goes, so this
+    # is also the answer to "where is my material".
+    assert spot in next(d.message for d in report.diagnostics if d.code == "job_withdrawn")
+
+    # It is a hold, not a note: a job binding that spot cannot be planned onto it.
+    contested = copy.deepcopy(status)
+    contested["jobs"] = list(contested["jobs"]) + [
+        {
+            "id": "job3",
+            "release": 60,
+            "interface": {"inputs": {"sample": "loader.stage"}, "outputs": {"result": spot}},
+        }
+    ]
+    blocked = schedule_jobs(
+        _jobs(workflow, "job2", "job3"), env, document_path=copy.deepcopy(contested),
+        withdraw=["job1"], random_seed=0,
+    )
+    assert not blocked.ok
+    assert "infeasible" in _codes(blocked)
+    # 🔴 The report survives the failure. A frozen spot can be *why* nothing can be
+    # planned, and that is the case the caller most needs the account for.
+    assert any(d.code == "job_withdrawn" for d in blocked.diagnostics)
+
+    # Control: with job1 still in the plan, the same document is refused the same way.
+    # So the freeze restores the answer the withdrawal was taking away, rather than
+    # inventing a new obstacle.
+    kept = schedule_jobs(
+        _jobs(workflow, "job1", "job2", "job3"), env, document_path=contested, random_seed=0
+    )
+    assert not kept.ok
+    assert "infeasible" in _codes(kept)
+
+
+def test_a_bound_final_output_is_taken_at_its_word():
+    """The mirror. The caller named the spot, so withdrawing says they collected what
+    they put there -- and the spot is free for the next job, which is the point of
+    binding one."""
+    workflow, env, document = _bay(bind_job1=True)
+    plan = _first_plan(workflow, env, document)
+    spot = _resting_spot(plan, "job1")
+    assert spot == "output.rack_a"
+    status, _ = _completed_through(plan, "job1")
+
+    report = schedule_jobs(
+        _jobs(workflow, "job2"), env, document_path=copy.deepcopy(status),
+        withdraw=["job1"], random_seed=0,
+    )
+    assert report.ok, _codes(report)
+    assert "occupied" not in report.plan
+
+    # And the rack really is free: a job that binds it is planned.
+    reused = copy.deepcopy(status)
+    reused["jobs"] = list(reused["jobs"]) + [
+        {
+            "id": "job3",
+            "release": 60,
+            "interface": {"inputs": {"sample": "loader.stage"}, "outputs": {"result": spot}},
+        }
+    ]
+    after = schedule_jobs(
+        _jobs(workflow, "job2", "job3"), env, document_path=reused,
+        withdraw=["job1"], random_seed=0,
+    )
+    assert after.ok, _codes(after)
+
+
+def test_a_failed_job_can_leave():
+    """🔴 The case the feature exists for: a job that died.
+
+    A `failed` status never changes -- it is what happened -- so refusing to withdraw
+    on it shut such a job out of the plan for good. And it protected nothing: the
+    failed activity's interval has *ended*, so it holds neither spot nor device that
+    the withdrawal could take away. What it left in the room is `occupied`'s to say,
+    and an occupancy outlives the job that left it (§6.12).
+    """
+    workflow, env, document = _bay(bind_job1=False)
+    plan = _first_plan(workflow, env, document)
+    status = copy.deepcopy(plan)
+    status["now"] = 12
+    for a in status["activities"]:
+        if a.get("job") != "job1":
+            continue
+        if a["kind"] == "processing":
+            a["status"] = "failed"
+        elif a["end"] <= 12:
+            a["status"] = "completed"
+        # The delivery had not left yet, so it is not reported at all: the replan
+        # cancels it, which is what a stopped job's unfinished work becomes (§6.2).
+    status["activities"] = [a for a in status["activities"] if a.get("status")]
+    # Replan once so the history is the scheduler's own account of the failure --
+    # including the cancelled boundary move, which is what the withdrawal then reads.
+    stopped = schedule_jobs(
+        _jobs(workflow, "job1", "job2"), env, document_path=copy.deepcopy(status), random_seed=0
+    )
+    assert stopped.ok, _codes(stopped)
+    history = copy.deepcopy(stopped.plan)
+    history["now"] = 12
+    history["activities"] = [a for a in history["activities"] if a.get("status")]
+    assert "failed" in {a.get("status") for a in history["activities"]}
+
+    report = schedule_jobs(
+        _jobs(workflow, "job2"), env, document_path=history, withdraw=["job1"], random_seed=0
+    )
+    assert report.ok, _codes(report)
+    assert [j["id"] for j in report.plan["jobs"]] == ["job2"]
+    # Nothing is frozen: the delivery never happened. A cancelled boundary move
+    # carried nothing, so the material is upstream where the failure left it -- a fact
+    # about the room, which is `occupied`'s to state and not the plan's to guess.
+    assert "occupied" not in report.plan
+
+
+def test_a_frozen_spot_is_never_declared_twice():
+    """A spot is named once (§6.12), and a second entry is not harmless: each becomes
+    a held node, so two of them contend for the one spot and the document comes back
+    `infeasible` with nothing to say why. So a freeze that lands on a spot the document
+    already declares adds nothing."""
+    workflow, env, document = _bay(bind_job1=False)
+    plan = _first_plan(workflow, env, document)
+    spot = _resting_spot(plan, "job1")
+    status, now = _completed_through(plan, "job1")
+    status["occupied"] = [{"spot": spot, "since": 5}]
+
+    report = schedule_jobs(
+        _jobs(workflow, "job2"), env, document_path=status, withdraw=["job1"], random_seed=0
+    )
+    assert report.ok, _codes(report)
+    # The document's own entry stands, with the `since` it stated (§6.12).
+    assert report.plan["occupied"] == [{"spot": spot, "since": 5}]
+    assert spot not in next(
+        d.message for d in report.diagnostics if d.code == "job_withdrawn"
+    )
+    assert now  # the moment exists; the frozen entry simply was not needed

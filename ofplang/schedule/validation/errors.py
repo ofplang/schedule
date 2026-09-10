@@ -168,6 +168,11 @@ INTERFACE_INPUT_MISSING = "interface_input_missing"
 # left, which shelf is refrigerated, or where the next person expects to find the
 # result. Binding every final output is the normal way to write the section.
 INTERFACE_OUTPUT_UNBOUND = "interface_output_unbound"
+# Two entries of `occupied` name the same spot (§6.12). A spot holds one item (§4.4),
+# so a second entry says nothing a first did not -- and it is not harmless: each entry
+# becomes a held node, two of them hold the one spot over the same interval, and the
+# document comes back `infeasible` with nothing to say why.
+OCCUPIED_DUPLICATE_SPOT = "occupied_duplicate_spot"
 # Two entries of the document's `jobs` roster share an id (§6.11). The id is the
 # whole of a job's identity -- it is what every one of its activities carries -- so
 # a repeat would merge two jobs' work on a replan.
@@ -350,6 +355,7 @@ ERROR_CODES = frozenset(
         INTERFACE_DUPLICATE_SPOT,
         INTERFACE_INPUT_MISSING,
         INTERFACE_OUTPUT_UNBOUND,
+        OCCUPIED_DUPLICATE_SPOT,
         DUPLICATE_JOB_ID,
         UNKNOWN_JOB,
         JOB_ROSTER_MISMATCH,

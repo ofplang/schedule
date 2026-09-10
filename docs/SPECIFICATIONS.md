@@ -1392,6 +1392,11 @@ already ended.
 `since` is required. Without it there is no interval to hold, and "occupied from the
 beginning" is a different claim from "occupied since the failure".
 
+A spot is named **once** (`occupied_duplicate_spot`). It holds one item (§4.4), so a
+second entry for it adds no claim — and it is not merely redundant: each entry holds
+the spot over the same interval, so the two contend and the document is unschedulable
+with nothing to say why. The refusal is what turns that into an explanation.
+
 A `since` earlier than `now` holds the spot **from `now`**. Nothing can be scheduled
 into the past — pending work starts at or after `now`, and reported work is pinned by
 its history — so an earlier `since` cannot constrain a plan; all it could do is
@@ -1406,7 +1411,10 @@ not lost.
 In particular an entry names no job, and an occupancy is not answerable to one. A
 job's residue is declared while the job is running *because* the job is there, by its
 own history; it becomes an occupancy when the job **leaves** (§6.11) and its history
-goes with it. So an occupancy outlives whatever produced it, and a job withdrawing
+goes with it. A final output with no `interface` binding is the clearest case: it
+holds its spot to the end of the plan (§6.8), but *which* spot was the schedule's
+choice rather than the caller's, so a job leaving cannot mean that material was
+collected — and the hold becomes an entry here instead of vanishing with the job. So an occupancy outlives whatever produced it, and a job withdrawing
 neither requires an entry to be dropped nor drops one itself. Clearing the spot is a
 separate act, by whoever collects the material: they delete the entry.
 
@@ -1609,7 +1617,8 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
   just the document.
 - `occupied` (if present): a list of mappings, each with a required `spot` that is a
   well-formed qualified spot and a required `since` that is a non-negative integer. No
-  other key is accepted — an entry says a spot is held and nothing more (§6.12).
+  other key is accepted — an entry says a spot is held and nothing more (§6.12) — and
+  no spot is named twice (`occupied_duplicate_spot`).
 - `interface` (if present): `inputs` / `outputs` (each optional) are maps of a port
   identifier to a qualified spot; a spot value is a well-formed qualified spot
   (`<device>.<spot>`, exactly one `.`). (That a port is an Object-bearing boundary
@@ -1881,6 +1890,7 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `relay_nonzero_duration` | a `relay` activity's `end` is not equal to its `start` |
 | `empty_amounts` | a `replenishment` activity's `amounts` is empty — a refill that adds nothing (§6.9) |
 | `duplicate_activity_id` | two activities in one document share an `id` |
+| `occupied_duplicate_spot` | two entries of `occupied` name the same spot (§6.12) |
 | `duplicate_job_id` | two entries of the `jobs` roster share an `id` (§6.11) |
 | `unknown_job` | an activity's `job` names no roster entry, or the document has no roster (§6.11) |
 

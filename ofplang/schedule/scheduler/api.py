@@ -99,6 +99,13 @@ def _objective_of(declared, job_count: int = 0) -> tuple[str, ...]:
     return objective_stages.normalize(declared) or objective_stages.default(job_count)
 
 
+# The statuses a job may leave the plan with (§6.11): work that has run its course,
+# whether it got there or not. `running` and `pending` are the two that are still
+# somebody's expectation -- a running activity is on a machine now, and `occupied`
+# speaks of spots and cannot hold a device.
+_FINISHED = ("completed", "cancelled", "failed")
+
+
 def _roster_entries(roster) -> dict[str, dict]:
     """A document's `jobs` roster (§6.11), by job id. The document has already been
     shape-validated, so every entry is a mapping with a string `id`; anything else is
@@ -119,6 +126,84 @@ def _document_activities(doc_path, root) -> list[dict]:
     else:
         return []
     return [a for a in listed if isinstance(a, dict)] if isinstance(listed, list) else []
+
+
+def _frozen_note(frozen: list[dict]) -> str:
+    """The frozen spots, for the withdrawal's report. One or many reads the same."""
+    spots = ", ".join(entry["spot"] for entry in frozen)
+    if len(frozen) == 1:
+        return (
+            f"; {spots} stays occupied (§6.12): an unbound final output, so where it "
+            f"came to rest was never stated and cannot have been collected"
+        )
+    return (
+        f"; {spots} stay occupied (§6.12): unbound final outputs, so where they came "
+        f"to rest was never stated and cannot have been collected"
+    )
+
+
+def _frozen_holds(withdraw, entries, activities, occupied, now: int) -> list[dict]:
+    """What a withdrawing job is still holding that nobody else will say (D44, §6.12).
+
+    A job's final outputs hold their spots to the end of the plan (§6.8). Withdrawing
+    takes the job's activities out, and those holds with them -- so the question is
+    which of them may go.
+
+    **A bound output may.** The caller named the spot, so withdrawing is a statement
+    about a place they chose and know: they collected it. **An unbound one may not.**
+    Nobody named that spot -- the schedule picked it (§6.8) -- so the caller cannot
+    have collected what they were never told the location of. Freeing it would hand a
+    spot with a plate on it to the next job, which is measurable rather than
+    hypothetical (design.md D44). So it becomes an occupancy: the material is there,
+    it is nobody's work any more, and that is exactly what the section is for.
+
+    🔴 **The spot comes from the history, not the environment.** An unbound output
+    rests wherever the solve put it, so nothing in the document *states* it -- but the
+    boundary arc that carried it there is rendered as an ordinary transport (§6.8),
+    and its destination is the spot. A same-spot arrival (the output stayed where it
+    was made) is a zero-length transport and is rendered too, so "it never moved" is
+    readable the same way.
+
+    Only a **completed** arrival counts. A cancelled boundary transport delivered
+    nothing: the material is upstream where the failure left it, which is a fact about
+    the room rather than the plan, and `occupied` is where the room speaks.
+
+    `since` is `now`: the moment the plan stops accounting for it. The material has
+    been there since the delivery, and dating it from then would be truer to the
+    history -- but nothing reads an occupancy's `since` before `now` anyway (§6.12
+    holds it from `now` either way), and `now` is the moment the claim is made.
+    """
+    held = {
+        str(entry.get("spot"))
+        for entry in (occupied or [])
+        if isinstance(entry, dict) and entry.get("spot") is not None
+    }
+    out: list[dict] = []
+    for job_id in sorted(withdraw):
+        bound = set(((entries or {}).get(job_id, {}).get("interface") or {}).get("outputs") or {})
+        for activity in activities:
+            if activity.get("job") != job_id or activity.get("kind") != "transport":
+                continue
+            if activity.get("status") != "completed":
+                continue
+            arc = activity.get("arc")
+            if not isinstance(arc, dict):
+                continue
+            # The interface side of a boundary arc is the one with the empty path
+            # (§6.8); its port is the final output's name.
+            destination = arc.get("to")
+            if not isinstance(destination, dict) or destination.get("node") != []:
+                continue
+            port = destination.get("port")
+            if not isinstance(port, str) or port in bound:
+                continue
+            spot = activity.get("to_spot")
+            # A spot is named once (§6.12): a second held node on it would contend
+            # with the first and report only `infeasible`.
+            if isinstance(spot, str) and spot not in held:
+                held.add(spot)
+                out.append({"spot": spot, "since": now})
+    return out
 
 
 def _check_withdrawals(withdraw, entries, jobs, activities) -> list[Diagnostic]:
@@ -170,12 +255,17 @@ def _check_withdrawals(withdraw, entries, jobs, activities) -> list[Diagnostic]:
             continue
         # Unfinished work is work somebody asked for, and running work is on a
         # machine now -- `occupied` says a spot is taken, and cannot say that.
+        #
+        # 🔴 **`failed` is finished.** Its interval has ended, so it holds nothing the
+        # withdrawal could take away, and the status never changes again -- refusing it
+        # would shut a job that died out of the plan for good, which is the case this
+        # feature exists for. What it left behind is `occupied`'s to say, and an
+        # occupancy outlives the job that left it (§6.12).
         unfinished = sorted(
             {
                 (a.get("status") or "pending")
                 for a in activities
-                if a.get("job") == job_id and (a.get("status") or "pending") not in
-                ("completed", "cancelled")
+                if a.get("job") == job_id and (a.get("status") or "pending") not in _FINISHED
             }
         )
         if unfinished:
@@ -837,6 +927,16 @@ def _run(
         return ScheduleReport(None, None, None, diagnostics)
     base = merge_instances(bases)
 
+    # What the withdrawing jobs are still holding, before the model is built: held
+    # here as well as echoed, because a spot the model does not know is taken is a
+    # spot this plan will use.
+    frozen = (
+        _frozen_holds(
+            withdraw, entries, _document_activities(doc_path, root), occupied, now_value
+        )
+        if withdraw
+        else []
+    )
     instance, fixation, norm_diags = normalize(
         base,
         root,
@@ -845,6 +945,7 @@ def _run(
         max_transport_legs=max_transport_legs,
         jobs=tuple(spec.id for spec in specs if spec.id),
         withdrawn=frozenset(withdraw),
+        frozen=tuple(frozen),
     )
     diagnostics += norm_diags.items
     if instance is None or fixation is None:
@@ -855,6 +956,40 @@ def _run(
     diagnostics += reach.items
     if _has_error(reach.items):
         return ScheduleReport(None, None, None, diagnostics)
+
+    # A job that has left took its history with it, and some of that history is what
+    # the stocks are at now. So the plan states the levels as of `now` rather than
+    # echoing the ones it was given, which were the levels of a moment whose history
+    # is no longer all here (§6.10). Only on a withdrawal: every other plan echoes
+    # `inventories` unchanged, which is what keeps the section stable across replans.
+    carried = inventories
+    if withdraw and fixation.levels:
+        carried = _carried_levels(env, fixation.levels, fixation.now)
+    if withdraw:
+        # 🔴 **Reported before the solve, not after.** A frozen spot can be the reason
+        # nothing can be planned -- the material really is in the way -- and a report
+        # that only survives a successful solve would go missing in exactly that case,
+        # leaving the caller an `infeasible` and no account of what their withdrawal
+        # did. What a withdrawal did to the document does not depend on the answer.
+        #
+        # The frozen spots are named out loud. They are the one part of a withdrawal
+        # the caller cannot have anticipated -- they never said where those outputs
+        # go -- so this is also the answer to "where is my material": it is here, and
+        # the plan is holding it until somebody says otherwise.
+        diagnostics.append(
+            Diagnostic(
+                errors.JOB_WITHDRAWN,
+                f"{', '.join(sorted(withdraw))} left the plan"
+                + (
+                    f"; the levels are now stated as of {fixation.now}"
+                    if carried is not inventories
+                    else ""
+                )
+                + (_frozen_note(frozen) if frozen else ""),
+                "jobs",
+                severity=WARNING,
+            )
+        )
 
     # 4. Solve, then 5. render the plan (only when feasible). One pass unless a
     # promised bound can no longer be kept (`_solve_within_bounds`).
@@ -874,29 +1009,6 @@ def _run(
         diagnostics += _unplannable(instance, named, solve_kwargs)
         return ScheduleReport(solution.outcome, None, None, diagnostics, solution.stats)
 
-    # A job that has left took its history with it, and some of that history is what
-    # the stocks are at now. So the plan states the levels as of `now` rather than
-    # echoing the ones it was given, which were the levels of a moment whose history
-    # is no longer all here (§6.10). Only on a withdrawal: every other plan echoes
-    # `inventories` unchanged, which is what keeps the section stable across replans.
-    carried = inventories
-    if withdraw and fixation.levels:
-        carried = _carried_levels(env, fixation.levels, fixation.now)
-    if withdraw:
-        diagnostics.append(
-            Diagnostic(
-                errors.JOB_WITHDRAWN,
-                f"{', '.join(sorted(withdraw))} left the plan"
-                + (
-                    f"; the levels are now stated as of {fixation.now}"
-                    if carried is not inventories
-                    else ""
-                ),
-                "jobs",
-                severity=WARNING,
-            )
-        )
-
     # One job's provenance is the string it always was; a joint plan's is the list of
     # its workflows, in job order, so `meta` still names everything the plan came from.
     provenance = [_provenance(job.workflow, job.source) for job in jobs]
@@ -909,7 +1021,7 @@ def _run(
         now=fixation.now if had_now else None,
         interface=interface,
         inventories=carried,
-        occupied=occupied,
+        occupied=(list(occupied or []) + frozen) or None,
         ignore_resources=ignore_resources,
         jobs=settled,
     )

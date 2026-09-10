@@ -246,6 +246,24 @@ def test_an_occupancy_belongs_to_no_work_and_round_trips():
     assert again.ok, [d.code for d in again.diagnostics]
 
 
+def test_a_spot_is_declared_occupied_once():
+    """🔴 Two entries for one spot used to come back as a bare `infeasible`.
+
+    A spot holds one item (§4.4), so the second entry adds no claim -- but each entry
+    becomes a held node, and two of them hold the one spot over the same interval, so
+    the document was unschedulable and said only that no schedule exists. The refusal
+    exists to turn that into an explanation.
+    """
+    workflow, env = _simple()
+    document = _held("station_1.core", 40)
+    document["occupied"] = list(document["occupied"]) + [
+        {"spot": "station_1.core", "since": 60}
+    ]
+    report = schedule_jobs(_jobs(workflow), env, document_path=document)
+    assert not report.ok
+    assert [d.code for d in report.diagnostics] == ["occupied_duplicate_spot"]
+
+
 def test_an_occupancy_names_no_job():
     """It says a spot is held, and nothing more. A spot can be held for reasons no
     document records -- a plate somebody left there, an earlier run's leavings -- so

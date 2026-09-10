@@ -221,16 +221,21 @@ def _check_occupied(root: YMap, job_ids: set[str] | None, diags: Diagnostics) ->
     The scheduler models occupancy through activity intervals, and a completed
     activity's interval has ended, so a spot that still physically holds something is
     free as far as the model can tell. This section is how a document says otherwise.
-    `spot` and `since` are required: without the time there is no interval to hold, and
+    `spot` and `since` are required, and nothing else is accepted: an entry says a spot
+    is held and nothing more (§6.12). Without the time there is no interval to hold, and
     "occupied from the beginning" is a different claim from "occupied since the failure".
-    `job` is optional traceability -- which job left it -- and must name a roster entry
-    where there is one.
+
+    A spot may be named **once**. It holds one item (§4.4), so a second entry adds no
+    claim -- and it is not merely redundant: each entry becomes a held node, so two of
+    them contend for the one spot and the document comes back `infeasible` with nothing
+    to say why. Refusing here is what turns that into an explanation.
     """
     if "occupied" not in root:
         return
     seq = shape.as_seq(root.get("occupied"), "occupied", diags)
     if seq is None:
         return
+    seen: set[str] = set()
     for i, item in enumerate(seq.items):
         base = f"occupied[{i}]"
         omap = shape.as_map(item, base, diags)
@@ -240,6 +245,17 @@ def _check_occupied(root: YMap, job_ids: set[str] | None, diags: Diagnostics) ->
         spot = shape.require(omap, "spot", base, diags)
         if spot is not None:
             _check_qualified_spot(spot, shape.join(base, "spot"), diags)
+            # Only a well-formed name can repeat meaningfully; a malformed one is
+            # already an error and comparing it would report the same entry twice.
+            if isinstance(spot, YScalar) and spot.is_str:
+                if spot.value in seen:
+                    diags.error(
+                        errors.OCCUPIED_DUPLICATE_SPOT,
+                        f"spot {spot.value!r} is declared occupied more than once",
+                        shape.join(base, "spot"),
+                        at=spot,
+                    )
+                seen.add(spot.value)
         since = omap.get("since")
         if since is None and "since" not in omap:
             diags.error(
