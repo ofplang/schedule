@@ -222,9 +222,12 @@ Resources and replenishment:
   activity's **start**. Nonzero only for $\ell \in L_{i,m}$, and never exceeding
   $c_{\ell,g}$ (SPEC §4.7.1 — the environment is rejected otherwise). Transport and
   replenishment activities consume nothing.
-- $v^{0}_{\ell,g} \in \mathbb{Z}_{\ge 0}$: the level of $(\ell,g)$ at the **start of
-  the run** (`inventories.levels`, SPEC §6.10), with $v^{0}_{\ell,g} \le c_{\ell,g}$.
-  An unstated resource is $0$.
+- $at \in \mathbb{Z}_{\ge 0}$: the **moment** the stated levels are the levels of
+  (`inventories.at`, SPEC §6.10), with $at \le now$. Absent means $0$.
+- $v^{at}_{\ell,g} \in \mathbb{Z}_{\ge 0}$: the level of $(\ell,g)$ **at $at$**
+  (`inventories.levels`), with $v^{at}_{\ell,g} \le c_{\ell,g}$. An unstated resource
+  is $0$. Read at the **start phase** of $at$ in the order of §11: after the
+  completions at $at$, before the starts at $at$.
 - $\rho_{t,\ell} \in \mathbb{Z}_{>0}$: duration for replenisher $t \in
   L^{\mathrm{rp}}$ to refill device $\ell$ (SPEC §5.7). A missing entry means $t$
   **cannot** refill $\ell$ — the pair is excluded from the choice in §10, exactly as
@@ -681,32 +684,68 @@ that is a static property of the environment and is rejected there (SPEC §10.2,
 
 ### 11. Inventory level constraint
 
-Consumable levels are **replayed, not supplied** (SPEC §4.7.2). The level of
-$(\ell,g)$ at $now$ is derived from the run's initial level and the history:
+Consumable levels are **replayed, not supplied** (SPEC §4.7.2). One instant carries
+two phases and the completion is applied before the start (SPEC §4.7), so both the
+replay and the constraint below order events on the **doubled axis**
 
 $$
-v^{now}_{\ell,g} = v^{0}_{\ell,g}
-- \sum_{i \in T^{\mathrm{done}} \cup T^{\mathrm{run}}} \hat{u}_{i,\ell,g}
-+ \sum_{\omega \in W^{\mathrm{done}}} \hat{\Delta}_{\omega,g}
+\pi(t, \mathrm{COMPLETION}) = 2t, \qquad \pi(t, \mathrm{START}) = 2t + 1 ,
 $$
 
-A running processing activity has already taken its consumption (it is taken at the
-start, and the activity has started), while a running *replenishment* has not yet
-delivered — it appears below as a fixed future event instead. Replaying the history
-in time order must keep the level within $[0, c_{\ell,g}]$ at every historical
-event; otherwise the reported history and the environment disagree and the document
-cannot be replanned (SPEC §9.3, `status_inventory_inconsistent`).
+which is order-preserving, has disjoint images, and adds no variable — $2t$ and
+$2t+1$ are affine in the same time variables. Its whole purpose is that the level
+*between* a completion and a start sharing an instant is a point of its own.
+
+The history's events are, on that axis, $-\hat{u}_{i,\ell,g}$ at
+$\pi(\hat{s}_i, \mathrm{START})$ for each $i \in T^{\mathrm{done}} \cup
+T^{\mathrm{run}}$ and $+\hat{\Delta}_{\omega,g}$ at $\pi(\hat{\delta}_\omega,
+\mathrm{COMPLETION})$ for each $\omega \in W^{\mathrm{done}}$. Writing
+$\mathcal{H}_{\ell,g}(\alpha, \beta)$ for the sum of those whose image lies in
+$[\alpha, \beta)$, the level at $now$ is
+
+$$
+v^{now}_{\ell,g} = v^{at}_{\ell,g}
++ \mathcal{H}_{\ell,g}\bigl(\pi(at, \mathrm{START}),\ \infty\bigr) .
+$$
+
+The lower limit is what $at$ means (SPEC §6.10): the stated levels already account
+for everything strictly earlier, a completion at $at$ included. A running processing
+activity's draw *is* in this sum — consumption is taken at the start and the activity
+has started — while a running *replenishment*'s is not, having not landed; it appears
+below as a fixed future event instead.
+
+**The same replay, cut at $now$'s own start phase, is what a plan states** when a job
+leaves and the baseline moves (SPEC §6.11):
+
+$$
+v^{now^-}_{\ell,g} = v^{at}_{\ell,g}
++ \mathcal{H}_{\ell,g}\bigl(\pi(at, \mathrm{START}),\ \pi(now, \mathrm{START})\bigr) ,
+$$
+
+the left limit at $\pi(now, \mathrm{START})$ — the level standing once $now$'s refills
+have landed and before its draws are taken. That is what $at = now$ will mean when the
+plan is read back, which is why it and not $v^{now}$ is what a plan states. The two
+differ by exactly the draws beginning at $now$: a completed refill ends at or before
+$now$ and so lies below the cut either way, and nothing beyond $now$ has started.
+Writing $v^{now}$ under the label $at = now$ would therefore have the next replay
+apply those draws a second time.
+
+Replaying must keep the level within $[0, c_{\ell,g}]$ **at every event** — each
+point of the doubled axis, so the level a refill leaves behind is checked before any
+draw sharing its instant (SPEC §4.7). Otherwise the reported history and the
+environment disagree and the document cannot be replanned (SPEC §9.3,
+`status_inventory_inconsistent`).
 
 **Events.** For each $(\ell,g)$ let $\mathcal{E}_{\ell,g}$ hold, each with a time, a
 signed change, and an activation literal:
 
-| event | time | change | active iff |
+| event | time on the axis | change | active iff |
 | --- | --- | --- | --- |
-| consumption, $i \in T^{\mathrm{pend}}$, $m \in M_i$, $\ell \in L_{i,m}$ | $s_i$ | $-u_{i,m,\ell,g}$ | $x_{i,m} = 1$ |
-| candidate refill, $\omega \in W$, $\ell_\omega = \ell$ | $\delta_\omega$ | $+\Delta_{\omega,g}$ | $\bar{y}_\omega = 1$ |
-| running refill, $\omega \in W^{\mathrm{run}}$, $\ell_\omega = \ell$ | $\delta_\omega$ | $+\hat{\Delta}_{\omega,g}$ | always |
+| consumption, $i \in T^{\mathrm{pend}}$, $m \in M_i$, $\ell \in L_{i,m}$ | $\pi(s_i, \mathrm{START})$ | $-u_{i,m,\ell,g}$ | $x_{i,m} = 1$ |
+| candidate refill, $\omega \in W$, $\ell_\omega = \ell$ | $\pi(\delta_\omega, \mathrm{COMPLETION})$ | $+\Delta_{\omega,g}$ | $\bar{y}_\omega = 1$ |
+| running refill, $\omega \in W^{\mathrm{run}}$, $\ell_\omega = \ell$ | $\pi(\delta_\omega, \mathrm{COMPLETION})$ | $+\hat{\Delta}_{\omega,g}$ | always |
 
-**Constraint.** At every point in time the level stays within its bounds:
+**Constraint.** At every point of the axis the level stays within its bounds:
 
 $$
 0 \;\le\; v^{now}_{\ell,g} \;+\!\!\sum_{\substack{\varepsilon \in \mathcal{E}_{\ell,g} \\ time_\varepsilon \,\le\, \theta}}\!\! \chi_\varepsilon\, change_\varepsilon
@@ -714,10 +753,17 @@ $$
 \quad \forall \ell \in L,\ \forall g \in G_\ell,\ \forall \theta
 $$
 
-Only the event times need checking, so the quantifier over $\theta$ is finite.
-Events sharing a time are summed, which is what realises SPEC §4.7's rule that a
-refill ending exactly when the work it feeds begins does feed it: the two changes
-net, and no intermediate level is examined between them.
+Only the event points need checking, so the quantifier over $\theta$ is finite.
+
+🔴 **Events sharing an instant are not netted.** Where a refill ends at the very
+instant a draw begins, the two land at $2t$ and $2t+1$ and the level between them is
+examined like any other: a refill may not overflow a capacity merely because a draw
+follows it in the same instant, and a draw may not go negative because a refill
+follows it (SPEC §4.7, "there is no netting"). The parity is what the doubled axis is
+for. The order relations are untouched by it — $e \le s$ maps to "completion first"
+either way, so $e = s$ and $e < s$ are not newly distinguished — and SPEC §4.7's rule
+that a refill ending exactly when the work it feeds begins **does** feed it is the
+order, not the netting.
 
 Every activity touching $(\ell,g)$ occupies $\ell$, so §7 already serialises them
 and the events of one $(\ell,g)$ are totally ordered up to that tie. Transport and
@@ -742,16 +788,15 @@ solution is known: with times and selections fixed, each $(\ell,g)$'s events are
 totally ordered, and replaying them in that order sets each selected
 $\Delta_{\omega,g}$ to $c_{\ell,g}$ minus the level immediately before.
 
-**Completions go before starts, on a doubled time axis.** "Totally ordered" holds
-only up to coincidence: a refill's end may meet a draw's start, which is the
-ordinary way a schedule packs work. SPEC §4.7 orders such an instant by applying the
-completion first and checking the level after *each* change. A reservoir cannot
-express that on its own — it checks its bounds between time points, so two changes
-at one time point are read as a single net change and the level between them is
-never checked. That level is real: it is what the device holds when the refill
-finishes, and SPEC §4.7 requires it to fit. So the events are handed to the reservoir on
-a doubled axis — a completion at $2t$, a start at $2t+1$ — and the bound is checked
-between them. Without the separation the solver admits a refill that takes a full
+**Why the doubled axis of §11 is not optional here.** "Totally ordered" holds only up
+to coincidence: a refill's end may meet a draw's start, which is the ordinary way a
+schedule packs work. §11 puts $\pi$ between them for the reason SPEC §4.7 gives, and
+a reservoir is precisely the formulation that cannot manage without it — it checks
+its bounds between time points, so two changes at one time point would be read as a
+single net change and the level between them never checked. That level is real: it is
+what the device holds when the refill finishes, and SPEC §4.7 requires it to fit.
+Handing the events over at $2t$ and $2t+1$ is what puts a reservoir check there.
+Without the separation the solver admits a refill that takes a full
 stock past $c_{\ell,g}$ whenever a draw shares the instant, and the normalisation
 above (which fills from the level *before* the draw) then finds no room for it,
 drops it, and hands out a plan whose stock later goes negative.
@@ -1173,11 +1218,27 @@ an outer procedure over the model, not a constraint in it — and it **reports a
 does nothing else**, because discarding work somebody asked for is the caller's
 decision, not the scheduler's.
 
-**Withdrawing a job.** Nothing removes a job from a plan. A job's roster entry exists
-as long as anything of it is still in the laboratory — unfinished work, or material
-nobody has collected — so removing one is only sound when neither is true. Until
-then a finished or stopped job stays in the roster, which is also what says its
-material still occupies its spot (§J5).
+**Withdrawing a job.** A job the caller says is **leaving** (SPEC §6.11) is simply
+not in $J$, and none of its activities are in $T$. There is no term to write and
+nothing to relax: the model is the model of the jobs that remain, so everything above
+applies to it unchanged. Which is the point — a withdrawal is an edit to the
+*instance*, not a case in the formulation.
+
+Two traces of it do reach the model, and both are already stated where they belong
+rather than here:
+
+- its **draws survive its activities**. The levels at $now$ are what the whole run
+  did to the stocks, so $\mathcal{H}$ in §11 sums the departing job's consumption
+  too — read from the document's echo, the activities being gone from $T$. The plan
+  then states $v^{now^-}$ under $at = now$, which is why §11 derives that
+  quantity alongside $v^{now}$;
+- its **unbound final outputs keep their spots**. A bound output's holder leaves with
+  it; an unbound one's becomes a held node with $since_h = now$ (§J5), the schedule
+  having chosen that spot and the caller never having been told it.
+
+What is *not* in the model is the judgement: whether anything of the job is still in
+the laboratory is a fact about the room, so leaving is instructed and refused only
+where the document contradicts the instruction (SPEC §6.11, §10.4).
 
 ## Reduction to Part I
 
@@ -1190,7 +1251,7 @@ With one job, everything above is vacuous or identical to Part I:
 | §J2 | no promise, so $C_j \le B_j$ is absent; $C_j$ itself is unused |
 | §J3 | the default stages are $(C_{\max}, N_{\mathrm{repl}})$ — Part I's objective |
 | §J4 | a terminal status stops the only job, so the document is unplannable, as it always was |
-| §J5 | no `occupied` section, so $T^{\mathrm{held}} = \emptyset$ |
+| §J5 | no `occupied` section, so $T^{\mathrm{held}} = \emptyset$; and nothing freezes into one, a single job's withdrawal leaving no plan (SPEC §6.11) |
 | §J6 | one job forms no group |
 | §J7 | both added terms are $0$ |
 

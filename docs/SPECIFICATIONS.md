@@ -326,14 +326,23 @@ For that bound to hold, no single mode may consume more of a resource than its
 device's capacity — an environment that says otherwise describes work that cannot
 run however it is arranged, and is rejected (`consumption_exceeds_capacity`, §10.2).
 
-#### 4.7.2 Levels are derived from the initial levels and the history
+#### 4.7.2 Levels are derived from a stated moment and the history since
 
-A resource's level at a given moment is **derived**, never supplied as a current
-reading. The execution document gives the levels the run *started* with
-(`inventories.levels`, §6.10) and the scheduler replays the history against them:
-every started processing activity has already taken its `consumption`, and every
-finished replenishment has already added its `amounts`. A replenishment that is
-still running has not landed yet — it is a fixed increase at its end.
+A resource's level at a given moment is **derived**, never reported as a current
+reading of every stock. The execution document states the levels as of **one
+moment** (`inventories.levels` and `at`, §6.10) and the scheduler replays the
+history from there: every started processing activity has already taken its
+`consumption`, and every finished replenishment has already added its `amounts`. A
+replenishment that is still running has not landed yet — it is a fixed increase at
+its end.
+
+**Which events the replay applies** follows from §4.7's ordering of a shared instant.
+The stated levels are the levels *between* the two phases of the moment `at`: after
+the refills that land at `at`, before the draws that begin at `at`. So a refill
+ending at `at` is already in them and is not applied again; a draw beginning at `at`
+is not, and is. Nothing before that point is replayed at all. The default moment is
+the start of the run, where the distinction is vacuous: a draw cannot begin before the
+run does, and a refill cannot end there, its duration being positive (§5.7).
 
 This is the rule of §6.5 applied to inventory: a value the activities already
 determine is not carried separately. It also forces one thing on the history. A
@@ -343,10 +352,21 @@ environment — so a started activity must carry enough of its own assignment to
 interpreted without it. A processing activity therefore echoes its `consumption`
 (§6.3), and a finished replenishment must report its `amounts` (§6.9).
 
-Two consequences follow. The history must be **complete**: a status that drops
-completed activities cannot reproduce the levels. And an inventory change that no
-activity accounts for — a manual top-up, a spill, an evaporated stock — **cannot be
-expressed**, because v0 has no way to state a measured level at a later time.
+Two consequences follow, both about `at` rather than about the whole run. The
+history must be **complete since `at`**: a status that drops an activity which
+started at or after that moment cannot reproduce the levels. History from *before*
+it may be dropped freely — that is what stating a later moment is for, and it is how
+a job that leaves takes its own history with it without taking the stock it drew
+(§6.11).
+
+And an inventory change that no activity accounts for — a manual top-up, a spill, an
+evaporated stock — **is** expressible: state the level it left behind and the moment
+it was true, and the replay begins there. What v0 has no way to say is *what
+happened*; the level is a fact the document can carry, the reason is not. Nothing
+checks such a level against the history it supersedes, because there is nothing to
+check it against: the claim is precisely that the history no longer accounts for the
+stock. A level above `capacity` is still refused (§9.3), that being a fact about the
+device rather than about the run.
 
 #### 4.7.3 Disabling resources
 
@@ -704,12 +724,15 @@ environment.
   inputs and final outputs (a planning constraint, §3). **Required** for every
   Object-bearing entry input; optional per output. Supplied for the initial plan
   and carried through replans; echoed in the plan output.
-- `inventories` (§6.10) — consumable resource levels as of the start of the run (a
+- `inventories` (§6.10) — consumable resource levels as of one moment it names (a
   planning constraint, §3, like `interface`). **Required** whenever the resource model is in
   effect (§9.3, `missing_inventories`); forbidden nowhere. Supplied for the initial
-  plan and carried through replans unchanged; echoed in the plan output. With
-  resources disabled (§4.7.3) it is not read, but it is still echoed — it is the
-  caller's own input, and a plan that dropped it would lose it from the document.
+  plan and carried through replans unchanged; echoed in the plan output. The one
+  replan that does not echo it unchanged is one a job leaves (§6.11), which restates
+  the levels as of `now` because the departing history is part of what they were made
+  of. With resources disabled (§4.7.3) it is not read — nor restated — but it is
+  still echoed: it is the caller's own input, and a plan that dropped it would lose it
+  from the document.
 - `outcome` (optional) — the solver result: `optimal`, `feasible`, `infeasible`,
   or `unknown` (`unknown` = feasible but optimality unproven, e.g. on timeout).
   Present on a plan; absent on a status input.
@@ -1175,36 +1198,54 @@ pending work (§6.2), so their identifiers are not expected to survive.
 
 `inventories` states consumable resource levels **as of one moment**. It is a
 planning constraint (§3), the inventory counterpart of `interface`: supplied for the
-initial plan, echoed in the plan output, and carried through replans unchanged. It is
-required whenever the resource model is in effect (§6.1).
+initial plan, echoed in the plan output, and carried through replans unchanged — with
+one exception, below, where the moment itself moves.  It is required whenever the
+resource model is in effect (§6.1).
 
 - `levels` (required) — a mapping from device id to a mapping from bare resource
   name to a **non-negative** integer level.
+- `at` (optional, default `0`) — the moment those levels are the levels of.
 
 ```yaml
 inventories:
   levels:
     reader_0: { dye: 20 }
+  at: 0                   # optional; 0 is the start of the run
 ```
 
-**The moment is the start of the run.** v0 defines no way to say otherwise, so
-`inventories` is always read as the levels the run began with, and every later level
-is derived by replaying the history against them (§4.7.2). That is why this section
-does not change from one replan to the next.
+**Where in its instant the moment stands.** A shared instant has two phases and the
+completion is applied before the start (§4.7), so a moment inside one has to say
+which side of the change it is on. The stated levels are the levels **between** them:
+after the refills that land at `at`, before the draws that begin at `at`. That is the
+reading the replay uses (§4.7.2), and it is the one worth stating — it is what the
+device is holding when the deliveries are in and before the work takes its share.
+
+`at` may not be later than `now` (`inventory_moment_in_future`, §10.4): the history
+can only have happened before the present, so nothing would be replayed against
+levels the run has not reached.
+
+**A section that carries one moment carries the latest one worth knowing.** Anything
+earlier is history, and history is what the activities already record — so the
+levels and the moment move forward together or not at all. Omitting `at` means the
+start of the run, which is what every document written before the field existed
+means and why they replay unchanged.
 
 Each device and resource named must be declared in the environment (§5.2). A
 declared resource that is *not* named is level `0`; an empty `levels` therefore
-means every stock starts empty, and is how a run that begins with nothing on hand is
-written. No level may exceed its resource's `capacity`.
+means every stock is empty at `at`, and is how a run that begins with nothing on hand
+is written. No level may exceed its resource's `capacity`.
 
-The nesting under `levels` is what leaves room for that to change. A later revision
-able to state a level *measured* part-way through a run would add the moment as a
-sibling — `at`, defaulting to `0` — and every document written today would keep its
-meaning unchanged, because omitting the moment is exactly what they do. The container
-is named for what it holds rather than for when it holds true, so it does not become
-a misnomer the day the moment can be something other than the start. A section that
-carries one moment carries the *latest* one worth knowing; anything earlier is
-history, and history is what the activities already record.
+**When the moment moves.** Ordinarily it does not: a replan echoes `inventories`
+unchanged, which is what keeps the section stable and the arithmetic reproducible. It
+moves when a **job leaves the plan** (§6.11). A job takes its history with it, and
+that history is part of what the current levels are made of — so the plan states the
+levels as of `now` instead of echoing the ones it was given, whose moment no longer
+has all of its history present. What it states is the level at `now` read between
+that instant's phases, as `at` means it, and it names **every** stock the environment
+declares rather than only those the input named: the numbers are now derived rather
+than quoted, and a stock left implicit would be read as `0`. With the resource model
+switched off (§4.7.3) nothing is derived and the section is echoed unchanged like any
+other input.
 
 ### 6.11 Jobs (several workflows planned together)
 
@@ -1266,9 +1307,10 @@ Where they both do, the instance is infeasible, and `jobs_not_plannable_together
 
 One rule for both sides, then: a boundary spot two jobs share is **stated, not
 refused**. What the warnings add is the spot and the ports, which the failure that may
-follow does not name. Nothing in v0 removes a job from a plan yet; when something does,
-a withdrawn job's output spot is free in exactly the way a stopped job's is, and
-neither warning has to change to say so.
+follow does not name. A job that **leaves** the plan (below) frees a *bound* output's
+spot in exactly the way a stopped job's is freed, so the warning covers that too; an
+unbound output's spot it does not free, but an unbound output has no binding for a
+warning to be about.
 
 Two bindings of *one* interface on one spot are a different claim and stay refused
 (`interface_duplicate_spot`, §6.8): those bindings are simultaneous by construction —
@@ -1277,11 +1319,17 @@ history can separate them.
 
 The roster makes the document self-describing rather than leaving the reader to infer
 the jobs from whichever `job` values happen to appear, and it is what lets a replan be
-checked: the workflows handed to the scheduler must be exactly the ones the roster
-names, compared as a set (`job_roster_mismatch`, §10.4). Re-stating the same jobs in
-another order is the same plan; giving a different set is not, and matching a history
-against the wrong workflow would pin it onto activities that never ran it. The order
-is still meaningful — it records how the jobs were given — and is preserved.
+checked: **every job the roster names, other than those leaving, must be among the
+workflows handed to the scheduler** (`job_roster_mismatch`, §10.4). Compared as sets,
+so re-stating the same jobs in another order is the same plan; the order is still
+meaningful — it records how the jobs were given — and is preserved.
+
+The rule is one-sided in each direction, and both sides follow from what the roster
+is. A job the roster names but nobody hands over would have its history land on
+nothing, so that is refused — unless it is **leaving** (below), which is the one way
+an entry may go unmatched. A job handed over that the roster does not name is
+**arriving** now: the roster records the jobs already being planned, and anything
+beyond it is joining them.
 
 The jobs share everything the environment describes — devices, spots, transporters —
 and share the consumable stocks that `inventories` (§6.10) starts them at, because a
@@ -1359,8 +1407,60 @@ rest be planned — or that no single one accounts for it
 (`jobs_not_plannable_together`, §10.4). It **reports and does nothing else**: dropping
 a job would be quietly discarding work somebody asked for.
 
-**Current limits.** Nothing removes a job from a plan, so a finished job stays in the
-roster — which is also what says its delivered material still occupies its spot.
+#### When a job leaves
+
+The roster is not a ledger of everything ever run. It is the set of jobs **something
+of which is still in the laboratory** — unfinished work, or material nobody has
+collected — so an entry is removed when neither is true. A job is then said to have
+**left** the plan: its entry goes, its activities go with it, and the plan that comes
+back describes only the jobs that remain.
+
+**It is asked for, never inferred.** Whether the room is actually clear is not
+something a document can be read for, so leaving is an instruction from the caller
+rather than a conclusion the scheduler draws from a job going quiet. Like switching
+the resource model off (§4.7.3), it is something the caller passes alongside the
+document and **not a section in it**. That is deliberate: a plan echoes its planning
+inputs (§6.1), so an instruction written in the document would come back in the plan
+and be carried out again by the next replan that was handed it — the same objection
+that refuses a `pending` replenishment in a status (§6.9).
+
+**What it is refused for** is the document contradicting the request:
+
+- the named job is not in the roster, so there is no entry to remove, or a workflow
+  was handed over for it as well — it cannot both leave and be planned
+  (`unknown_withdrawal`, §10.4);
+- the job still has work to do or work running (`withdrawal_not_finished`). A
+  `pending` activity is work somebody asked for, and a `running` one is on a machine
+  now — which `occupied` (§6.12) speaks of spots and cannot say. A **`failed`**
+  activity is neither: its interval has ended, and its status will not change again,
+  so a job that died may leave. So may one that never started;
+- every job in the roster is leaving (`withdrawal_empties_roster`). A plan of no jobs
+  is not a plan.
+
+None of these check the thing that matters — whether the material was really
+collected — which is exactly why the instruction is explicit.
+
+**The levels move.** A job's history is part of what the current levels are made of
+(§4.7.2), so removing it would give the stock back everything that job drew. Instead
+the levels are restated as of `now` and say so (`inventories.at`, §6.10): the job's
+draws are spent *before* the moment rather than replayed after it, and the number the
+next replan starts from is the number this one finished with.
+
+**Its holds go, with one exception.** A final output holds its spot to the end of the
+plan (§6.8), and a job leaving takes its activities and those holds with them. For a
+**bound** output that is the right reading: the caller named the spot, so leaving is a
+statement about a place they chose and know. For an **unbound** one it cannot be — the
+schedule chose where that material came to rest, and the caller was never told — so
+the hold becomes an `occupied` entry instead of vanishing (§6.12), dated `now`. Entry
+material and an occupancy the document already carried are unaffected: the first was
+bound by the caller, and the second says a spot is held and outlasts whatever put the
+material there.
+
+**And it is reported** (`job_withdrawn`, §10.4, a warning — a plan is still
+produced). A withdrawal moves the baseline the stocks are counted from and may leave
+spots held that the caller did not name, and neither should happen quietly. The
+report names the jobs, says whether the levels were restated, and names any spot kept
+occupied, which is the one part of the outcome the caller could not have predicted.
 
 ### 6.12 Occupied spots
 
@@ -1605,9 +1705,11 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
   the shape that `kind` implies: a non-negative integer for a single stage, a list
   of them of the same length for several. Where `kind` itself is malformed, `value`
   is checked as a scalar and no second diagnostic is raised for the same field.
-- `inventories` (if present): `initial` is required and is a map of device id to a
-  map of resource name to a non-negative integer. (That the devices and resources
-  exist, and that no level exceeds its capacity, is execution-layer, §9.3.)
+- `inventories` (if present): `levels` is required and is a map of device id to a
+  map of resource name to a non-negative integer; `at`, if present, is a non-negative
+  integer. No other key is accepted. (That the devices and resources exist, that no
+  level exceeds its capacity, and that `at` is not in the future, are execution-layer,
+  §9.3.)
 - `jobs` (if present): a list of mappings, each carrying a required `id` that is an
   identifier (§8.1) and unique in the list (`duplicate_job_id`); optional `release` and
   `bound`, non-negative integers; an optional `fingerprint`, a string; and an optional
@@ -1720,12 +1822,14 @@ environment for processes the workflow never invokes are not checked.
   describe what a device holds without obliging every document written against it
   to state a level. When the model is in effect, `inventories` is required
   (`missing_inventories` otherwise); an empty
-  `initial` is a valid answer meaning every stock starts empty. Each device and
-  resource named exists in the environment (`unknown_device` / `unknown_resource`)
-  and no level exceeds its `capacity` (`inventory_exceeds_capacity`). Device and
-  resource *declarations* survive a re-route — only modes and routes are withdrawn
-  from an environment (§7) — so these checks stay strict across replans, exactly as
-  the `interface` spot checks do.
+  `levels` is a valid answer meaning every stock is empty at that moment. Each device
+  and resource named exists in the environment (`unknown_device` /
+  `unknown_resource`) and no level exceeds its `capacity`
+  (`inventory_exceeds_capacity`). `at` may not be later than `now`
+  (`inventory_moment_in_future`): the history can only have happened before the
+  present. Device and resource *declarations* survive a re-route — only modes and
+  routes are withdrawn from an environment (§7) — so these checks stay strict across
+  replans, exactly as the `interface` spot checks do.
 
 The execution document is always **normalized** against the instance (building the
 augmented instance the solver runs) after these checks, emitting the codes in
@@ -1766,7 +1870,9 @@ leg is pinned like any committed leg; a pending one is re-derived).
   environment.
 - **Resource levels replay**: the level of each resource is `inventories.levels`
   less what every started processing consumed, plus what every finished
-  replenishment added (§4.7.2). A started processing's consumption comes from its
+  replenishment added — counting only the events at or after the moment those levels
+  are the levels of, which is `(at, `**start phase**`)`: a refill landing exactly at
+  `at` is already in them, a draw beginning then is not (§4.7.2). A started processing's consumption comes from its
   `consumption` echo (§6.3), falling back to the current environment's mode of the
   reported id — the same fallback, read as one unit, that pins the mode itself, so a
   consumption that resolves by neither route is reported as `status_mode_unknown`
@@ -1777,9 +1883,11 @@ leg is pinned like any committed leg; a pending one is re-derived).
   and it is this check that rejects an input whose completion alone would overflow
   the resource.
 
-- **Jobs** (§6.11), where the document has a roster. The workflows handed to the
-  scheduler must be exactly the ones the roster names, compared as a set
-  (`job_roster_mismatch`), and each entry's `fingerprint`, where it has one, must be
+- **Jobs** (§6.11), where the document has a roster. Every job the roster names,
+  other than any the caller says is **leaving**, must be among the workflows handed
+  to the scheduler, compared as sets (`job_roster_mismatch`); a workflow the roster
+  does not name is a job arriving now, which is not an error. Each entry's
+  `fingerprint`, where it has one, must be
   the digest of the workflow handed over for it (`job_workflow_mismatch`) — matching
   a history against the wrong workflow would pin it onto activities that never ran
   it. A top-level `interface` is refused when the call names jobs
@@ -1929,11 +2037,16 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `job_bound_relaxed` | **warning**: a job could no longer finish by the completion it was promised, so the promise was re-derived (§6.11) |
 | `job_roster_mismatch` | the workflows given to the scheduler are not the ones the document's `jobs` roster names (§6.11) |
 | `multi_job_interface` | a document carrying a top-level `interface` was given to a plan that names jobs: it binds one workflow's ports, so a joint plan carries it per job (§6.11) |
+| `unknown_withdrawal` | a job said to be leaving the plan (§6.11) is not in the document's roster, or was handed over as a workflow as well — it cannot both leave and be planned |
+| `withdrawal_not_finished` | a job said to be leaving still has `pending` or `running` work (§6.11). A `failed` activity does not count: its interval has ended and its status will not change again |
+| `withdrawal_empties_roster` | every job in the roster is leaving (§6.11), which would leave nothing to plan |
+| `job_withdrawn` | **warning**: a job left the plan (§6.11). Names the jobs, says whether the levels were restated as of `now` (§6.10), and names any spot kept occupied because an unbound final output came to rest there (§6.12) |
 | `jobs_not_plannable_together` | no schedule exists even with every promise lifted; names the job whose removal would let the rest be planned, or says none does (§6.11) |
 | `interface_shared_input_spot` | **warning**: two jobs bind the same entry spot (§6.11). Legitimate if their releases leave the first job's material time to be collected |
 | `interface_shared_output_spot` | **warning**: two jobs bind the same final-output spot (§6.11). Legitimate if one of them never delivers — a job that has stopped (§6.2), or one that has left the plan. Where both do deliver the instance is `infeasible` |
-| `missing_inventories` | the resource model is in effect but the document has no `inventories` (§6.10). An empty `initial` is the way to say every stock starts empty |
+| `missing_inventories` | the resource model is in effect but the document has no `inventories` (§6.10). An empty `levels` is the way to say every stock is empty at that moment |
 | `inventory_exceeds_capacity` | an `inventories.levels` level is above its resource's `capacity` |
+| `inventory_moment_in_future` | `inventories.at` is later than `now` (§6.10): the history can only have happened before the present |
 | `resources_ignored` | the resource model was disabled (§4.7.3) where it would otherwise have been in effect, so nothing was applied. Not raised for an environment that merely declares a stock nothing draws on — switching that off changes nothing (*warning*) |
 | `pending_replenishment_in_status` | a replanning input carries a `pending` replenishment; how many refills to run is re-decided every solve, so one in the input states a decision that is not the caller's to make (§6.9) |
 | `infeasible` | the solver proved the instance has no feasible schedule |

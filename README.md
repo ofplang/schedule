@@ -54,7 +54,7 @@ pip install -e ".[test]"
 
 ```sh
 ofp-schedule validate <file>...                 # validate an environment or a plan/status
-ofp-schedule schedule <workflow>... --env <env> [--document doc.yaml] [--running-margin N] [--max-time SECONDS] [--seed N] [--max-transport-legs N] [--no-validate] [-o plan.yaml] [--format yaml|json]
+ofp-schedule schedule <workflow>... --env <env> [--document doc.yaml] [--withdraw ID] [--running-margin N] [--max-time SECONDS] [--seed N] [--max-transport-legs N] [--no-validate] [-o plan.yaml] [--format yaml|json]
 ofp-schedule visualize <plan|status> [--view device|workflow|lane] [--theme light|dark|auto] [--format svg|html] [-o FILE]
 ```
 
@@ -75,7 +75,8 @@ A `--document` (execution document, §6) supplies the `interface` boundary
 constraint (§6.8, where a workflow's entry inputs / final outputs sit — an entry
 input has to be bound, while a final output left unbound comes to rest wherever the
 schedule finds room, so bind the ones whose destination matters), the
-`inventories` a run starts with (§6.10) where devices hold consumables, the
+`inventories` levels as of a moment it names (§6.10) where devices hold
+consumables, the
 `objective` (§6.1, now its only declaration site), the `jobs` roster (§6.11) and the
 `occupied` spots something is physically holding (§6.12), and, when it sets `now`,
 the prior status to replan from (§7) — emitting the full timeline (fixed history +
@@ -94,6 +95,17 @@ only, or a plate that has to cross a hand-off station: the arc is then carried i
 many legs as the shortest chain of moves between its endpoint spots takes, joined by
 **relay** activities. Only the fewest possible moves are offered, so an arc one move
 apart is never sent round by way of somewhere else.
+`--withdraw ID` (repeatable) takes a job **out** of a joint plan (§6.11). The roster
+is the set of jobs something of which is still in the laboratory, so an entry is
+removed when nothing is — which the scheduler cannot see, hence an instruction rather
+than an inference, and one refused while the document says the job still has work to
+do or running. What makes it more than deleting an entry is the arithmetic: a job's
+history is part of what the current stock levels are made of, so the plan restates
+`inventories` as of `now` (§6.10) instead of giving the stock back everything that
+job drew. Pass no workflow for a job being withdrawn. A final output you bound to a
+spot is taken as collected; one you left unbound is not — the schedule chose where it
+came to rest, so that spot is kept as an `occupied` entry (§6.12) and named in the
+report.
 `--ignore-resources` switches consumables off (§4.7.3): the
 declarations are still checked for shape but nothing is applied, and the plan is
 shaped as it would be from an environment that never declared one — a relaxation,
