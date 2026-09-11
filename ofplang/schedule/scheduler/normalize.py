@@ -59,6 +59,8 @@ from ofplang.schedule.scheduler.instance import (
 )
 from ofplang.schedule.scheduler.model import Arc, Mode, NodePath
 from ofplang.schedule.scheduler.status import (
+    COMPLETION,
+    START,
     ActivityFixation,
     ArcFixation,
     Fixation,
@@ -250,7 +252,7 @@ def normalize(
     if _has_error(diags):
         return None, None, diags
 
-    levels = _derive_levels(
+    levels, stated_levels = _derive_levels(
         instance, act_fix, refills, root, env, diags, ignore_resources, now, withdrawn
     )
     if _has_error(diags):
@@ -262,7 +264,7 @@ def normalize(
             replenishments=_refill_candidates(instance, act_fix, env, set(refills)),
         )
 
-    fixation = Fixation(now, act_fix, arc_fix, levels, refills)
+    fixation = Fixation(now, act_fix, arc_fix, levels, refills, stated_levels)
     return instance, fixation, diags
 
 
@@ -404,8 +406,9 @@ def _derive_levels(
     ignore_resources: bool = False,
     now: int = 0,
     withdrawn: frozenset[str] = frozenset(),
-) -> dict[tuple[str, str], int]:
-    """The level of each `(device, resource)` at `now`.
+) -> tuple[dict[tuple[str, str], int], dict[tuple[str, str], int]]:
+    """The level of each `(device, resource)` at `now`, twice over: as the solver
+    needs it, and as `inventories.at = now` would state it.
 
     Levels are replayed, never reported (§4.7.2): the document says what the stocks
     held at one moment and the history says what has happened to them since. Every
@@ -415,13 +418,34 @@ def _derive_levels(
     completed one has landed and is added here, while a running one has not and
     reaches the solver as a fixed increase at its end instead (§4.7.2).
 
+    **One instant has two phases** (§4.7): refills that land at it are added first,
+    then draws that begin at it are taken. That ordering is what makes a refill ending
+    exactly when the work it feeds begins feed it, and the replay below follows it
+    rather than netting the two.
+
     **The moment is `inventories.at`** (§6.10), which is 0 -- the start of the run --
-    unless the document says otherwise, and what the replay skips is everything the
-    stated levels already account for: an event *before* `at`. Its own event time is
-    the activity's `start` for a draw and the refill's `end` for an addition, the two
-    the level changes at. At `at = 0` nothing is skipped, every history there can be
-    having happened at or after the start of the run, which is why a document that
-    does not mention the moment replays exactly as it always did.
+    unless the document says otherwise, and the stated levels sit **between** that
+    moment's two phases: after its refills have landed, before its draws are taken.
+    So the replay starts at `(at, START)` and everything earlier is skipped, being
+    what the stated levels already account for. At `at = 0` nothing is skipped -- a
+    refill cannot land at 0, its duration being positive, and no draw begins before
+    the run does -- which is why a document that does not mention the moment replays
+    exactly as it always did.
+
+    **Two levels come out of the one replay**, because they are levels at different
+    points of the instant `now`:
+
+    - *for the solver*: after everything the history did, the draws that began at
+      `now` included. A started activity has taken its consumption and the model
+      does not re-model it, so its draw has to be in the level the model starts from.
+    - *as `at = now` states it*: the snapshot at `(now, START)` -- after `now`'s
+      refills, before `now`'s draws -- which is what the moment means, and so what a
+      withdrawal writes out (§6.10). Reading it back re-takes the draws at `now`
+      exactly once, which is what makes the round trip exact.
+
+    The bounds are checked **at every event**, not just at the end: a history that
+    dips below zero or overflows a capacity part-way disagrees with the environment
+    even if it lands back in range (`status_inventory_inconsistent`, §9.3).
 
     With `ignore_resources` the model is switched off (§4.7.3) and this returns no
     levels, which is what makes the solver's constraint vanish. Switching off is
@@ -438,9 +462,9 @@ def _derive_levels(
                 "levels and the checks over them are not applied",
                 "",
             )
-        return {}
+        return {}, {}
     if not declared:
-        return {}
+        return {}, {}
 
     inventories = root.get("inventories") if isinstance(root, YMap) else None
     if inventories is None:
@@ -452,24 +476,27 @@ def _derive_levels(
             "inventories",
             at=root,
         )
-        return {}
+        return {}, {}
 
     levels = _initial_levels(inventories, env, diags)
     since = _levels_moment(inventories, now, diags)
     if _has_error(diags):
-        return levels
+        return levels, dict(levels)
+
+    events: dict[tuple[int, int], dict[tuple[str, str], int]] = {}
+
+    def change(time: int, phase: int, key: tuple[str, str], delta: int) -> None:
+        events.setdefault((time, phase), {})
+        events[(time, phase)][key] = events[(time, phase)].get(key, 0) + delta
 
     for index, fixation in act_fix.items():
         if fixation.status == "cancelled":
             continue  # it never ran, so it never drew anything
-        if fixation.start < since:
-            continue  # already in the stated levels
         mode = instance.activities[index].modes[fixation.mode_index]
         for qualified, amount in mode.consumption.items():
             parsed = parse_qualified_resource(qualified)
-            if parsed is None:
-                continue
-            levels[parsed] = levels.get(parsed, 0) - amount
+            if parsed is not None:
+                change(fixation.start, START, parsed, -amount)
 
     # A withdrawing job's activities are not in the instance, so its draws are read
     # from the history itself -- the `consumption` echo each started processing
@@ -478,50 +505,67 @@ def _derive_levels(
     # of a plan; a job that drew and did not say so cannot be reconstructed from any
     # source, its workflow having left with it.
     if withdrawn:
-        levels = _withdrawn_draws(root, withdrawn, since, levels)
+        _withdrawn_draws(root, withdrawn, change)
 
     # A completed refill has already raised the level; a running one has not landed
     # and reaches the solver as a fixed increase at its end instead (§4.7.2).
     for refill in refills.values():
         if refill.status != "completed":
             continue
-        if refill.end < since:
-            continue  # already in the stated levels
         for resource, amount in refill.amounts.items():
-            levels[(refill.device, resource)] = levels.get((refill.device, resource), 0) + amount
+            change(refill.end, COMPLETION, (refill.device, resource), amount)
 
-    for (device, resource), level in sorted(levels.items()):
-        capacity = env.devices[device].resources.get(resource) if device in env.devices else None
-        if level < 0 or (capacity is not None and level > capacity):
-            diags.error(
-                errors.STATUS_INVENTORY_INCONSISTENT,
-                f"replaying the history leaves {device}.{resource} at {level}, "
-                f"outside [0, {capacity}]",
-                f"inventories.levels.{device}.{resource}",
-                at=root,
-            )
-    return levels
+    # The cut is a point *inside* an instant -- after its refills, before its draws --
+    # so the ordering is over (time, phase) and not over time alone.
+    cut = (since, START)
+    stated: dict[tuple[str, str], int] | None = None
+    reported: set[tuple[str, str]] = set()
+    for at_event in sorted(events):
+        if at_event < cut:
+            continue  # already in the stated levels
+        if stated is None and at_event >= (now, START):
+            stated = dict(levels)
+        for key, delta in events[at_event].items():
+            levels[key] = levels.get(key, 0) + delta
+        for key in sorted(events[at_event]):
+            if key in reported:
+                continue
+            device, resource = key
+            entry = env.devices.get(device)
+            capacity = entry.resources.get(resource) if entry is not None else None
+            level = levels.get(key, 0)
+            if level < 0 or (capacity is not None and level > capacity):
+                reported.add(key)
+                diags.error(
+                    errors.STATUS_INVENTORY_INCONSISTENT,
+                    f"replaying the history leaves {device}.{resource} at {level} "
+                    f"after {'a refill' if at_event[1] == COMPLETION else 'a draw'} "
+                    f"at time {at_event[0]}, outside [0, {capacity}]",
+                    f"inventories.levels.{device}.{resource}",
+                    at=root,
+                )
+    # No event at or after `now`: nothing separates the two levels.
+    return levels, dict(levels) if stated is None else stated
 
 
-def _withdrawn_draws(root, withdrawn: frozenset[str], since: int, levels: dict) -> dict:
-    """Subtract what the jobs in `withdrawn` have already drawn.
+def _withdrawn_draws(root, withdrawn: frozenset[str], change) -> None:
+    """Feed what the jobs in `withdrawn` have already drawn into the replay.
 
     Read from the document rather than the instance, which no longer has them. A draw
-    is taken at the activity's start (§4.7.2), so the same `>= since` filter applies
-    as everywhere else, and a `cancelled` activity carries no echo because it never
-    ran (§6.2).
+    is taken at the activity's start (§4.7.2), which is the event time here as
+    everywhere else, and a `cancelled` activity carries no echo because it never ran
+    (§6.2). Nothing is filtered on the moment: these are events like any other, and
+    the one replay decides which of them the stated levels already account for.
     """
     activities = root.get("activities") if isinstance(root, YMap) else None
     if not isinstance(activities, YSeq):
-        return levels
+        return
     for item in activities.items:
         if not isinstance(item, YMap) or text(item.get("kind")) != "processing":
             continue
         if job_of(item) not in withdrawn or status_of(item) not in _STARTED:
             continue
         start, _end = times(item)
-        if start < since:
-            continue
         drawn = item.get("consumption")
         if not isinstance(drawn, YMap):
             continue
@@ -530,8 +574,7 @@ def _withdrawn_draws(root, withdrawn: frozenset[str], since: int, levels: dict) 
             value = entry.value
             if parsed is None or not (isinstance(value, YScalar) and value.is_int):
                 continue
-            levels[parsed] = levels.get(parsed, 0) - value.value
-    return levels
+            change(start, START, parsed, -value.value)
 
 
 def _levels_moment(node: YNode, now: int, diags: Diagnostics) -> int:

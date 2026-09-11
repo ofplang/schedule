@@ -34,6 +34,7 @@ argument.
 from __future__ import annotations
 
 from ofplang.schedule.core.identifiers import parse_qualified_resource
+from ofplang.schedule.scheduler.status import COMPLETION, START
 
 
 def _declared_levels(env, inventories: dict | None) -> dict[tuple[str, str], int]:
@@ -63,9 +64,6 @@ def _declared_levels(env, inventories: dict | None) -> dict[tuple[str, str], int
 # completion (0) or a start (1). Completions go first at a shared instant (§4.7),
 # and the level is checked between them -- the same separation the solver's
 # reservoir gets from mapping completions to `2t` and starts to `2t + 1`.
-COMPLETION, START = 0, 1
-
-
 def _events(activities: list[dict]) -> dict[tuple[int, int], dict[tuple[str, str], int]]:
     """Every level change the plan contains, summed per instant-phase and per stock.
 
@@ -114,12 +112,17 @@ def check_plan_inventories(plan: dict, env, inventories: dict | None) -> list[st
     # events they already account for are the ones before it. Replaying those again
     # would report the plan as driving a stock out of range on the strength of
     # history the levels had already absorbed.
+    #
+    # 🔴 The cut is `(at, START)`, not `at`: the stated levels sit *between* that
+    # instant's two phases -- after its refills, before its draws -- so a refill
+    # landing exactly at `at` is one of the events they already account for.
     since = (inventories or {}).get("at")
     since = since if isinstance(since, int) and not isinstance(since, bool) else 0
+    cut = (since, START)
     reported: dict[tuple[str, str], str] = {}
     for at in sorted(events):
         time, phase = at
-        if time < since:
+        if at < cut:
             continue
         for key, delta in events[at].items():
             levels[key] = levels.get(key, 0) + delta

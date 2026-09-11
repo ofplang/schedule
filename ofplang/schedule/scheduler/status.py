@@ -61,6 +61,14 @@ class RefillFixation:
     amounts: dict[str, int]
 
 
+# The two phases of one instant, in the order they happen (SPEC §4.7). A refill that
+# lands at time t raises the level before a draw that begins at t takes from it --
+# which is what makes a refill ending exactly when the work it feeds begins feed it.
+# Ordering resource events by `(time, phase)` is how that rule is realised, and the
+# point *between* the two is what `inventories.at` names (§6.10).
+COMPLETION, START = 0, 1
+
+
 @dataclass(frozen=True)
 class Fixation:
     """Everything the solver needs to fix the executed part and re-optimise the
@@ -80,6 +88,13 @@ class Fixation:
     # future increase); a `completed` one is already inside `levels`. Both are kept
     # because both are history the plan has to carry back out.
     replenishments: dict[str, RefillFixation] = field(default_factory=dict)
+    # The same stocks at the same moment, read at the other point of the instant:
+    # after `now`'s refills have landed, before `now`'s draws are taken. That is what
+    # `inventories.at = now` means (SPEC §6.10), so it is what a plan states when a
+    # withdrawal moves the baseline -- and stating `levels` instead would hand the
+    # next replan a number with `now`'s draws already in it, which it would then
+    # replay again. Equal to `levels` unless something drew at exactly `now`.
+    stated_levels: dict[tuple[str, str], int] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------

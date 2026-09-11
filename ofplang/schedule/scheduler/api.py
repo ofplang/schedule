@@ -293,8 +293,15 @@ def _carried_levels(env, levels: dict[tuple[str, str], int], now: int) -> dict:
 
     A level is replayed from the stated one, and the history a withdrawing job takes
     with it is part of what there was to replay. So the levels move forward to the
-    moment the job leaves and say so: the same numbers the solver just started from,
-    written down where the next replan will read them.
+    moment the job leaves and say so, where the next replan will read them.
+
+    🔴 **Not the numbers the solver started from.** Those are the levels after
+    everything the history did, `now`'s draws included, because a started activity
+    has taken its consumption and the model does not re-model it. What `at = now`
+    means is the other point of that instant -- after its refills, before its draws
+    (§6.10) -- and writing the solver's number under that label would hand the next
+    replan a level with `now`'s draws already in it, which it would then replay
+    again. `Fixation` carries both for exactly this reason.
     """
     out: dict[str, dict[str, int]] = {}
     for (device, resource), level in sorted(levels.items()):
@@ -718,15 +725,24 @@ def schedule_jobs(
     (`multi_job_interface`), and an entry whose inputs are Object-bearing is
     planned jointly like any other.
 
-    `withdraw` names jobs that are **leaving** the plan: their entry, their history
-    and their hold on the spots they were using all go, and the document's levels are
-    carried forward to `now` so that the stocks their work drew on stay right
-    (`inventories.at`, §6.10). A job leaves when there is nothing of it left in the
-    laboratory, which the scheduler cannot see -- so it is asked for, never inferred
-    from a job going quiet, and refused where the document itself says otherwise:
-    work still to do, or a spot the job is recorded as still occupying (§6.12). Do
-    not pass a workflow for a job being withdrawn; there is nothing left to plan for
-    it, and needing one would mean it should not be leaving.
+    `withdraw` names jobs that are **leaving** the plan: their roster entry and their
+    history go, and the document's levels are carried forward to `now` so that the
+    stocks their work drew on stay right (`inventories.at`, §6.10). A job leaves when
+    there is nothing of it left in the laboratory, which the scheduler cannot see --
+    so it is asked for, never inferred from a job going quiet, and refused where the
+    document itself says otherwise: work still to be done, or still running. A job
+    that **failed** may leave; the status never changes again, and the activity's
+    interval has ended, so it holds nothing the withdrawal could take away. Do not
+    pass a workflow for a job being withdrawn; there is nothing left to plan for it,
+    and needing one would mean it should not be leaving.
+
+    Its **holds** go the same way, with one exception. A final output the caller bound
+    to a spot (§6.8) is freed: they named the place, so leaving says they collected it
+    there. An unbound one is not, because the *schedule* chose where it came to rest
+    and the caller was never told -- so that spot becomes an `occupied` entry (§6.12),
+    reported by name in the `job_withdrawn` warning. An occupancy the document already
+    carried is untouched either way: it says a spot is held and outlives whatever put
+    the material there.
 
     What a joint plan does *not* have yet is a per-job objective: the stages the
     document names are minimised over all the jobs at once (§4.8).
@@ -964,7 +980,7 @@ def _run(
     # `inventories` unchanged, which is what keeps the section stable across replans.
     carried = inventories
     if withdraw and fixation.levels:
-        carried = _carried_levels(env, fixation.levels, fixation.now)
+        carried = _carried_levels(env, fixation.stated_levels, fixation.now)
     if withdraw:
         # 🔴 **Reported before the solve, not after.** A frozen spot can be the reason
         # nothing can be planned -- the material really is in the way -- and a report

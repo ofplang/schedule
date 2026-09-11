@@ -113,12 +113,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar="ID",
-        help="a job leaving the plan (repeatable): its roster entry, its history and "
-        "its hold on the spots it was using all go, and the levels are carried "
-        "forward to `now` so the stocks its work drew on stay right. Give no "
-        "workflow for it -- there is nothing left to plan. Refused where the "
-        "document says something of the job is still there: work still to do, or a "
-        "spot it is recorded as occupying",
+        help="a job leaving the plan (repeatable): its roster entry and its history "
+        "go, and the levels are carried forward to `now` so the stocks its work drew "
+        "on stay right. A bound final output's spot is freed (you named it, so "
+        "leaving says you collected it); an unbound one's is kept, as an `occupied` "
+        "entry naming the spot. Give no workflow for it -- there is nothing left to "
+        "plan. Refused while the document says work is still to be done or running",
     )
     s.add_argument(
         "--ignore-resources",
