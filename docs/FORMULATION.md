@@ -947,7 +947,9 @@ interface.
 **A boundary node belongs to a job but is not its work.** It is in $T$, it holds its
 spot, and it belongs to $j$ — but it is excluded from that job's completion time
 (§J2), because the output node's end is $C_{\max}$ by §3-bis and counting it would
-make every job finish exactly when the last one does.
+make every job finish exactly when the last one does. **What a job's output does after
+it has arrived is not its work either**, for a reason of its own, and is excluded the
+same way (§J2, $A^{\mathrm{rest}}$).
 
 **A replenishment belongs to no job.** One refill commonly serves several, and which
 jobs draw from it afterwards is the solver's decision, not a property of the
@@ -1002,13 +1004,46 @@ Each job has a completion time — the last end among its own work:
 
 $$
 C_j = \max\Bigl(
-  \{\, e_i \;\mid\; j(i) = j,\ i \notin T^{\mathrm{bnd}} \,\} \cup
-  \{\, b_r \;\mid\; j(r) = j \,\}
+  \{\, e_i \;\mid\; j(i) = j,\ i \notin T^{\mathrm{bnd}} \cup T^{\mathrm{rest}} \,\} \cup
+  \{\, b_r \;\mid\; j(r) = j,\ r \notin A^{\mathrm{rest}} \,\}
 \Bigr), \quad \forall j \in J \setminus J^{\mathrm{stop}}
 $$
 
 where $T^{\mathrm{bnd}}$ is the boundary nodes (§Sets and indices). Replenishments
 are absent by construction, having no job.
+
+**$A^{\mathrm{rest}}$ and $T^{\mathrm{rest}}$: what the output does after it arrives.**
+Let $\rho$ be a move whose logical destination is a final output node, and let
+
+$$
+q_\rho = \min \{\, seq_r \;\mid\; r \in \rho,\ \sigma_r = \mathrm{completed},\
+  \mathrm{to}(r) \in S^{\mathrm{rest}}_{\rho} \,\}
+$$
+
+be the earliest chain position (§6.6) at which a **completed** leg of $\rho$ put the
+Object on a spot the output node accepts — $S^{\mathrm{rest}}_{\rho}$ being the spots
+its modes bind that port to, one for a bound output and one per candidate for an
+unbound one (SPEC §6.8). Where no such leg exists $q_\rho$ is $\infty$. Then
+$A^{\mathrm{rest}}$ is every leg of every such $\rho$ with $seq_r > q_\rho$, and
+$T^{\mathrm{rest}}$ every relay of it at a position beyond $q_\rho$.
+
+🔴 **This is not "a no-op does not count".** Two different things sit past $q_\rho$ and
+only one of them is a no-op. The first is the zero-distance remainder the model carries
+from the arrival to the output node, which is there because a boundary node is synthetic
+and can never be reported as fixed (§9), so the chain is re-derived on every replan. The
+second is a genuine *move*: the schedule shifting an unbound output aside because
+another job needs that spot. Both are excluded, and for one reason — **the Object had
+already arrived** — which is why the criterion is the position on the chain rather than
+the shape of the leg.
+
+The exclusion is also why $q_\rho$ tests the arrival **spot**. A multi-leg delivery that
+has completed as far as a hand-off station has arrived nowhere in
+$S^{\mathrm{rest}}_{\rho}$, so $q_\rho = \infty$, nothing on its chain is excluded, and
+the hop still to come counts — as it must, since that hop is the delivery.
+
+Neither set is excluded from anything else. A resting leg still takes its resources
+(§4, §5), a moved output still occupies the spots it passes through, and $C_{\max}$
+(§3-bis) counts every end as before; it is $C_j$ alone that stops at the arrival.
 
 A job that carries a promise must keep it:
 

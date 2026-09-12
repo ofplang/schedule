@@ -403,10 +403,11 @@ defines three stages.
   replenishments included, so a refill can never be parked after the work.
 - `replenishment_count` — how many replenishment activities the plan contains.
 - `completion_time_sum` — the sum over the jobs of a joint plan (§6.11) of when each
-  one's own work ends. Refills are not part of any job's completion, since a single
-  refill commonly serves several; `makespan` is what keeps one from being parked after
-  the work, which is why the two sit together in the default below. On a document with
-  one workflow the sum is that one run's completion.
+  one's own work ends, which is when its output arrives rather than whatever is done
+  with it afterwards (§6.11). Refills are not part of any job's completion, since a
+  single refill commonly serves several; `makespan` is what keeps one from being parked
+  after the work, which is why the two sit together in the default below. On a document
+  with one workflow the sum is that one run's completion.
 
 `makespan` alone stays the common case and may be written as a bare scalar (§6.1).
 When the objective is omitted the default depends on how many jobs there are:
@@ -1366,6 +1367,22 @@ A promise is never tightened. Minimising the sum of completions may well finish 
 earlier than it was promised, and that is simply enjoyed: re-promising the earlier time
 would turn ordinary variation in how long things take into a broken promise on the next
 replan, and `bound` would stop meaning "what this job was promised when it arrived".
+
+**What `C_j` counts is the job's own work, which ends when its output arrives.** A job
+finishes when the last of its activities and of the moves between them ends — and a
+final output's move ends when the Object reaches somewhere it may come to rest: the
+spot `interface.outputs` binds it to, or any of the spots an unbound one may rest on
+(§6.8). What happens to it *after* that is not the job's work. It may simply sit there,
+and it may be **moved aside** — the schedule is free to shift an unbound output because
+another job needs that spot — but neither moves `C_j`. The product was finished when it
+was made; where the laboratory then keeps it is the laboratory's business, and a
+completion that moved every time somebody else needed a shelf would be no completion at
+all. Such a move is still an activity of the plan in every other respect: it is
+dispatched, it holds its transporter and its spots, and `makespan` counts it.
+
+Delivery that is still *under way* is the job's work, of course. A multi-leg move
+(§6.4.1) that has reached a hand-off station has not arrived anywhere its output may
+rest, so the hop that remains counts towards `C_j` like any other.
 
 **When a promise cannot be kept.** Work overruns; a machine goes out of service. If no
 schedule keeps every promise, they are relaxed **in roster order and by as little as

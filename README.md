@@ -69,7 +69,9 @@ order written, or write `ID=FILE` to name one yourself; every activity in the pl
 then carries the job it belongs to. A job may be given its own `interface` and a
 `release` time in the document's `jobs` roster, and each is promised the completion
 its first plan achieves (`bound`) — which later plans keep, so a job already being
-planned is not disturbed by one that arrives later.
+planned is not disturbed by one that arrives later. A job completes when its output
+arrives somewhere it may rest; sitting there, or being moved aside later because
+another job needs that spot, is not the job's work and does not move its completion.
 
 A `--document` (execution document, §6) supplies the `interface` boundary
 constraint (§6.8, where a workflow's entry inputs / final outputs sit — an entry

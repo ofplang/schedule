@@ -745,6 +745,232 @@ def test_an_instance_that_is_simply_infeasible_reports_no_relaxation():
 
 
 # ---------------------------------------------------------------------------
+# What C_j counts: a job's own work, and not its finished output sitting on a spot.
+# ---------------------------------------------------------------------------
+
+# A hand-off station between the heater and the racks: nothing goes from the heater
+# to a rack in one move, so a delivery is two legs and can be caught half-way.
+HANDOFF_ENV = {
+    "time": {"unit": "second"},
+    "devices": [
+        {"id": "loader", "spots": ["stage"]},
+        {"id": "heater", "spots": ["stage"]},
+        {"id": "hotel", "spots": ["slot"]},
+        {"id": "output", "spots": ["rack_a", "rack_b"]},
+    ],
+    "transporters": [{"id": "arm"}],
+    "transports": [
+        {"transporter": "arm", "from": "loader.stage", "to": "heater.stage", "duration": 2},
+        {"transporter": "arm", "from": "heater.stage", "to": "hotel.slot", "duration": 2},
+        {"transporter": "arm", "from": "hotel.slot", "to": "output.rack_a", "duration": 2},
+        {"transporter": "arm", "from": "hotel.slot", "to": "output.rack_b", "duration": 2},
+    ],
+    "processes": {
+        "heat": {
+            "modes": [
+                {
+                    "devices": ["heater"],
+                    "duration": 10,
+                    "input_spots": {"plate": "heater.stage"},
+                    "output_spots": {"out": "heater.stage"},
+                }
+            ]
+        }
+    },
+}
+
+
+# Three racks reached directly from the heater: room for a delivered plate to be
+# shifted to another one without displacing anybody.
+RACKS_ENV = {
+    "time": {"unit": "second"},
+    "devices": [
+        {"id": "loader", "spots": ["stage"]},
+        {"id": "heater", "spots": ["stage"]},
+        {"id": "output", "spots": ["rack_a", "rack_b", "rack_c"]},
+    ],
+    "transporters": [{"id": "arm"}],
+    "transports": [
+        {"transporter": "arm", "from": "loader.stage", "to": "heater.stage", "duration": 2},
+        *(
+            {"transporter": "arm", "from": "heater.stage", "to": f"output.{rack}", "duration": 2}
+            for rack in ("rack_a", "rack_b", "rack_c")
+        ),
+        *(
+            {"transporter": "arm", "from": f"output.{src}", "to": f"output.{dst}", "duration": 2}
+            for src in ("rack_a", "rack_b", "rack_c")
+            for dst in ("rack_a", "rack_b", "rack_c")
+            if src != dst
+        ),
+    ],
+    "processes": HANDOFF_ENV["processes"],
+}
+
+
+def _delivery(plan, job: str) -> dict:
+    """The boundary transport that carries `job`'s final output (its arc's destination
+    is the interface, i.e. the empty node path)."""
+    legs = [
+        a
+        for a in _of(plan, job)
+        if a["kind"] == "transport" and a["arc"]["to"]["node"] == []
+    ]
+    assert legs, f"no boundary delivery for {job}"
+    return legs[-1]
+
+
+def _finished(plan, job: str) -> dict:
+    """`plan` as a status in which every one of `job`'s activities has completed, at
+    the times it planned, and the clock has moved past them."""
+    status = copy.deepcopy(plan)
+    for activity in status["activities"]:
+        if activity.get("job") == job:
+            activity["status"] = "completed"
+    status["now"] = max(a["end"] for a in _of(status, job)) + 6
+    return status
+
+
+def test_a_finished_job_keeps_the_promise_it_was_given():
+    """🔴 A job whose every activity is history cannot finish later than it did, so no
+    replan may take its promise away.
+
+    It used to. A final output node is synthetic and can never be reported in a status,
+    so `normalize` never marks it *fixed*: once the delivering leg completed it went on
+    deriving a relay and a pending zero-distance remainder to that node, replan after
+    replan. Counted as the job's work, that remainder made C_j = `now` -- the promise
+    became unkeepable the moment the clock passed it, every later replan ran the
+    relaxation search, and the roster ended up reporting a completion the job had
+    reached long before.
+    """
+    workflow, env, document = _bay()
+    plan = schedule_jobs(_bay_jobs(workflow), env, document_path=document).plan
+    promised = _bounds(plan)["job1"]
+
+    status = _finished(plan, "job1")
+    report = schedule_jobs(_bay_jobs(workflow), env, document_path=status)
+
+    assert report.ok, [d.code for d in report.diagnostics]
+    assert not [d for d in report.diagnostics if d.code == "job_bound_relaxed"]
+    assert _bounds(report.plan)["job1"] == promised == _completion(report.plan, "job1")
+
+
+def test_a_finished_job_with_an_unbound_output_keeps_it_too():
+    """The same, where the schedule -- not the caller -- chose where the result came to
+    rest (§6.8). The remainder is the same remainder either way."""
+    workflow, env, document = _bay()
+    document = copy.deepcopy(document)
+    del document["jobs"][0]["interface"]["outputs"]
+
+    plan = schedule_jobs(_bay_jobs(workflow), env, document_path=document, random_seed=0).plan
+    promised = _bounds(plan)["job1"]
+
+    status = _finished(plan, "job1")
+    report = schedule_jobs(_bay_jobs(workflow), env, document_path=status, random_seed=0)
+
+    assert report.ok, [d.code for d in report.diagnostics]
+    assert not [d for d in report.diagnostics if d.code == "job_bound_relaxed"]
+    assert _bounds(report.plan)["job1"] == promised
+
+
+def test_a_delivery_still_on_its_way_is_counted_in_the_promise():
+    """🔴 The other face of the same defect, and the reason the test above is not
+    written as "a boundary move does not count".
+
+    A two-leg delivery that has reached the hand-off station has one hop left, and that
+    hop *is* the delivery. Passing it over would promise the job a completion it has
+    not reached -- which the next replan, once the hop is history, would have to relax.
+    """
+    workflow = _load("interface_load.workflow.yaml")
+    document = {
+        "jobs": [
+            {
+                "id": "job1",
+                "interface": {
+                    "inputs": {"sample": "loader.stage"},
+                    "outputs": {"result": "output.rack_a"},
+                },
+            }
+        ],
+        "activities": [],
+    }
+    legs = {"max_transport_legs": 2}
+    plan = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow))], HANDOFF_ENV, document_path=document, **legs
+    ).plan
+    # Two legs, as the environment forces: heater -> hotel -> rack.
+    carried = [a for a in _of(plan, "job1") if a["kind"] == "transport"]
+    assert any(a["to_spot"] == "hotel.slot" for a in carried), carried
+
+    # The plate is on the hand-off station: everything up to that leg has completed,
+    # the last hop has not, and the job is asking to be promised a completion now.
+    status = copy.deepcopy(plan)
+    arrival = next(a for a in status["activities"] if a.get("to_spot") == "hotel.slot")
+    for activity in status["activities"]:
+        if activity["kind"] in ("processing", "transport") and activity["end"] <= arrival["end"]:
+            activity["status"] = "completed"
+    status["now"] = arrival["end"]
+    del status["jobs"][0]["bound"]
+
+    report = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow))], HANDOFF_ENV, document_path=status, **legs
+    )
+    assert report.ok, [d.code for d in report.diagnostics]
+    # The promise covers the hop that is left, not just what has already happened.
+    assert _bounds(report.plan)["job1"] == _completion(report.plan, "job1")
+    assert _bounds(report.plan)["job1"] > arrival["end"]
+
+
+def test_moving_a_delivered_output_aside_does_not_move_the_promise():
+    """An unbound output that has come to rest may still be shifted -- another job
+    needs that spot, and §6.8 offers every spot its producer can reach for exactly that
+    reason. The move is real work that the makespan counts and the laboratory performs;
+    it is not the *job's* work.
+
+    🔴 The product was finished when it was made. A completion that moved every time
+    somebody else needed a shelf would not be a completion, and the job would have its
+    promise broken by a decision that has nothing to do with it.
+    """
+    workflow = _load("interface_load.workflow.yaml")
+    document = {
+        "jobs": [{"id": "job1", "interface": {"inputs": {"sample": "loader.stage"}}}],
+        "activities": [],
+    }
+    jobs = [JobInput("job1", copy.deepcopy(workflow))]
+    plan = schedule_jobs(jobs, RACKS_ENV, document_path=document, random_seed=0).plan
+    promised = _bounds(plan)["job1"]
+    delivered = _delivery(plan, "job1")
+
+    # job1 is done, and its plate was then carried off to another rack -- a second leg
+    # of the same boundary move, long after it had come to rest.
+    status = _finished(plan, "job1")
+    moved = copy.deepcopy(delivered)
+    moved.update(
+        seq=2,
+        status="completed",
+        start=status["now"] - 4,
+        end=status["now"] - 2,
+        transporter="arm",
+        from_spot=delivered["to_spot"],
+        to_spot=next(
+            spot
+            for spot in ("output.rack_a", "output.rack_b", "output.rack_c")
+            if spot != delivered["to_spot"]
+        ),
+    )
+    _delivery(status, "job1")["seq"] = 0
+    status["activities"].append(moved)
+
+    report = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow))], RACKS_ENV, document_path=status, random_seed=0
+    )
+    assert report.ok, [d.code for d in report.diagnostics]
+    assert not [d for d in report.diagnostics if d.code == "job_bound_relaxed"]
+    assert _bounds(report.plan)["job1"] == promised
+    # The move really is later than the promise -- that is what makes this a test.
+    assert moved["end"] > promised
+
+
+# ---------------------------------------------------------------------------
 # The objective (§4.8): what a joint plan minimises by default.
 # ---------------------------------------------------------------------------
 

@@ -466,23 +466,36 @@ def solve(
     # between them. Refills are excluded: they belong to no job (one commonly serves
     # several), which is exactly why `makespan` stays in the objective beside the sum,
     # since it is what stops a refill being parked after all the work (§4.8).
+    #
+    # 🔴 Two things a job owns are nonetheless not its work, and both are excluded
+    # below: a boundary node, and anything on a final-output move positioned **after**
+    # the Object arrived where it may rest (`_resting`) -- the finished product on its
+    # shelf, and any later shifting of it. Counting the latter made a finished job's
+    # C_j equal `now` on every replan, so the promise it was given could never be kept
+    # and the relaxation machinery ran every tick for the rest of the run.
     job_ends: dict[str, list] = {}
+    arrived = _arrived_at(instance, fixation, membership, _final_output_spots(instance))
     for i, job_id in enumerate(membership):
+        act = instance.activities[i]
         # A boundary node belongs to a job (`job_membership` reports ownership) but is
         # not its work: an output node ends at the makespan, so counting it would make
         # every job finish when the last one does.
-        if (
-            job_id is not None
-            and job_id not in stopped
-            and instance.activities[i].boundary is None
-        ):
-            job_ends.setdefault(job_id, []).append(ends[i])
+        if job_id is None or job_id in stopped or act.boundary is not None:
+            continue
+        # A relay is a junction of the move it belongs to (§6.4.1), so it is the job's
+        # work exactly when that part of the move is.
+        if act.relay is not None and _resting(act.relay.arc, act.relay.seq, job_id, arrived):
+            continue
+        job_ends.setdefault(job_id, []).append(ends[i])
     for r, arc in enumerate(instance.arcs):
         src, dst = membership[arc.src_activity], membership[arc.dst_activity]
         # A boundary arc has one end in no job; the other names the job it serves.
         job_id = src if src is not None else dst
-        if job_id is not None and job_id not in stopped:
-            job_ends.setdefault(job_id, []).append(arc_ends[r])
+        if job_id is None or job_id in stopped:
+            continue
+        if _resting(arc.arc, arc.seq, job_id, arrived):
+            continue
+        job_ends.setdefault(job_id, []).append(arc_ends[r])
 
     completions = {}
     for job_id, job_end_vars in sorted(job_ends.items()):
@@ -1083,6 +1096,107 @@ def _fixed_end(status: str, reported_end: int, now: int, margin: int) -> int:
     if status == "running":
         return max(reported_end, now + margin)
     return reported_end
+
+
+def _final_output_spots(instance) -> dict[tuple[str | None, str], set[str]]:
+    """Every spot each job's final outputs may come to rest on, keyed by (job, port).
+
+    A **bound** output node offers one spot per port; an **unbound** one offers a mode
+    per candidate resting place (§6.8), and staying where it was made is always among
+    them. Read once per solve, because `_resting` asks the same question of every leg
+    of every boundary-output move.
+    """
+    spots: dict[tuple[str | None, str], set[str]] = {}
+    for act in instance.activities:
+        boundary = act.boundary
+        if boundary is None or boundary.kind != "output":
+            continue
+        for mode in act.modes:
+            for port, spot in mode.input_spots.items():
+                spots.setdefault((boundary.job, port), set()).add(spot)
+    return spots
+
+
+def _arrived_at(instance, fixation: Fixation | None, membership, final_spots) -> dict:
+    """For each final-output move, the chain position (§6.6) of the first **completed**
+    leg that put the Object somewhere it may come to rest — or no entry at all where
+    none has yet.
+
+    Read per logical move rather than per leg because that is what the question is
+    about: once *some* leg has landed the Object where it was going, everything later
+    on that chain is rearrangement rather than delivery (see `_resting`). A leg of a
+    multi-leg delivery that stopped at a hand-off station lands nowhere it may rest, so
+    it records nothing and the rest of its chain still counts.
+    """
+    arrived: dict = {}
+    if fixation is None:
+        return arrived
+    for r, arc in enumerate(instance.arcs):
+        if arc.arc.dst.node != ():
+            continue
+        leg = fixation.arcs.get(r)
+        if leg is None or leg.status != "completed" or not arc.options:
+            continue
+        job_id = membership[arc.src_activity] or membership[arc.dst_activity]
+        # A fixed leg carries one frozen route (`ArcFixation`), so its destination is
+        # where the Object actually is.
+        if arc.options[0].to_spot not in final_spots.get((job_id, arc.arc.dst.port), ()):
+            continue
+        key = (job_id, arc.arc)
+        seq = arc.seq or 0
+        if key not in arrived or seq < arrived[key]:
+            arrived[key] = seq
+    return arrived
+
+
+def _resting(logical, seq, job_id, arrived: dict) -> bool:
+    """Whether position `seq` of the move `logical` is past the point where the job's
+    final output **arrived** where it was going (§6.8) — the finished product on its
+    shelf rather than work.
+
+    Asked of a transport leg and of a relay alike: a relay is a junction of the move it
+    belongs to, so it is the job's work exactly when that part of the move is.
+
+    A final output node is synthetic: it is re-created every solve and can never be
+    reported in a status, so `normalize` can never mark it *fixed* the way a real
+    processing node is. Once the delivering leg completes it therefore goes on, replan
+    after replan, deriving a relay at the arrival spot and appending a pending
+    zero-distance remainder to the node — which, like any pending arc, cannot start
+    before `now`.
+
+    🔴 That remainder is why this exists. Counted as the job's work it made **C_j =
+    now** for a job whose every activity was history: the promise it was given
+    (`bound`, §6.11) could not be kept by any schedule, so every replan ran the
+    relaxation search, re-derived the promise as `now`, and reported a
+    `job_bound_relaxed` the plan had not earned. The plan itself never showed it --
+    rendering folds the relay and the no-op leg away (`plan._fold_relayed_zero_distance`).
+
+    The test is positional: this leg comes **after** the one that arrived (`_arrived_at`),
+    on the same logical move. 🔴 Position, not "is it a no-op", because the two things
+    that must be excluded look nothing alike. One is the zero-distance remainder. The
+    other is a genuine later **move** -- the schedule shifting an unbound output aside
+    because another job needs that spot (§6.8) -- and while that move is in flight the
+    chain grows a *pending* relay and a further remainder behind it, which a test on the
+    leg in front of the arc would miss. Asking "has this move already delivered?" once
+    per chain catches every leg after the answer became yes.
+
+    And 🔴 it must be *after*: a multi-leg delivery that has reached a hand-off station
+    with one hop still to go has arrived nowhere it may rest, so nothing on its chain is
+    excluded. Dropping that hop would under-state C_j, which is the same defect wearing
+    the other face.
+
+    That a later move does not count is the settled reading of C_j: the product was
+    finished when it was made, where the laboratory then keeps it is the laboratory's
+    business, and a completion that moved every time somebody else needed a shelf would
+    not be a completion. Such a move is still in the makespan (`make_ends`), still holds
+    its transporter and its spots, and is still dispatched; only `C_j` passes it over.
+    """
+    # Only a final output's move has the boundary as its logical destination (the empty
+    # node path). An entry arc has it as the *source*, so the two are never confused.
+    if logical.dst.node != ():
+        return False
+    delivered = arrived.get((job_id, logical))
+    return delivered is not None and (seq or 0) > delivered
 
 
 def _selected(solver: cp_model.CpSolver, lits) -> int:
