@@ -932,10 +932,11 @@ with one job the whole of Part II is vacuous.
   given (SPEC §6.11). A single workflow is $|J| = 1$.
 - $j(\cdot)$: which job an activity's **work** belongs to. It is defined for every
   activity that came from a workflow — every $i \in T \setminus T^{\mathrm{held}}$ and
-  every arc $r \in R$ — and $\bot$ for the two kinds that did not: a replenishment
-  candidate $\omega \in W$ and a held node $h \in T^{\mathrm{held}}$ (§J5). A held
-  node's document entry names no job at all (SPEC §6.12) — it says a spot is held, not
-  whose the material is — so nothing job-scoped below reaches it.
+  every arc $r \in R$ — and $\bot$ for a replenishment candidate $\omega \in W$ and for
+  a held node that came from an `occupied` entry: the entry names no job at all
+  (SPEC §6.12), so nothing job-scoped below reaches it. A held node **derived** from a
+  stopped job's history does carry $j(h)$, for the one purpose §J5 gives — nothing else
+  job-scoped reads it either.
 - $J^{\mathrm{stop}} \subseteq J$: the jobs that have **stopped** (§J4).
 
 Ownership is by construction, not inference: the activities of one workflow are
@@ -1154,22 +1155,39 @@ while some activity's interval covers it, and the interval of the activity that 
 the material there has ended, so without saying otherwise the model believes the spot
 free and will send other work to a place that is full.
 
-- $T^{\mathrm{held}} \subseteq T$: one **held node** per `occupied` entry. Like a
-  boundary node it is a single-mode processing activity in $T$, with no device and no
-  consumption; unlike one it has no arcs, is in no dependency pair, and is excluded
-  from the makespan (§8). It is nobody's work in the literal sense: the entry names
-  no job, so nothing job-scoped (§J0) reaches it — no roster rule, no withdrawal, no
-  status.
-- $p_h \in P$: the spot it holds. $since_h \in \mathbb{Z}_{\ge 0}$: when the document
-  says it became occupied. Spots are distinct across $T^{\mathrm{held}}$: two nodes on
-  one spot would contend over the same interval, so the input is refused rather than
-  reported infeasible (SPEC §6.12).
+- $T^{\mathrm{held}} \subseteq T$: one **held node** per hold. Like a boundary node it
+  is a single-mode processing activity in $T$, with no device and no consumption;
+  unlike one it has no arcs, is in no dependency pair, and is excluded from the
+  makespan (§8).
+- $p_h \in P$: the spot it holds. $since_h \in \mathbb{Z}_{\ge 0}$: when it became
+  occupied. Spots are distinct across $T^{\mathrm{held}}$: two nodes on one spot would
+  contend over the same interval, so the input is refused rather than reported
+  infeasible (SPEC §6.12).
 
-A held node need not come from the document. A job leaving the plan (SPEC §6.11) hands
-over the holds it had that nothing else accounts for — an unbound final output's resting
-spot, whose $\sigma$ was the *solve's* choice and so is stated nowhere — as entries
-with $since_h = now$. They enter $T^{\mathrm{held}}$ like any other: a spot the model
-does not know is taken is a spot the next plan uses.
+🔴 **A held node has two origins, and only one of them is the document.**
+
+1. An **`occupied` entry**. It names no job, so nothing job-scoped (§J0) reaches it —
+   no roster rule, no withdrawal, no status. This is the hold for what no history can
+   yield.
+2. A **stopped job's residue**, derived. What a job that a terminal status stopped
+   (§J0, §6.2) is still holding follows from the document's own history: the effects of
+   its completed activities replayed in order, the spots its `failed` activity touched
+   (which it holds *all* of — nothing says which of them the material is on), and which
+   job touched each spot last. A spot a `running` activity is using is not among them:
+   that activity's interval accounts for it already. Such a node **does** carry its
+   job, $j(h)$ — not because an occupancy is answerable to one, but because taking a
+   job out of the instance has to take its residue with it, or the culprit search
+   (§6.11's `jobs_not_plannable_together`) finds the rest unplannable around material
+   that left with the job it was asking about.
+
+Since a derived hold follows from the history, it is **not** written into the plan: a
+document stating it as well would hold the one spot twice and be refused (SPEC §6.12).
+The exception is the moment the history itself departs. A job leaving the plan
+(SPEC §6.11) hands over everything it was holding that the caller did not **bind** —
+an unbound final output's resting spot, whose $\sigma$ was the *solve's* choice, and a
+plate a failure left mid-workflow — as entries carrying the moment the material
+actually arrived. They enter $T^{\mathrm{held}}$ like any other: a spot the model does
+not know is taken is a spot the next plan uses.
 
 $$
 s_h = \max(since_h,\ now), \qquad e_h = \mathcal{H}, \qquad \forall h \in T^{\mathrm{held}}
@@ -1262,14 +1280,18 @@ applies to it unchanged. Which is the point — a withdrawal is an edit to the
 Two traces of it do reach the model, and both are already stated where they belong
 rather than here:
 
-- its **draws survive its activities**. The levels at $now$ are what the whole run
-  did to the stocks, so $\mathcal{H}$ in §11 sums the departing job's consumption
-  too — read from the document's echo, the activities being gone from $T$. The plan
-  then states $v^{now^-}$ under $at = now$, which is why §11 derives that
-  quantity alongside $v^{now}$;
-- its **unbound final outputs keep their spots**. A bound output's holder leaves with
-  it; an unbound one's becomes a held node with $since_h = now$ (§J5), the schedule
-  having chosen that spot and the caller never having been told it.
+- its **draws survive its activities**, where the caller has asked for the moment to
+  move. The levels at the moment asked for are what the whole run did to the stocks,
+  so $\mathcal{H}$ in §11 sums the departing job's consumption too — read from the
+  document's echo, the activities being gone from $T$. The plan then states
+  $v^{at^-}$ under that moment, which is why §11 derives that quantity alongside
+  $v^{now}$. Where the caller has *not* asked and the job drew after the moment
+  already stated, the withdrawal is refused rather than re-baselined for them
+  (SPEC §6.10): which history a document may let go of is not the model's to decide;
+- its **holds keep their spots**. What the caller bound leaves with the job; everything
+  else it was holding (§J5) becomes a held node, carrying the moment the material
+  arrived rather than the moment the job left — the history that would have said so is
+  what is departing.
 
 What is *not* in the model is the judgement: whether anything of the job is still in
 the laboratory is a fact about the room, so leaving is instructed and refused only

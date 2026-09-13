@@ -24,6 +24,7 @@ from pathlib import Path
 import yaml
 
 from ofplang.schedule import JobInput, schedule_jobs
+from tests.schedutil import with_spare_heater_stage
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
@@ -85,7 +86,8 @@ def test_a_withdrawn_job_leaves_the_roster_and_the_history():
     status = _as_status(plan, 19)
 
     report = schedule_jobs(
-        _jobs(workflow, "job2"), env, document_path=status, withdraw=["job1"], random_seed=0
+        _jobs(workflow, "job2"), env, document_path=status,
+        withdraw=["job1"], carry_levels_to_now=True, random_seed=0,
     )
     assert report.ok, [d.code for d in report.diagnostics]
 
@@ -111,7 +113,7 @@ def test_the_levels_are_carried_forward_so_the_draws_are_not_undone():
 
     report = schedule_jobs(
         _jobs(workflow, "job2"), env, document_path=_as_status(plan, 19),
-        withdraw=["job1"], random_seed=0,
+        withdraw=["job1"], carry_levels_to_now=True, random_seed=0,
     )
     assert report.ok, [d.code for d in report.diagnostics]
     assert report.plan["inventories"] == {"levels": {"reader": {"reagent": 4}}, "at": 19}
@@ -130,7 +132,7 @@ def test_the_plan_a_job_left_is_a_status_the_next_replan_reads_the_same_way():
     plan = _first_plan(workflow, env, document)
     left = schedule_jobs(
         _jobs(workflow, "job2"), env, document_path=_as_status(plan, 19),
-        withdraw=["job1"], random_seed=0,
+        withdraw=["job1"], carry_levels_to_now=True, random_seed=0,
     )
     assert left.ok, [d.code for d in left.diagnostics]
 
@@ -160,9 +162,9 @@ def test_the_jobs_that_stay_are_planned_exactly_as_they_were():
     )
     left = schedule_jobs(
         _jobs(workflow, "job2"), env, document_path=copy.deepcopy(status),
-        withdraw=["job1"], random_seed=0,
+        withdraw=["job1"], carry_levels_to_now=True, random_seed=0,
     )
-    assert staying.ok and left.ok
+    assert staying.ok and left.ok, (_codes(staying), _codes(left))
 
     def job2_work(report):
         return [
@@ -240,7 +242,8 @@ def test_an_occupancy_outlives_the_job_that_left_the_material():
     status["occupied"] = [{"spot": "reader.slot", "since": 19}]
 
     report = schedule_jobs(
-        _jobs(workflow, "job2"), env, document_path=status, withdraw=["job1"], random_seed=0
+        _jobs(workflow, "job2"), env, document_path=status,
+        withdraw=["job1"], carry_levels_to_now=True, random_seed=0,
     )
     assert report.ok, [d.code for d in report.diagnostics]
     assert report.plan["occupied"] == [{"spot": "reader.slot", "since": 19}]
@@ -266,7 +269,7 @@ def test_withdrawing_every_job_is_refused():
 # ---------------------------------------------------------------------------
 
 
-def _bay(*, bind_job1: bool):
+def _bay(*, bind_job1: bool, spare_stage: bool = False):
     """Two jobs with real boundary material over one loading bay and two racks.
 
     `interface_load` is the only example workflow with a final output at all, so it is
@@ -276,6 +279,10 @@ def _bay(*, bind_job1: bool):
     """
     workflow = _load("interface_load.workflow.yaml")
     env = _load("shared_bay.env.yaml")
+    if spare_stage:
+        # Somewhere else to heat, for a test whose subject is a job that failed *on*
+        # the one stage the example has.
+        env = with_spare_heater_stage(env)
     job1: dict = {"id": "job1", "interface": {"inputs": {"sample": "loader.stage"}}}
     if bind_job1:
         job1["interface"]["outputs"] = {"result": "output.rack_a"}
@@ -413,10 +420,16 @@ def test_a_failed_job_can_leave():
     A `failed` status never changes -- it is what happened -- so refusing to withdraw
     on it shut such a job out of the plan for good. And it protected nothing: the
     failed activity's interval has *ended*, so it holds neither spot nor device that
-    the withdrawal could take away. What it left in the room is `occupied`'s to say,
-    and an occupancy outlives the job that left it (§6.12).
+    the withdrawal could take away.
+
+    🔴 What it left in the room does not vanish with it. While the job is here, what it
+    is holding follows from its own history; the moment it leaves, that history goes and
+    nothing can be derived from it any more -- so the withdrawal writes the hold down
+    (§6.12). That is the one moment an occupancy is written, and this is the case that
+    needs it most: the delivery never happened, so the material is upstream, on the
+    stage the bake failed on.
     """
-    workflow, env, document = _bay(bind_job1=False)
+    workflow, env, document = _bay(bind_job1=False, spare_stage=True)
     plan = _first_plan(workflow, env, document)
     status = copy.deepcopy(plan)
     status["now"] = 12
@@ -446,10 +459,18 @@ def test_a_failed_job_can_leave():
     )
     assert report.ok, _codes(report)
     assert [j["id"] for j in report.plan["jobs"]] == ["job2"]
-    # Nothing is frozen: the delivery never happened. A cancelled boundary move
-    # carried nothing, so the material is upstream where the failure left it -- a fact
-    # about the room, which is `occupied`'s to state and not the plan's to guess.
-    assert "occupied" not in report.plan
+    # 🔴 The delivery never happened, so nothing is on a rack -- but the plate is on the
+    # stage the bake failed on, and that is now nobody's history to read. The plan says
+    # so, dated when the bake gave out rather than when the job left.
+    failed_on = {
+        spot
+        for a in history["activities"]
+        if a.get("job") == "job1" and a.get("status") == "failed"
+        for spot in (a.get("input_spots") or {}).values()
+    }
+    frozen = report.plan.get("occupied")
+    assert frozen and [entry["spot"] for entry in frozen] == sorted(failed_on), (frozen, failed_on)
+    assert frozen[0]["since"] == 12
 
 
 def test_a_frozen_spot_is_never_declared_twice():
@@ -464,7 +485,8 @@ def test_a_frozen_spot_is_never_declared_twice():
     status["occupied"] = [{"spot": spot, "since": 5}]
 
     report = schedule_jobs(
-        _jobs(workflow, "job2"), env, document_path=status, withdraw=["job1"], random_seed=0
+        _jobs(workflow, "job2"), env, document_path=status,
+        withdraw=["job1"], carry_levels_to_now=True, random_seed=0,
     )
     assert report.ok, _codes(report)
     # The document's own entry stands, with the `since` it stated (§6.12).
@@ -473,3 +495,49 @@ def test_a_frozen_spot_is_never_declared_twice():
         d.message for d in report.diagnostics if d.code == "job_withdrawn"
     )
     assert now  # the moment exists; the frozen entry simply was not needed
+
+
+def test_a_job_may_not_take_its_draws_with_it_unasked():
+    """🔴 A stock's level is replayed from the moment `inventories` states (§4.7.2), so
+    a departing job's draws are undone unless that moment has already absorbed them.
+
+    The scheduler used to carry the levels forward on its own whenever a job left. That
+    is a true reason to move the moment, but moving it is the caller's to decide -- they
+    are the one who knows whether the history before it may be let go of -- so the
+    reason is theirs to act on and acting on it is what this refuses the lack of.
+    """
+    workflow, env, document = _shared_refill()
+    plan = _first_plan(workflow, env, document)
+    status = _as_status(plan, 19)
+
+    report = schedule_jobs(
+        _jobs(workflow, "job2"), env, document_path=copy.deepcopy(status),
+        withdraw=["job1"], random_seed=0,
+    )
+    assert not report.ok
+    assert _codes(report) == ["withdrawal_undoes_draws"]
+    assert "'job1'" in report.diagnostics[0].message
+
+    # Asked for, it goes through -- and the levels say which moment they are of.
+    asked = schedule_jobs(
+        _jobs(workflow, "job2"), env, document_path=copy.deepcopy(status),
+        withdraw=["job1"], carry_levels_to_now=True, random_seed=0,
+    )
+    assert asked.ok, _codes(asked)
+    assert asked.plan["inventories"]["at"] == 19
+
+
+def test_a_job_that_drew_nothing_leaves_without_being_asked_anything():
+    """The refusal is about the arithmetic, not about leaving. A job whose history the
+    levels do not depend on takes nothing with it, so there is nothing to carry
+    forward and nothing to ask."""
+    workflow, env, document = _bay(bind_job1=True)
+    plan = _first_plan(workflow, env, document)
+    status, _now = _completed_through(plan, "job1")
+
+    report = schedule_jobs(
+        _jobs(workflow, "job2"), env, document_path=status, withdraw=["job1"], random_seed=0
+    )
+    assert report.ok, _codes(report)
+    assert [j["id"] for j in report.plan["jobs"]] == ["job2"]
+    assert "inventories" not in report.plan

@@ -54,7 +54,7 @@ pip install -e ".[test]"
 
 ```sh
 ofp-schedule validate <file>...                 # validate an environment or a plan/status
-ofp-schedule schedule <workflow>... --env <env> [--document doc.yaml] [--withdraw ID] [--running-margin N] [--max-time SECONDS] [--seed N] [--max-transport-legs N] [--no-validate] [-o plan.yaml] [--format yaml|json]
+ofp-schedule schedule <workflow>... --env <env> [--document doc.yaml] [--withdraw ID] [--carry-levels-to-now] [--running-margin N] [--max-time SECONDS] [--seed N] [--max-transport-legs N] [--no-validate] [-o plan.yaml] [--format yaml|json]
 ofp-schedule visualize <plan|status> [--view device|workflow|lane] [--theme light|dark|auto] [--format svg|html] [-o FILE]
 ```
 
@@ -101,13 +101,16 @@ apart is never sent round by way of somewhere else.
 is the set of jobs something of which is still in the laboratory, so an entry is
 removed when nothing is — which the scheduler cannot see, hence an instruction rather
 than an inference, and one refused while the document says the job still has work to
-do or running. What makes it more than deleting an entry is the arithmetic: a job's
-history is part of what the current stock levels are made of, so the plan restates
-`inventories` as of `now` (§6.10) instead of giving the stock back everything that
-job drew. Pass no workflow for a job being withdrawn. A final output you bound to a
-spot is taken as collected; one you left unbound is not — the schedule chose where it
-came to rest, so that spot is kept as an `occupied` entry (§6.12) and named in the
-report.
+do or running. Pass no workflow for a job being withdrawn. What the job was holding is
+written down before it goes (§6.12), dated when the material actually got there:
+everything except what you **bound**, which leaving says you collected. And a job that
+drew on a stock since the moment `inventories` states its levels for cannot leave
+quietly — its draws would be given back — so ask for the levels to be carried forward
+in the same call.
+`--carry-levels-to-now` restates `inventories` as of `now` (§6.10) instead of echoing
+the moment it was given. **The scheduler never moves that moment by itself**: working
+out the levels is the half it can do and you cannot, and deciding whether the history
+before the moment may be let go of is the half only you can.
 `--ignore-resources` switches consumables off (§4.7.3): the
 declarations are still checked for shape but nothing is applied, and the plan is
 shaped as it would be from an environment that never declared one — a relaxation,

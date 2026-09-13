@@ -114,11 +114,20 @@ def _build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="ID",
         help="a job leaving the plan (repeatable): its roster entry and its history "
-        "go, and the levels are carried forward to `now` so the stocks its work drew "
-        "on stay right. A bound final output's spot is freed (you named it, so "
-        "leaving says you collected it); an unbound one's is kept, as an `occupied` "
-        "entry naming the spot. Give no workflow for it -- there is nothing left to "
-        "plan. Refused while the document says work is still to be done or running",
+        "go, and what it was holding is written down before they do -- everything "
+        "except the final outputs you bound, which leaving says you collected. Give "
+        "no workflow for it: there is nothing left to plan. Refused while the "
+        "document says work is still to be done or running, and refused if the job "
+        "drew on a stock since the moment `inventories` states its levels for "
+        "(pass --carry-levels-to-now as well, or its draws would be given back)",
+    )
+    s.add_argument(
+        "--carry-levels-to-now",
+        action="store_true",
+        help="restate `inventories` as of `now` instead of echoing the moment it was "
+        "given. The scheduler never moves that moment by itself: working out the "
+        "levels is the half it can do and you cannot, and deciding whether the "
+        "history before the moment may be let go of is the half only you can",
     )
     s.add_argument(
         "--ignore-resources",
@@ -452,6 +461,7 @@ def _cmd_schedule(args) -> int:
                 ignore_resources=args.ignore_resources,
                 max_transport_legs=args.max_transport_legs,
                 withdraw=args.withdraw,
+                carry_levels_to_now=args.carry_levels_to_now,
             )
     except yaml.YAMLError as exc:
         # Malformed workflow / environment / document YAML is an input error.

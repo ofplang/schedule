@@ -21,6 +21,8 @@ from pathlib import Path
 import yaml
 
 from ofplang.schedule import JobInput, schedule, schedule_jobs
+from ofplang.schedule.scheduler.api import _holds_of
+from tests.schedutil import with_spare_heater_stage
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
@@ -30,6 +32,43 @@ def _simple():
         yaml.safe_load((EXAMPLES / "simple.workflow.yaml").read_text(encoding="utf-8")),
         yaml.safe_load((EXAMPLES / "simple.env.yaml").read_text(encoding="utf-8")),
     )
+
+
+def _roomy():
+    """`simple`, but with a second spot on each station and a mode that uses it.
+
+    🔴 The isolation tests need somewhere else to work. A stopped job's material is
+    where it is, and a failed activity claims every spot it touched (nothing says which
+    of them the material is on) -- so in `simple.env.yaml`, where each station owns its
+    single `core`, one job failing really does leave the other with nowhere to go. That
+    is the truth, and it is pinned by its own test below; what these want to show is
+    that *the rest is replanned*, which needs a laboratory that has room for it. The
+    sibling runner's own failure-isolation tests use a two-tray oven for the same
+    reason.
+    """
+    workflow, env = _simple()
+    env = copy.deepcopy(env)
+    for device in env["devices"]:
+        device["spots"] = [*device["spots"], "spare"]
+    for name, station in (("source", "station_0"), ("target", "station_1")):
+        (mode,) = env["processes"][name]["modes"]
+        spare = copy.deepcopy(mode)
+        spare["id"] = "spare"
+        for key in ("input_spots", "output_spots"):
+            if key in spare:
+                spare[key] = dict.fromkeys(spare[key], f"{station}.spare")
+        env["processes"][name]["modes"] = [mode, spare]
+    env["transports"] = [
+        {
+            "transporter": "transport",
+            "from": f"station_0.{a}",
+            "to": f"station_1.{b}",
+            "duration": 1,
+        }
+        for a in ("core", "spare")
+        for b in ("core", "spare")
+    ]
+    return workflow, env
 
 
 def _jobs(workflow, n=2):
@@ -62,11 +101,11 @@ def _of(plan, job):
 
 def test_one_job_failing_does_not_stop_the_others():
     """The headline. `job1` fails; `job2` is untouched work and is replanned."""
-    workflow, env = _simple()
-    plan = schedule_jobs(_jobs(workflow), env).plan
+    workflow, env = _roomy()
+    plan = schedule_jobs(_jobs(workflow), env, random_seed=0).plan
     status = _stop(plan, "job1", failed_node=["SampleSource"], at=4)
 
-    report = schedule_jobs(_jobs(workflow), env, document_path=status)
+    report = schedule_jobs(_jobs(workflow), env, document_path=status, random_seed=0)
     assert report.ok, [d.code for d in report.diagnostics]
 
     # job1 keeps what happened and gains nothing new.
@@ -79,11 +118,12 @@ def test_one_job_failing_does_not_stop_the_others():
 def test_cancelled_work_takes_no_time_and_no_machine():
     """A stopped job's remaining work is pinned to a zero-length interval at `now`:
     it holds no spot and no device, so it cannot be why anything else waits."""
-    workflow, env = _simple()
-    plan = schedule_jobs(_jobs(workflow), env).plan
+    workflow, env = _roomy()
+    plan = schedule_jobs(_jobs(workflow), env, random_seed=0).plan
     status = _stop(plan, "job1", failed_node=["SampleSource"], at=4)
 
-    report = schedule_jobs(_jobs(workflow), env, document_path=status)
+    report = schedule_jobs(_jobs(workflow), env, document_path=status, random_seed=0)
+    assert report.ok, [d.code for d in report.diagnostics]
     cancelled = [a for a in _of(report.plan, "job1") if a.get("status") == "cancelled"]
     assert cancelled
     assert all(a["start"] == a["end"] == 4 for a in cancelled)
@@ -92,14 +132,45 @@ def test_cancelled_work_takes_no_time_and_no_machine():
 def test_a_stopped_job_is_not_held_to_its_promise():
     """A job that will never complete cannot be made to finish by the time it was
     promised; holding it there would make every plan past a failure infeasible."""
-    workflow, env = _simple()
-    plan = schedule_jobs(_jobs(workflow), env).plan
+    workflow, env = _roomy()
+    plan = schedule_jobs(_jobs(workflow), env, random_seed=0).plan
     promised = {e["id"]: e["bound"] for e in plan["jobs"]}["job1"]
     # It failed well past its own promise.
     status = _stop(plan, "job1", failed_node=["SampleSource"], at=promised + 20)
 
-    report = schedule_jobs(_jobs(workflow), env, document_path=status)
+    report = schedule_jobs(_jobs(workflow), env, document_path=status, random_seed=0)
     assert report.ok, [d.code for d in report.diagnostics]
+
+
+def test_isolation_needs_somewhere_else_to_work():
+    """🔴 The other half of the headline, and the reason the tests above need a roomier
+    laboratory: **a failure isolates only where there is room to carry on.**
+
+    `simple.env.yaml` gives each station one spot. A failed activity claims every spot
+    it touched -- it applied no material effect, so what it was carrying is at one of
+    them and nothing says which -- so `job1` failing on `station_0.core` leaves `job2`
+    nowhere to make its sample. That is not a modelling artefact: it is a plate on the
+    only bench, and a plan that sent `job2` there could not be run.
+
+    The scheduler used to produce that plan, because it was told nothing and a
+    completed activity's interval has ended. Now it derives what the stopped job is
+    holding from the history the document already carries, refuses, and **names the job
+    whose removal would let the rest be planned** -- which is a far better answer than
+    a schedule nobody can execute.
+    """
+    workflow, env = _simple()
+    plan = schedule_jobs(_jobs(workflow), env, random_seed=0).plan
+    status = _stop(plan, "job1", failed_node=["SampleSource"], at=4)
+
+    report = schedule_jobs(_jobs(workflow), env, document_path=status, random_seed=0)
+    assert not report.ok
+    codes = [d.code for d in report.diagnostics]
+    assert "infeasible" in codes and "jobs_not_plannable_together" in codes
+    culprits = [d.message for d in report.diagnostics if d.code == "jobs_not_plannable_together"]
+    assert any("'job1'" in message for message in culprits), culprits
+
+    # Nothing was declared: the document says only what happened, and the hold follows.
+    assert "occupied" not in status
 
 
 def test_every_job_stopping_is_still_the_end_of_the_run():
@@ -337,9 +408,20 @@ def test_one_workflow_is_never_diagnosed_this_way():
     assert [d.code for d in report.diagnostics] == ["infeasible"]
 
 
-def test_the_committed_example_shows_what_the_occupancy_costs():
-    """`stopped_job`: with the tray declared taken the two remaining jobs share the
-    other one; without it the plan is shorter and puts a plate where one already is."""
+def test_the_committed_example_costs_what_the_truth_costs():
+    """`stopped_job`: the two remaining jobs share the other tray, and **nobody had to
+    say so**.
+
+    🔴 This used to be the example of what an `occupied` entry buys: delete the section
+    and the plan came back at 38 instead of 57, because it baked on the tray the stopped
+    job's plate was sitting on. The nineteen seconds were what the truth cost, and the
+    document had to be told the truth.
+
+    The document already contained it. Which spots a stopped job is still holding
+    follows from its own history -- the bake that failed names the tray it failed on --
+    so the scheduler works it out and the section has nothing left to add. Saying it
+    anyway is the same claim twice (`occupied_already_derived`).
+    """
     workflow = yaml.safe_load(
         (EXAMPLES / "shared_refill.workflow.yaml").read_text(encoding="utf-8")
     )
@@ -347,24 +429,31 @@ def test_the_committed_example_shows_what_the_occupancy_costs():
     document = yaml.safe_load(
         (EXAMPLES / "stopped_job.document.yaml").read_text(encoding="utf-8")
     )
-    jobs = [JobInput(f"job{i + 1}", copy.deepcopy(workflow)) for i in range(3)]
+    def jobs():
+        return [JobInput(f"job{i + 1}", copy.deepcopy(workflow)) for i in range(3)]
 
-    honest = schedule_jobs(jobs, env, document_path=copy.deepcopy(document))
-    assert honest.ok, [d.code for d in honest.diagnostics]
-    assert honest.makespan == 57
+    assert "occupied" not in document, "the example states nothing it can derive"
 
-    blind = copy.deepcopy(document)
-    del blind["occupied"]
-    shorter = schedule_jobs(jobs, env, document_path=blind)
-    assert shorter.ok
-    assert shorter.makespan == 38
-    # And it is shorter because it bakes on the tray that is already holding a plate.
+    report = schedule_jobs(jobs(), env, document_path=copy.deepcopy(document))
+    assert report.ok, [d.code for d in report.diagnostics]
+    assert report.makespan == 57
+    # The remaining jobs take turns on the other tray; nobody is sent to `job2`'s.
     trays = {
         a["mode"]
-        for a in shorter.plan["activities"]
+        for a in report.plan["activities"]
         if a["kind"] == "processing" and a.get("node") == ["Assay"] and a["job"] != "job2"
     }
-    assert "tray_1" in trays
+    assert trays == {"tray_2"}, trays
+    # And the plan states no occupancy: there is nothing to state that the history
+    # does not already say.
+    assert "occupied" not in report.plan
+
+    # Saying it as well is refused -- one claim, one place.
+    stated = copy.deepcopy(document)
+    stated["occupied"] = [{"spot": "oven.tray_1", "since": 10}]
+    said_twice = schedule_jobs(jobs(), env, document_path=stated)
+    assert not said_twice.ok
+    assert [d.code for d in said_twice.diagnostics] == ["occupied_already_derived"]
 
 
 # ---------------------------------------------------------------------------
@@ -459,19 +548,31 @@ def test_cancelled_work_holds_no_spot():
     """🔴 It never ran, so it takes no spot and no machine -- and being zero-length is
     not enough to arrange that. A point strictly inside another interval is still a
     point inside it, and CP-SAT refuses the pair: a cancelled activity landing inside
-    a spot's `occupied` hold made the document infeasible."""
+    a spot's hold made the document infeasible.
+
+    The hold is the one the stopped job's own failed bake leaves on its tray, derived
+    from the history rather than declared -- and the job's abandoned work lands on that
+    same tray, which is exactly the case at issue. It used to be set up by writing the
+    tray into `occupied`; saying it as well as deriving it is now the same claim twice
+    (`occupied_already_derived`), and saying it is no longer necessary.
+    """
     workflow, env = _two_branch()
     plan = schedule_jobs(_jobs(workflow), env, random_seed=0).plan
-    # The tray the stopped job's own cancelled bake would have used: the one its
-    # abandoned work lands on, which is exactly the case at issue.
-    cancelled_tray = [
-        a["input_spots"]["plate"]
-        for a in _of(plan, "job1")
-        if a.get("process") == "assay"
+    status, _running = _stop_mid_flight(plan)
+    failed_tray = [
+        a["input_spots"]["plate"] for a in _of(status, "job1") if a.get("status") == "failed"
     ]
-    status, _running = _stop_mid_flight(plan, held_spot=cancelled_tray[0], held_since=0)
-    report = schedule_jobs(_jobs(workflow), env, document_path=status)
+    assert failed_tray, status
+    report = schedule_jobs(_jobs(workflow), env, document_path=status, random_seed=0)
     assert report.ok, [d.code for d in report.diagnostics]
+    # And the tray really is held: nobody else is sent to bake on it.
+    others = {
+        spot
+        for a in report.plan["activities"]
+        if a.get("job") != "job1" and a.get("process") == "assay"
+        for spot in (a.get("input_spots") or {}).values()
+    }
+    assert failed_tray[0] not in others, others
 
 
 def test_cancelled_work_draws_no_consumption():
@@ -517,19 +618,26 @@ def test_cancelled_work_draws_no_consumption():
 # ---------------------------------------------------------------------------
 
 
-def _bay():
+def _bay(spare_stage=False):
     """Two jobs of one workflow with real boundary material: one shared loading bay,
     a rack each. Every other stopped-job fixture here uses a workflow that creates its
-    material internally, so this is the only one with boundary nodes at all."""
-    return (
-        yaml.safe_load(
-            (EXAMPLES / "interface_load.workflow.yaml").read_text(encoding="utf-8")
-        ),
-        yaml.safe_load((EXAMPLES / "shared_bay.env.yaml").read_text(encoding="utf-8")),
-        yaml.safe_load(
-            (EXAMPLES / "shared_bay.document.yaml").read_text(encoding="utf-8")
-        ),
+    material internally, so this is the only one with boundary nodes at all.
+
+    `spare_stage` gives the heater a second stage. The example has one, so a job that
+    fails there leaves the other with nowhere to heat -- true, and pinned by
+    `test_isolation_needs_somewhere_else_to_work`, but not what the test that asks for
+    this is about.
+    """
+    workflow = yaml.safe_load(
+        (EXAMPLES / "interface_load.workflow.yaml").read_text(encoding="utf-8")
     )
+    env = yaml.safe_load((EXAMPLES / "shared_bay.env.yaml").read_text(encoding="utf-8"))
+    document = yaml.safe_load(
+        (EXAMPLES / "shared_bay.document.yaml").read_text(encoding="utf-8")
+    )
+    if spare_stage:
+        env = with_spare_heater_stage(env)
+    return workflow, env, document
 
 
 def test_a_stopped_job_keeps_the_history_of_its_boundary_move():
@@ -548,7 +656,7 @@ def test_a_stopped_job_keeps_the_history_of_its_boundary_move():
     A job that has *not* stopped never met this, because its boundary nodes carry no
     fixation to measure against.
     """
-    workflow, env, document = _bay()
+    workflow, env, document = _bay(spare_stage=True)
     plan = schedule_jobs(_jobs(workflow), env, document_path=document, random_seed=0).plan
 
     status = _stop(plan, "job1", failed_node=["Heat"], at=12)
@@ -582,3 +690,172 @@ def test_a_stopped_job_keeps_the_history_of_its_boundary_move():
     assert kept == [(0, 2)]
     # And job2 was planned regardless, which is the whole point.
     assert any(a.get("status") is None for a in _of(report.plan, "job2"))
+
+
+# ---------------------------------------------------------------------------
+# What a stopped job is holding, derived (§6.12).
+#
+# The rules are asked of `_holds_of` directly here: each one is a sentence, and a
+# whole document exercising all of them at once says which are wrong only by which
+# plan comes back. Every input is a document entry -- there is nothing else to supply.
+# ---------------------------------------------------------------------------
+
+
+def _processing(job, node, status, start, end, *, inputs=None, outputs=None):
+    entry = {"kind": "processing", "job": job, "node": [node], "status": status,
+             "start": start, "end": end}
+    if inputs:
+        entry["input_spots"] = inputs
+    if outputs:
+        entry["output_spots"] = outputs
+    return entry
+
+
+def _transport(job, status, start, end, source, destination):
+    return {"kind": "transport", "job": job, "status": status, "start": start, "end": end,
+            "from_spot": source, "to_spot": destination}
+
+
+def test_a_stopped_jobs_last_completed_output_is_held():
+    """The plainest case: it made something and stopped, so the something is there."""
+    activities = [
+        _processing("job1", "Make", "completed", 0, 2, outputs={"out": "bench.slot_a"}),
+        _processing("job1", "Assay", "failed", 2, 9, inputs={"plate": "bench.slot_a"}),
+    ]
+    assert _holds_of(activities, {}, ["job1"], 9) == {"bench.slot_a": 9}
+
+
+def test_a_spot_the_job_emptied_is_not_held():
+    """Ownership is not enough: a job can carry its own plate away. The trajectory is
+    what settles it, and a transport releases the spot it departed."""
+    activities = [
+        _processing("job1", "Make", "completed", 0, 2, outputs={"out": "bench.slot_a"}),
+        _transport("job1", "completed", 2, 3, "bench.slot_a", "oven.tray_1"),
+        _processing("job1", "Assay", "failed", 3, 9, inputs={"plate": "oven.tray_1"}),
+    ]
+    assert _holds_of(activities, {}, ["job1"], 9) == {"oven.tray_1": 9}
+
+
+def test_a_spot_another_job_has_since_used_is_not_claimed():
+    """🔴 Ownership, not acquaintance. Two jobs of one workflow use the same bench slot
+    one after the other, so "every spot this job ever touched" would claim the plate the
+    next job has just made -- and make that job unplannable."""
+    activities = [
+        _processing("job1", "Make", "completed", 0, 2, outputs={"out": "bench.slot_a"}),
+        _transport("job1", "completed", 2, 3, "bench.slot_a", "oven.tray_1"),
+        _processing("job1", "Assay", "failed", 3, 9, inputs={"plate": "oven.tray_1"}),
+        # job2 came along afterwards and made its own plate on the freed slot.
+        _processing("job2", "Make", "completed", 4, 6, outputs={"out": "bench.slot_a"}),
+    ]
+    assert _holds_of(activities, {}, ["job1"], 9) == {"oven.tray_1": 9}
+
+
+def test_a_spot_a_running_activity_holds_is_not_residue_yet():
+    """§6.12 is for what the plan does not otherwise account for, and a running activity
+    accounts for its spots perfectly well. It becomes residue the moment that operation
+    comes off -- which is why this is derived every solve rather than settled once."""
+    activities = [
+        _processing("job1", "AssayA", "failed", 0, 9, inputs={"plate": "oven.tray_1"}),
+        _processing("job1", "AssayB", "running", 2, 20, inputs={"plate": "oven.tray_2"}),
+    ]
+    assert _holds_of(activities, {}, ["job1"], 9) == {"oven.tray_1": 9}
+
+
+def test_a_failed_transport_claims_both_ends():
+    """It applied no material effect, so what it was carrying is at one of the spots it
+    touched and nothing says which. Over-claiming costs a slower plan; under-claiming
+    puts a plate where a plate already is."""
+    activities = [
+        _processing("job1", "Make", "completed", 0, 2, outputs={"out": "bench.slot_a"}),
+        _transport("job1", "failed", 2, 5, "bench.slot_a", "oven.tray_1"),
+    ]
+    assert _holds_of(activities, {}, ["job1"], 5) == {"bench.slot_a": 5, "oven.tray_1": 5}
+
+
+def test_entry_material_nobody_collected_is_held():
+    """It is *there*, given, from the job's release (§6.8) -- and until the move that
+    collects it, no activity has touched it. Only the roster says where it is."""
+    entries = {"job1": {"id": "job1", "release": 4,
+                        "interface": {"inputs": {"sample": "loader.stage"}}}}
+    activities = [_processing("job1", "Heat", "cancelled", 9, 9)]
+    assert _holds_of(activities, entries, ["job1"], 9) == {"loader.stage": 4}
+    # Not before its release: there is nothing on the bay yet.
+    assert _holds_of(activities, entries, ["job1"], 2) == {}
+
+
+def test_the_moment_is_when_it_was_left_there():
+    """Not when the claim is made. It changes no plan -- a hold runs from
+    `max(since, now)` either way -- but it is what a withdrawal writes down, and by then
+    the history that would have said so is gone."""
+    activities = [
+        _processing("job1", "Make", "completed", 0, 2, outputs={"out": "bench.slot_a"}),
+        _processing("job1", "Drop", "cancelled", 40, 40),
+    ]
+    assert _holds_of(activities, {}, ["job1"], 40) == {"bench.slot_a": 2}
+
+
+# ---------------------------------------------------------------------------
+# A document that disagrees with itself (§6.12, §6.11).
+#
+# Neither of these is about the schedule being hard: both are the document stating
+# something its own history denies. Left unchecked they come back as `infeasible`, and
+# the reader has nothing to go on.
+# ---------------------------------------------------------------------------
+
+
+def test_an_occupancy_on_a_spot_in_use_is_refused():
+    """§6.12 is for a hold the plan does **not otherwise account for**, and a running
+    activity accounts for its spots perfectly well: the two describe the one spot over
+    overlapping intervals, and nothing can satisfy both."""
+    workflow, env = _two_branch()
+    plan = schedule_jobs(_jobs(workflow), env, random_seed=0).plan
+    status, _running = _stop_mid_flight(plan)
+    in_use = [
+        spot
+        for a in _of(status, "job1")
+        if a.get("status") == "running"
+        for spot in (a.get("input_spots") or {}).values()
+    ]
+    assert in_use, status
+    status["occupied"] = [{"spot": in_use[0], "since": 0}]
+
+    report = schedule_jobs(_jobs(workflow), env, document_path=status, random_seed=0)
+    assert not report.ok
+    assert [d.code for d in report.diagnostics] == ["occupied_spot_in_use"]
+    assert in_use[0] in report.diagnostics[0].message
+
+
+def test_a_release_later_than_the_jobs_own_history_is_refused():
+    """A release holds back work that has **not run** (§J1): history is pinned by what
+    happened, and re-holding it would make the past infeasible rather than say anything
+    about the future. So a release after a started activity constrains nothing -- it is
+    a stated intention the document's own activities deny."""
+    workflow, env = _roomy()
+    plan = schedule_jobs(_jobs(workflow), env, random_seed=0).plan
+    status = _stop(plan, "job1", failed_node=["SampleSource"], at=4)
+    started = min(a["start"] for a in _of(status, "job1") if a.get("status") == "failed")
+    for entry in status["jobs"]:
+        if entry["id"] == "job1":
+            entry["release"] = started + 5
+
+    report = schedule_jobs(_jobs(workflow), env, document_path=status, random_seed=0)
+    assert not report.ok
+    assert [d.code for d in report.diagnostics] == ["release_after_history"]
+    assert "'job1'" in report.diagnostics[0].message
+
+
+def test_a_release_a_job_has_not_reached_is_ordinary():
+    """The check is about contradiction, not about releases. A job whose work has not
+    started is exactly what a release is for."""
+    workflow, env = _roomy()
+    plan = schedule_jobs(_jobs(workflow), env, random_seed=0).plan
+    status = copy.deepcopy(plan)
+    status["now"] = 0
+    status["activities"] = []
+    for entry in status["jobs"]:
+        if entry["id"] == "job2":
+            entry["release"] = 50
+
+    report = schedule_jobs(_jobs(workflow), env, document_path=status, random_seed=0)
+    assert report.ok, [d.code for d in report.diagnostics]
+    assert min(a["start"] for a in _of(report.plan, "job2")) >= 50

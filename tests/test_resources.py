@@ -537,9 +537,14 @@ def test_a_new_refill_does_not_reuse_an_id_the_history_holds():
     assert kept  # the history's own refill is still there, under its own id
 
 
-def test_a_pending_refill_in_the_status_is_refused():
-    # How many refills to run is re-decided every solve, so one in the input
-    # describes a decision that is not the caller's to make.
+def test_a_pending_refill_in_the_status_is_passed_over():
+    """Only a refill that has *started* is history; anything else is decided again.
+
+    🔴 This used to be refused. What that missed is where a pending refill comes from:
+    a plan is the next document (§6.1) and carries the refills it decided on, so
+    handing one back unexecuted is the scheduler's own answer coming home -- and
+    refusing it made such a plan unusable as the input it is defined to be.
+    """
     doc = _document({"reader": {"reagent": 0}})
     doc["activities"] = [
         {
@@ -554,8 +559,12 @@ def test_a_pending_refill_in_the_status_is_refused():
     ]
     doc["now"] = 10
     report = _plan(document=doc)
-    assert report.plan is None
-    assert "pending_replenishment_in_status" in [d.code for d in report.diagnostics]
+    assert report.ok, [d.code for d in report.diagnostics]
+    # It was not read as history: nothing in the plan claims that refill ran.
+    started = [r for r in _refills(report.plan) if r.get("status") in ("completed", "running")]
+    assert not started, started
+    # And the stock still has to be filled, so this solve decides a refill of its own.
+    assert _refills(report.plan)
 
 
 # -- the plan must be executable, not merely optimal -------------------------

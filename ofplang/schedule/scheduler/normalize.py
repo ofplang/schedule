@@ -110,6 +110,8 @@ def normalize(
     max_transport_legs: int = 1,
     withdrawn: frozenset[str] = frozenset(),
     frozen: tuple[dict, ...] = (),
+    derived: tuple[dict, ...] = (),
+    state_levels_at: int | None = None,
 ) -> tuple[Instance | None, Fixation | None, Diagnostics]:
     """Build the augmented instance and fixation from `base` (the workflow
     instance, built with `check_reachability=False`) and the status `root`.
@@ -233,7 +235,13 @@ def normalize(
     # nodes: no work, no arcs, just something sitting there from a stated moment until
     # the run is over. They are appended after the workflow activities, so no index
     # already in `act_fix` / `arc_fix` / `precedence` moves.
+    #
+    # `derived` are the ones nobody stated because nobody had to: what a stopped job is
+    # still holding follows from its own history (`api._holds_of`), and a claim that
+    # can be derived is not written down (§6.12). They become the same kind of node --
+    # where the claim came from changes nothing about what it says.
     activities.extend(_held_nodes(root, frozen))
+    activities.extend(_held_nodes(None, derived))
 
     # A move that would carry cancelled work, or carry it away, never happens either.
     for r, arc_inst in enumerate(arcs):
@@ -253,7 +261,8 @@ def normalize(
         return None, None, diags
 
     levels, stated_levels = _derive_levels(
-        instance, act_fix, refills, root, env, diags, ignore_resources, now, withdrawn
+        instance, act_fix, refills, root, env, diags, ignore_resources, now, withdrawn,
+        state_levels_at,
     )
     if _has_error(diags):
         return None, None, diags
@@ -277,10 +286,24 @@ def _read_refills(
     to carry them back out (§4.7.3), which it cannot do if they were never read.
     Nothing is computed from them there.
 
-    A `pending` refill is refused rather than ignored. Every other kind of pending
-    entry is re-derived from the workflow, so ignoring it loses nothing; a refill has
-    no workflow to be re-derived from, and how many to run is the scheduler's
-    decision, not the caller's.
+    **Only a refill that has started is history.** Anything else — `pending`,
+    `cancelled`, a status-less entry — is passed over, and how many refills to run is
+    decided again by this solve.
+
+    🔴 A `pending` one used to be *refused*, on the reasoning that every other kind of
+    pending entry can be re-derived from the workflow while a refill cannot, so
+    ignoring it would lose a decision the caller had stated. What that missed is where
+    a pending refill actually comes from: **a plan is the next document (§6.1), and a
+    plan carries the refills it decided on.** Handing one back unexecuted is not a
+    caller stating a decision, it is the scheduler's own answer coming home — and
+    refusing it made a plan with an unfinished refill unusable as the input it is
+    defined to be. The repository's own round-trip test had to avoid the shared-refill
+    example for exactly this reason.
+
+    A caller who wants a refill *respected* rather than re-decided is asking for
+    something this status cannot say, and a `pending` entry was never the way to say
+    it: it would be re-decided on the next replan even if this one honoured it. That
+    needs a state of its own (a reservation), which is a separate piece of work.
     """
     refills: dict[str, RefillFixation] = {}
     if not isinstance(root, YMap):
@@ -295,17 +318,8 @@ def _read_refills(
         path = f"activities[{index}]"
         status = status_of(item)
         identifier = text(item.get("id"))
-        if status == "pending":
-            diags.error(
-                errors.PENDING_REPLENISHMENT_IN_STATUS,
-                "a pending replenishment is not carried over: how many to run is "
-                "re-decided every solve",
-                path,
-                at=item,
-            )
-            continue
         if status not in ("completed", "running"):
-            continue  # terminal statuses are refused elsewhere
+            continue  # pending / cancelled / status-less: this solve decides again
 
         start, end = times(item)
         if status == "completed" and end > now:
@@ -406,6 +420,7 @@ def _derive_levels(
     ignore_resources: bool = False,
     now: int = 0,
     withdrawn: frozenset[str] = frozenset(),
+    state_at: int | None = None,
 ) -> tuple[dict[tuple[str, str], int], dict[tuple[str, str], int]]:
     """The level of each `(device, resource)` at `now`, twice over: as the solver
     needs it, and as `inventories.at = now` would state it.
@@ -518,12 +533,16 @@ def _derive_levels(
     # The cut is a point *inside* an instant -- after its refills, before its draws --
     # so the ordering is over (time, phase) and not over time alone.
     cut = (since, START)
+    # Where the second level is snapshotted. `now` is the moment a plan states its
+    # levels for unless the caller asked for another (`carry_levels_to`), and both are
+    # the same point of their instant: after its refills, before its draws.
+    snapshot = (now if state_at is None else state_at, START)
     stated: dict[tuple[str, str], int] | None = None
     reported: set[tuple[str, str]] = set()
     for at_event in sorted(events):
         if at_event < cut:
             continue  # already in the stated levels
-        if stated is None and at_event >= (now, START):
+        if stated is None and at_event >= snapshot:
             stated = dict(levels)
         for key, delta in events[at_event].items():
             levels[key] = levels.get(key, 0) + delta
@@ -683,7 +702,7 @@ def _held_nodes(root: YNode | None, frozen: tuple[dict, ...] = ()) -> list[Activ
     The document has been shape-validated, so `spot` is a well-formed qualified spot
     and `since` a non-negative integer; anything else is skipped rather than raising.
     """
-    stated: list[tuple[str, int]] = []
+    stated: list[tuple[str, int, str | None]] = []
     if isinstance(root, YMap):
         seq = root.get("occupied")
         if isinstance(seq, YSeq):
@@ -693,14 +712,15 @@ def _held_nodes(root: YNode | None, frozen: tuple[dict, ...] = ()) -> list[Activ
                 spot, since = text(item.get("spot")), item.get("since")
                 if not spot or not (isinstance(since, YScalar) and since.is_int):
                     continue
-                stated.append((spot, since.value))
+                stated.append((spot, since.value, None))
     for entry in frozen:
         derived_spot, derived_since = entry.get("spot"), entry.get("since")
         if isinstance(derived_spot, str) and isinstance(derived_since, int):
-            stated.append((derived_spot, derived_since))
+            owner = entry.get("job")
+            stated.append((derived_spot, derived_since, owner if isinstance(owner, str) else None))
 
     out = []
-    for spot, since_value in stated:
+    for spot, since_value, owner in stated:
         mode = Mode(
             id="occupied",
             devices=(),
@@ -713,11 +733,18 @@ def _held_nodes(root: YNode | None, frozen: tuple[dict, ...] = ()) -> list[Activ
                 (),
                 "",
                 (mode,),
-                # No owner: an occupancy says a spot is held, not whose the material
-                # is (§6.12). `job=None` is also what the model wants of it -- a held
-                # node belongs to no job, so nothing holds it to a promise or sweeps
-                # it up when some job stops.
-                boundary=BoundaryInfo("held", since=since_value),
+                # An occupancy carries no owner: it says a spot is held, not whose the
+                # material is (§6.12), and a held node belongs to no job, so nothing
+                # holds it to a promise or sweeps it up when some job stops.
+                #
+                # 🔴 A **derived** hold does carry one, and is the exception that
+                # proves the rule: it is not an occupancy at all but this scheduler's
+                # own reading of a stopped job's history, kept out of the document for
+                # exactly that reason. The owner is what lets the culprit search take
+                # the hold out along with the job it belongs to (`api._without`) --
+                # without it, taking a job out of the plan leaves its plate behind and
+                # the search finds nobody to blame.
+                boundary=BoundaryInfo("held", job=owner, since=since_value),
             )
         )
     return out

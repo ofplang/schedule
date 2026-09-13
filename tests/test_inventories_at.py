@@ -29,6 +29,7 @@ import yaml
 from ofplang.schedule import JobInput, schedule, schedule_jobs
 from ofplang.schedule.core import yamlnode
 from ofplang.schedule.scheduler import normalize as normalizer
+from ofplang.schedule.scheduler.api import _carry_levels_to
 from ofplang.schedule.scheduler.envload import load_environment
 from ofplang.schedule.scheduler.instance import (
     build_instance,
@@ -310,7 +311,8 @@ def test_a_withdrawal_round_trips_across_an_event_at_now():
     status = _history(first.plan, 20, at=None)
     out = schedule_jobs(
         [JobInput("job2", copy.deepcopy(shared))], env,
-        document_path=copy.deepcopy(status), withdraw=["job1"], random_seed=0,
+        document_path=copy.deepcopy(status),
+        withdraw=["job1"], carry_levels_to_now=True, random_seed=0,
     )
     assert out.ok, [d.code for d in out.diagnostics]
     stated = out.plan["inventories"]
@@ -372,3 +374,82 @@ def test_a_refill_landing_when_the_work_begins_feeds_it():
     levels, codes = _levels(workflow, env, status)
     assert codes == []
     assert levels == {STOCK: 2}
+
+
+# ---------------------------------------------------------------------------
+# Moving the moment: `carry_levels_to_now` (§6.10).
+#
+# 🔴 The scheduler never moves `at` of its own accord. Working out the levels is the
+# half it can do and the caller cannot (§4.7.2); deciding whether the history before a
+# moment may be let go of is the half only they can.
+# ---------------------------------------------------------------------------
+
+
+def test_the_moment_moves_only_when_the_caller_asks():
+    """Two replans of one document, differing in nothing but the request."""
+    workflow, env, document = _consumable()
+    jobs = [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))]
+    plan = schedule_jobs(jobs, env, document_path=document, random_seed=0).plan
+    status = _history(plan, now=19, at=None)
+
+    echoed = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env, document_path=copy.deepcopy(status), random_seed=0,
+    )
+    assert echoed.ok, [d.code for d in echoed.diagnostics]
+    # Unchanged, `at` and all: the section is stable across replans unless asked.
+    assert echoed.plan["inventories"] == document["inventories"]
+    assert "at" not in echoed.plan["inventories"]
+
+    moved = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env, document_path=copy.deepcopy(status), carry_levels_to_now=True, random_seed=0,
+    )
+    assert moved.ok, [d.code for d in moved.diagnostics]
+    assert moved.plan["inventories"]["at"] == 19
+    # Same laboratory, same history: only where the reading starts has changed.
+    assert moved.makespan == echoed.makespan
+
+
+def test_moving_the_moment_needs_no_withdrawal():
+    """🔴 The two are independent. A withdrawal is a reason to move the moment -- the
+    departing history is what the levels were made of -- but it is not the only one,
+    and the scheduler is not the one who weighs them."""
+    workflow, env, document = _consumable()
+    jobs = [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))]
+    plan = schedule_jobs(jobs, env, document_path=document, random_seed=0).plan
+    status = _history(plan, now=19, at=None)
+
+    report = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env, document_path=status, carry_levels_to_now=True, random_seed=0,
+    )
+    assert report.ok, [d.code for d in report.diagnostics]
+    assert report.plan["inventories"]["at"] == 19
+    assert "job_withdrawn" not in {d.code for d in report.diagnostics}
+
+
+def test_a_moment_later_than_now_is_refused_not_clamped():
+    """The same mistake a document makes when it states a moment in the future, so the
+    same code. **Refused rather than adjusted**: `carry_levels_to_now` can only ask for
+    `now`, so this is unreachable through it -- and a quietly adjusted target is a
+    mistake that keeps working until the day somebody may name the moment."""
+    diags = []
+    assert _carry_levels_to(41, now=40, current_at=0, diags=diags) is None
+    assert [d.code for d in diags] == ["inventory_moment_in_future"]
+
+
+def test_a_moment_earlier_than_the_one_stated_is_refused():
+    """The history before `at` is exactly what a document is entitled to have let go of
+    (§4.7.2 requires it complete only *since* that moment), so there may be nothing left
+    to replay back to."""
+    diags = []
+    assert _carry_levels_to(10, now=40, current_at=20, diags=diags) is None
+    assert [d.code for d in diags] == ["inventory_moment_retreats"]
+
+
+def test_a_moment_between_the_two_is_the_moment_asked_for():
+    diags = []
+    assert _carry_levels_to(30, now=40, current_at=20, diags=diags) == 30
+    assert _carry_levels_to(40, now=40, current_at=40, diags=diags) == 40
+    assert diags == []

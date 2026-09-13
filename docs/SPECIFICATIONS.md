@@ -1237,16 +1237,36 @@ means every stock is empty at `at`, and is how a run that begins with nothing on
 is written. No level may exceed its resource's `capacity`.
 
 **When the moment moves.** Ordinarily it does not: a replan echoes `inventories`
-unchanged, which is what keeps the section stable and the arithmetic reproducible. It
-moves when a **job leaves the plan** (§6.11). A job takes its history with it, and
-that history is part of what the current levels are made of — so the plan states the
-levels as of `now` instead of echoing the ones it was given, whose moment no longer
-has all of its history present. What it states is the level at `now` read between
-that instant's phases, as `at` means it, and it names **every** stock the environment
+unchanged, which is what keeps the section stable and the arithmetic reproducible.
+
+🔴 **It moves when the caller asks, and never on the scheduler's own judgement.** The
+two halves of moving it fall on different sides. Working out the levels at a moment is
+the scheduler's: they are replayed, never reported (§4.7.2), and the caller has no way
+to arrive at them. Deciding *whether* to move it is the caller's: `at` is what lets a
+document forget — the history before it is no longer required to be present (§4.7.2) —
+and only the caller knows whether they are ready to let go of it. So the request is
+made alongside the document, like withdrawal and like switching the resource model off,
+and the scheduler does the arithmetic it is asked for.
+
+A **job leaving the plan** (§6.11) is the reason that comes up most: the job takes its
+history with it, and that history is part of what the current levels are made of. It is
+a reason for the caller to ask, not a licence for the scheduler to decide — so a
+withdrawal that would undo draws is refused unless the request comes with it
+(`withdrawal_undoes_draws`).
+
+What the plan then states is the level at the moment asked for, read between that
+instant's phases as `at` means it, and it names **every** stock the environment
 declares rather than only those the input named: the numbers are now derived rather
 than quoted, and a stock left implicit would be read as `0`. With the resource model
 switched off (§4.7.3) nothing is derived and the section is echoed unchanged like any
 other input.
+
+The moment may not move **backwards**, and may not move past `now`. Backwards there is
+nothing to replay back to — the history before the current moment is exactly what the
+document was entitled to drop — and past `now` is the same impossibility the field
+itself is refused for. Both are refusals rather than adjustments
+(`inventory_moment_retreats`, `inventory_moment_in_future`): a request quietly adjusted
+is a mistake that keeps working until the day it matters.
 
 ### 6.11 Jobs (several workflows planned together)
 
@@ -1266,7 +1286,10 @@ Each entry carries:
 
 - `id` (required) — an identifier (§8.1), unique within the roster.
 - `release` (optional, default 0) — the earliest time any of the job's activities may
-  start. It is **not** the priority (below): a job submitted today and released
+  start. It holds back work that has **not run**: history is pinned by what happened,
+  and re-holding it would make the past infeasible rather than say anything about the
+  future — so a release later than the job's own history begins contradicts the
+  document that carries it (`release_after_history`, §10.4). It is **not** the priority (below): a job submitted today and released
   tomorrow still outranks one submitted tomorrow. A job that joins an existing roster
   is released at `now` unless it says otherwise — it did not exist earlier, and a
   schedule that started it in the past would describe work nobody could have done.
@@ -1438,8 +1461,8 @@ rather than a conclusion the scheduler draws from a job going quiet. Like switch
 the resource model off (§4.7.3), it is something the caller passes alongside the
 document and **not a section in it**. That is deliberate: a plan echoes its planning
 inputs (§6.1), so an instruction written in the document would come back in the plan
-and be carried out again by the next replan that was handed it — the same objection
-that refuses a `pending` replenishment in a status (§6.9).
+and be carried out again by the next replan that was handed it — a job would leave,
+and leave again, and the caller would have asked once.
 
 **What it is refused for** is the document contradicting the request:
 
@@ -1452,26 +1475,35 @@ that refuses a `pending` replenishment in a status (§6.9).
   activity is neither: its interval has ended, and its status will not change again,
   so a job that died may leave. So may one that never started;
 - every job in the roster is leaving (`withdrawal_empties_roster`). A plan of no jobs
-  is not a plan.
+  is not a plan;
+- the job drew on a stock after the moment `inventories` states its levels for, and
+  the caller has not asked for that moment to be carried forward
+  (`withdrawal_undoes_draws`, §6.10). Its draws would be given back — see below.
 
 None of these check the thing that matters — whether the material was really
 collected — which is exactly why the instruction is explicit.
 
-**The levels move.** A job's history is part of what the current levels are made of
-(§4.7.2), so removing it would give the stock back everything that job drew. Instead
-the levels are restated as of `now` and say so (`inventories.at`, §6.10): the job's
-draws are spent *before* the moment rather than replayed after it, and the number the
-next replan starts from is the number this one finished with.
+**The levels do not move by themselves.** A job's history is part of what the current
+levels are made of (§4.7.2), so removing it would give the stock back everything that
+job drew. Carrying the moment forward is what prevents that — but **which moment a
+document's levels are stated for is the caller's to decide** (§6.10), not something a
+withdrawal decides for them: the history before that moment is what they are entitled
+to let go of. So a withdrawal that would undo draws is refused rather than quietly
+re-baselined, and a caller who means it asks for both at once.
 
-**Its holds go, with one exception.** A final output holds its spot to the end of the
-plan (§6.8), and a job leaving takes its activities and those holds with them. For a
-**bound** output that is the right reading: the caller named the spot, so leaving is a
-statement about a place they chose and know. For an **unbound** one it cannot be — the
-schedule chose where that material came to rest, and the caller was never told — so
-the hold becomes an `occupied` entry instead of vanishing (§6.12), dated `now`. Entry
-material and an occupancy the document already carried are unaffected: the first was
-bound by the caller, and the second says a spot is held and outlasts whatever put the
-material there.
+A job whose draws the stated moment has already absorbed — or which drew nothing at
+all — takes nothing with it, and leaves with no such request.
+
+**Its holds are written down before it goes.** Everything a job is holding follows
+from its own history (§6.12) — and stops following from anything the instant that
+history leaves with it. So what it holds is derived while it is still here and written
+into the plan's `occupied`, dated when the material actually got there. What the
+caller **bound** is left out: they named the spot, so leaving is a statement about a
+place they chose and know. Everything else they may not have — the schedule chose
+where an unbound output came to rest, and a plate a failure left mid-workflow was
+nobody's choice. Entry material and an occupancy the document already carried are
+unaffected: the first was bound by the caller, and the second says a spot is held and
+outlasts whatever put the material there.
 
 **And it is reported** (`job_withdrawn`, §10.4, a warning — a plan is still
 produced). A withdrawal moves the baseline the stocks are counted from and may leave
@@ -1493,12 +1525,27 @@ free as far as the model can tell — and the plan will send other work to a pla
 is physically full. This section is how a document says otherwise.
 
 An entry says **that** a spot is held, and nothing else: not what is on it, and not
-whose it is. That is deliberately less than a document usually says. The occupancies
-worth declaring are the ones the plan cannot account for by itself, and those have no
-one form — a job stopped and its material stayed where it was; a final output was
-delivered and nobody has collected it; a plate was left on a bench for reasons no
-document records. A section that described any one of them would not describe the
-others, and the plan needs the same thing from all three.
+whose it is. That is deliberately less than a document usually says. It is also less
+than "there is something there": a failed operation applied no material effect, so what
+it was carrying is at one of the spots it touched and **nothing says which** — a failed
+transport therefore holds *both* its ends, at most one of which has anything on it.
+What an entry claims is that the plan may not use the spot.
+
+🔴 **An entry may be written only for a hold that cannot be derived.** What a stopped
+job is still holding follows from its own history — the activity that put the material
+there, the failure that says where it may be, which job touched the spot last — and the
+scheduler works that out for itself (§9.3). Stating it as well would be the same claim
+twice: the two hold the one spot over overlapping intervals, the document comes back
+`infeasible`, and the half that was derived never appears on the page for the reader to
+find. So it is refused (`occupied_already_derived`), as is an entry naming a spot an
+activity that is **running** is using (`occupied_spot_in_use`), which the plan accounts
+for perfectly well.
+
+What is left for this section is what no history can yield: a plate somebody left on a
+bench for reasons no document records; the leavings of an earlier run; and — the case
+the scheduler itself writes — what a job was holding when it **left the plan** (§6.11),
+whose history went with it. Those have no one form, which is why an entry says so
+little: a section that described any one of them would not describe the others.
 
 Each entry holds its spot from `since` **until further notice**: for the rest of the
 plan, like a delivered Object (§6.8), and unlike one it takes no part in the makespan.
@@ -1517,23 +1564,20 @@ with nothing to say why. The refusal is what turns that into an explanation.
 A `since` earlier than `now` holds the spot **from `now`**. Nothing can be scheduled
 into the past — pending work starts at or after `now`, and reported work is pinned by
 its history — so an earlier `since` cannot constrain a plan; all it could do is
-contradict the history and make the document unschedulable. And the contradiction is
-usually apparent rather than real: material a stopped job left behind is described
-twice, once by the activity that put it there and once by this section, and nothing in
-the model can tell that from a genuine conflict. The two are composed instead: the
-history accounts for the spot up to `now`, this section accounts for it from `now` on.
-The stated `since` is echoed unchanged in the plan (§6.1), so what it records is
-not lost.
+contradict the history and make the document unschedulable. The history accounts for
+the spot up to `now` and this section accounts for it from `now` on, so the two compose
+rather than contend. The stated `since` is echoed unchanged in the plan (§6.1), which
+is why it is worth stating truthfully: when a withdrawal writes an entry, **the date is
+the only record of when the material actually got there** — the history that would have
+said so is leaving.
 
-In particular an entry names no job, and an occupancy is not answerable to one. A
-job's residue is declared while the job is running *because* the job is there, by its
-own history; it becomes an occupancy when the job **leaves** (§6.11) and its history
-goes with it. A final output with no `interface` binding is the clearest case: it
-holds its spot to the end of the plan (§6.8), but *which* spot was the schedule's
-choice rather than the caller's, so a job leaving cannot mean that material was
-collected — and the hold becomes an entry here instead of vanishing with the job. So an occupancy outlives whatever produced it, and a job withdrawing
-neither requires an entry to be dropped nor drops one itself. Clearing the spot is a
-separate act, by whoever collects the material: they delete the entry.
+In particular an entry names no job, and an occupancy is not answerable to one. That is
+the difference between a hold and an entry. A job's residue is held *because the job is
+there*, by its own history, and needs no entry; it **becomes** an occupancy when the job
+leaves (§6.11) and its history goes with it. So an occupancy outlives whatever produced
+it, and a job withdrawing neither requires an entry to be dropped nor drops one itself.
+Clearing the spot is a separate act, by whoever collects the material: they delete the
+entry.
 
 The usual writer is whatever reports a failure: a job stops (§6.2), and what it was
 holding stays where it is until somebody clears it. How a writer works out which spots
@@ -2016,6 +2060,8 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `empty_amounts` | a `replenishment` activity's `amounts` is empty — a refill that adds nothing (§6.9) |
 | `duplicate_activity_id` | two activities in one document share an `id` |
 | `occupied_duplicate_spot` | two entries of `occupied` name the same spot (§6.12) |
+| `occupied_already_derived` | an `occupied` entry names a spot a stopped job's own history already holds (§6.12): the claim is made twice, and the half that is derived does not appear in the document |
+| `occupied_spot_in_use` | an `occupied` entry names a spot a `running` activity is using (§6.12); the section is for a hold the plan does not otherwise account for |
 | `duplicate_job_id` | two entries of the `jobs` roster share an `id` (§6.11) |
 | `unknown_job` | an activity's `job` names no roster entry, or the document has no roster (§6.11) |
 
@@ -2053,9 +2099,11 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `job_workflow_mismatch` | a job's workflow is not the one its roster entry's `fingerprint` records (§6.11) |
 | `job_bound_relaxed` | **warning**: a job could no longer finish by the completion it was promised, so the promise was re-derived (§6.11) |
 | `job_roster_mismatch` | the workflows given to the scheduler are not the ones the document's `jobs` roster names (§6.11) |
+| `release_after_history` | a job's roster entry states a `release` later than its own history begins (§6.11): a release holds back work that has not run, so this one constrains nothing and the document contradicts itself |
 | `multi_job_interface` | a document carrying a top-level `interface` was given to a plan that names jobs: it binds one workflow's ports, so a joint plan carries it per job (§6.11) |
 | `unknown_withdrawal` | a job said to be leaving the plan (§6.11) is not in the document's roster, or was handed over as a workflow as well — it cannot both leave and be planned |
 | `withdrawal_not_finished` | a job said to be leaving still has `pending` or `running` work (§6.11). A `failed` activity does not count: its interval has ended and its status will not change again |
+| `withdrawal_undoes_draws` | a job said to be leaving drew on a stock after the moment `inventories` states its levels for (§6.10), and the levels were not asked to be carried forward: leaving would give the stock back what it took |
 | `withdrawal_empties_roster` | every job in the roster is leaving (§6.11), which would leave nothing to plan |
 | `job_withdrawn` | **warning**: a job left the plan (§6.11). Names the jobs, says whether the levels were restated as of `now` (§6.10), and names any spot kept occupied because an unbound final output came to rest there (§6.12) |
 | `jobs_not_plannable_together` | no schedule exists even with every promise lifted; names the job whose removal would let the rest be planned, or says none does (§6.11) |
@@ -2064,8 +2112,8 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `missing_inventories` | the resource model is in effect but the document has no `inventories` (§6.10). An empty `levels` is the way to say every stock is empty at that moment |
 | `inventory_exceeds_capacity` | an `inventories.levels` level is above its resource's `capacity` |
 | `inventory_moment_in_future` | `inventories.at` is later than `now` (§6.10): the history can only have happened before the present |
+| `inventory_moment_retreats` | the levels were asked to be restated as of a moment earlier than the one they already state (§6.10): the history before it is what the document was entitled to drop |
 | `resources_ignored` | the resource model was disabled (§4.7.3) where it would otherwise have been in effect, so nothing was applied. Not raised for an environment that merely declares a stock nothing draws on — switching that off changes nothing (*warning*) |
-| `pending_replenishment_in_status` | a replanning input carries a `pending` replenishment; how many refills to run is re-decided every solve, so one in the input states a decision that is not the caller's to make (§6.9) |
 | `infeasible` | the solver proved the instance has no feasible schedule |
 
 `unknown_device` and `unknown_resource` (§10.2) are reused here for an

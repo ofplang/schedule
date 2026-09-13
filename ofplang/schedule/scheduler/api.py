@@ -128,6 +128,192 @@ def _document_activities(doc_path, root) -> list[dict]:
     return [a for a in listed if isinstance(a, dict)] if isinstance(listed, list) else []
 
 
+def _activity_spots(activity: dict) -> set[str]:
+    """Every spot an activity touches: a processing's input and output spots, a
+    transport's two ends. What it could be holding, in other words. A replenishment
+    touches none — a stock is not material (§4.7)."""
+    if activity.get("kind") == "replenishment":
+        return set()
+    spots = {s for s in (activity.get("input_spots") or {}).values() if isinstance(s, str)}
+    spots |= {s for s in (activity.get("output_spots") or {}).values() if isinstance(s, str)}
+    spots |= {activity[k] for k in ("from_spot", "to_spot") if isinstance(activity.get(k), str)}
+    return spots
+
+
+def _job_of_activity(activity: dict) -> str | None:
+    """Which job an activity belongs to, or None for one that belongs to none — a
+    replenishment, which this scheduler decided to run and which commonly serves
+    several (§6.9)."""
+    if activity.get("kind") == "replenishment":
+        return None
+    job = activity.get("job")
+    return job if isinstance(job, str) else ""
+
+
+def _trajectory(activities: list[dict], entry_spots: set[str]) -> tuple[set[str], set[str]]:
+    """Which spots one job's own history has left holding something, and which spots it
+    touched at all — replayed from what its **completed** activities did.
+
+    The effects are the ones the specification gives, applied only by an activity that
+    completed:
+
+    - a processing holds its output spots and releases an input spot that is not also
+      an output — an in-place port keeps its spot occupied across the operation (§5.5);
+    - a transport releases its source and holds its destination, unless the two are the
+      same spot, which is a no-op the material sits through (§5.4);
+    - a replenishment touches no spot (§4.7).
+
+    **`failed` and `cancelled` need no case here**, which is much of the reason to write
+    it this way. A failed activity applied nothing, so the spot keeps whatever the last
+    completed one left — and the failure's own spots are claimed separately and
+    unconditionally by the caller. Cancelled work never ran, so its material is wherever
+    the last completed activity put it, which is what this replay says: the rule that a
+    cancelled hand-off leaves the material upstream falls out rather than being written
+    down a second time.
+    """
+    held = set(entry_spots)
+    seen = set(held)
+    ordered = sorted(
+        (a for a in activities if a.get("status") == "completed"),
+        key=lambda a: (a.get("end", 0), a.get("start", 0)),
+    )
+    for activity in ordered:
+        seen |= _activity_spots(activity)
+        if activity.get("kind") == "transport":
+            source, destination = activity.get("from_spot"), activity.get("to_spot")
+            if isinstance(source, str) and isinstance(destination, str) and source != destination:
+                held.discard(source)
+            if isinstance(destination, str):
+                held.add(destination)
+            continue
+        outputs = {s for s in (activity.get("output_spots") or {}).values() if isinstance(s, str)}
+        inputs = {s for s in (activity.get("input_spots") or {}).values() if isinstance(s, str)}
+        held -= inputs - outputs
+        held |= outputs
+    return held, seen
+
+
+def _stopped_jobs(activities: list[dict]) -> set[str]:
+    """The jobs a terminal status has stopped (§6.2, §6.11): a `failed` or `cancelled`
+    activity stops the job it belongs to, and only that job."""
+    return {
+        job
+        for a in activities
+        if a.get("status") in ("failed", "cancelled")
+        and (job := _job_of_activity(a)) is not None
+    }
+
+
+def _holds_of(activities: list[dict], entries: dict | None, job_ids, now: int) -> dict[str, int]:
+    """What each of `job_ids` is still holding, and since when (§6.12).
+
+    🔴 **Derived here rather than declared.** A stopped job's material is invisible to
+    the model — the activity that put it somewhere has ended, so its interval no longer
+    covers the spot — and the plan will send other work onto it. The caller used to be
+    the one to work this out and say so in `occupied`; but every input to the working
+    out is in this document (the job's completed activities and their spots, the spots
+    its failed activity touched, which jobs a terminal status stopped, what is running,
+    and the roster's `interface` and `release`), so **the document answers the question
+    it poses**, and a caller cannot get it wrong by getting it different.
+
+    Three rules decide what a job is holding, and all three are needed:
+
+    1. **Ownership.** A spot is this job's only if this job touched it *last*. Two jobs
+       of one workflow use the same bench slot one after the other, so "every spot this
+       job ever touched" would claim the plate the next job has just made.
+    2. **Trajectory.** A job can empty a spot it owns — it collects its own entry
+       material, or carries a plate away. So ownership is settled by what this job's own
+       history did to that spot (`_trajectory`).
+    3. **The failure's claim**, unconditionally. A failed activity applies no material
+       effect, so what it was carrying is at one of the spots it touched and nothing
+       says which; a failed transport therefore claims **both** ends. Over-claiming
+       costs a slower plan; under-claiming puts a plate where a plate already is.
+
+    A spot a **running** activity is holding is not residue: §6.12 is for what the plan
+    does not otherwise account for, and a running activity accounts for its spots
+    perfectly well. It becomes residue the moment that activity comes off, which is why
+    this is recomputed every solve rather than settled once.
+
+    `since` is the truthful moment — the end of the last of the job's finished
+    activities to touch the spot, or the release at which unmoved entry material
+    appeared — capped at `now`. It changes no plan (a held node holds from
+    `max(since, now)` either way, §6.12); it is what the record says when a withdrawal
+    writes one of these out.
+
+    Asked of the jobs a terminal status has **stopped**, to keep the plan off what they
+    left behind, and of a job that is **leaving** the plan, to decide what has to be
+    written down before its history goes with it. The question is the same either way,
+    so the answer is computed once here and read for both.
+    """
+    job_ids = sorted(set(job_ids))
+    if not job_ids:
+        return {}
+
+    # The last activity to **run** decided what is on each spot now. Cancelled work is
+    # not among them: it never ran, so it touched nothing -- and it is pinned to a
+    # zero-length interval at `now`, which would otherwise make it the last toucher of
+    # every spot its mode names and hand it ownership of material it never saw.
+    owners: dict[str, tuple[int, str | None]] = {}
+    running: set[str] = set()
+    for activity in activities:
+        if activity.get("status") not in ("completed", "running", "failed"):
+            continue
+        owner = _job_of_activity(activity)
+        end = activity.get("end", 0)
+        if activity.get("status") == "running":
+            running |= _activity_spots(activity)
+        for spot in _activity_spots(activity):
+            previous = owners.get(spot)
+            if previous is None or end >= previous[0]:
+                owners[spot] = (end, owner)
+
+    out: dict[str, int] = {}
+    for job_id in job_ids:
+        entry = (entries or {}).get(job_id) or {}
+        stated_release = entry.get("release")
+        release = stated_release if isinstance(stated_release, int) else 0
+        # Entry material is *there*, given, from the job's release (§6.8); until the
+        # move that collects it, no activity has touched it and only the interface says
+        # where it is.
+        placed = release <= now
+        interface_inputs = {
+            spot
+            for spot in ((entry.get("interface") or {}).get("inputs") or {}).values()
+            if isinstance(spot, str)
+        }
+        entry_spots = interface_inputs if placed else set()
+
+        mine = [a for a in activities if _job_of_activity(a) == job_id]
+        held, seen = _trajectory(mine, entry_spots)
+        candidates = {spot for spot, (_end, owner) in owners.items() if owner == job_id}
+        candidates |= entry_spots
+        claim: set[str] = set()
+        for activity in mine:
+            if activity.get("status") == "failed":
+                claim |= _activity_spots(activity)
+        residue = ((candidates & held) | (candidates - seen) | claim) - running
+
+        for spot in residue:
+            # Dated by what finished there, so cancelled work -- pinned at `now` and
+            # never run -- does not date a spot it never touched.
+            ends = [
+                a.get("end", 0)
+                for a in mine
+                if a.get("status") in ("completed", "failed") and spot in _activity_spots(a)
+            ]
+            if ends:
+                since = min(max(ends), now)
+            elif spot in interface_inputs:
+                since = release
+            else:
+                since = now
+            # One spot, one hold: where two stopped jobs both claim it (a failed
+            # transport claims both ends, and the other end may be another job's), the
+            # earlier moment is the one that happened.
+            out[spot] = min(out[spot], since) if spot in out else since
+    return out
+
+
 def _frozen_note(frozen: list[dict]) -> str:
     """The frozen spots, for the withdrawal's report. One or many reads the same."""
     spots = ", ".join(entry["spot"] for entry in frozen)
@@ -143,35 +329,28 @@ def _frozen_note(frozen: list[dict]) -> str:
 
 
 def _frozen_holds(withdraw, entries, activities, occupied, now: int) -> list[dict]:
-    """What a withdrawing job is still holding that nobody else will say (D44, §6.12).
+    """What a withdrawing job is still holding that nobody will be able to say once it
+    has gone (D44, §6.12).
 
-    A job's final outputs hold their spots to the end of the plan (§6.8). Withdrawing
-    takes the job's activities out, and those holds with them -- so the question is
-    which of them may go.
+    🔴 **This is the one moment an occupancy is written down**, and the rule is: an
+    entry may be written only for something that will **not** be derivable after the
+    write. Everything a job holds is derivable while the job is in the document
+    (`_holds_of` reads it from the history) — and stops being so the instant the job
+    leaves and takes that history with it. So it is derived here, before the model is
+    built, and written into the plan's `occupied` for the next document to carry.
 
-    **A bound output may.** The caller named the spot, so withdrawing is a statement
-    about a place they chose and know: they collected it. **An unbound one may not.**
-    Nobody named that spot -- the schedule picked it (§6.8) -- so the caller cannot
-    have collected what they were never told the location of. Freeing it would hand a
-    spot with a plate on it to the next job, which is measurable rather than
-    hypothetical (design.md D44). So it becomes an occupancy: the material is there,
-    it is nobody's work any more, and that is exactly what the section is for.
+    **What the caller bound is left out.** They named the spot, so withdrawing is a
+    statement about a place they chose and know: they collected it. Anything else they
+    may not have — the schedule picked where an unbound output came to rest (§6.8),
+    and a plate a failure left mid-workflow was never anyone's choice — so freeing it
+    would hand a spot with something on it to the next job, which is measurable rather
+    than hypothetical (design.md D44).
 
-    🔴 **The spot comes from the history, not the environment.** An unbound output
-    rests wherever the solve put it, so nothing in the document *states* it -- but the
-    boundary arc that carried it there is rendered as an ordinary transport (§6.8),
-    and its destination is the spot. A same-spot arrival (the output stayed where it
-    was made) is a zero-length transport and is rendered too, so "it never moved" is
-    readable the same way.
-
-    Only a **completed** arrival counts. A cancelled boundary transport delivered
-    nothing: the material is upstream where the failure left it, which is a fact about
-    the room rather than the plan, and `occupied` is where the room speaks.
-
-    `since` is `now`: the moment the plan stops accounting for it. The material has
-    been there since the delivery, and dating it from then would be truer to the
-    history -- but nothing reads an occupancy's `since` before `now` anyway (§6.12
-    holds it from `now` either way), and `now` is the moment the claim is made.
+    `since` is the truthful moment, not the moment the claim is made: the end of the
+    last of the job's own activities to touch the spot. It changes no plan — §6.12
+    holds an entry from `max(since, now)` either way — but the stated `since` is
+    echoed unchanged into the plan, so **it is the only record of when the material
+    actually got there**, and the history that would have said so is about to go.
     """
     held = {
         str(entry.get("spot"))
@@ -180,29 +359,21 @@ def _frozen_holds(withdraw, entries, activities, occupied, now: int) -> list[dic
     }
     out: list[dict] = []
     for job_id in sorted(withdraw):
-        bound = set(((entries or {}).get(job_id, {}).get("interface") or {}).get("outputs") or {})
-        for activity in activities:
-            if activity.get("job") != job_id or activity.get("kind") != "transport":
+        entry = (entries or {}).get(job_id) or {}
+        # What the caller **bound** is the half they have just said they collected: they
+        # named the spot, so leaving is a statement about a place they chose and know.
+        bound = {
+            spot
+            for spot in ((entry.get("interface") or {}).get("outputs") or {}).values()
+            if isinstance(spot, str)
+        }
+        for spot, since in sorted(_holds_of(activities, entries, [job_id], now).items()):
+            if spot in bound or spot in held:
+                # A spot is named once (§6.12): a second held node on it would contend
+                # with the first and report only `infeasible`.
                 continue
-            if activity.get("status") != "completed":
-                continue
-            arc = activity.get("arc")
-            if not isinstance(arc, dict):
-                continue
-            # The interface side of a boundary arc is the one with the empty path
-            # (§6.8); its port is the final output's name.
-            destination = arc.get("to")
-            if not isinstance(destination, dict) or destination.get("node") != []:
-                continue
-            port = destination.get("port")
-            if not isinstance(port, str) or port in bound:
-                continue
-            spot = activity.get("to_spot")
-            # A spot is named once (§6.12): a second held node on it would contend
-            # with the first and report only `infeasible`.
-            if isinstance(spot, str) and spot not in held:
-                held.add(spot)
-                out.append({"spot": spot, "since": now})
+            held.add(spot)
+            out.append({"spot": spot, "since": since})
     return out
 
 
@@ -307,6 +478,120 @@ def _carried_levels(env, levels: dict[tuple[str, str], int], now: int) -> dict:
     for (device, resource), level in sorted(levels.items()):
         out.setdefault(device, {})[resource] = level
     return {"levels": out, "at": now}
+
+
+def _check_document_contradictions(
+    activities: list[dict], entries: dict | None, occupied
+) -> list:
+    """Two ways a document can disagree with itself about what it already says.
+
+    Neither is about the schedule being hard: both are the document stating something
+    its own history denies, which no arrangement of the work could satisfy. Left
+    unchecked they come back as `infeasible` (or worse, as a plan built on the stated
+    half), and the reader has nothing to go on.
+    """
+    out: list[Diagnostic] = []
+
+    # 1. An occupancy on a spot a running activity is using. §6.12 is for what the plan
+    #    does **not otherwise account for**, and a running activity accounts for its
+    #    spots perfectly well: the two hold the one spot over overlapping intervals.
+    in_use: set[str] = set()
+    for activity in activities:
+        if activity.get("status") == "running":
+            in_use |= _activity_spots(activity)
+    for entry in occupied or []:
+        if not isinstance(entry, dict):
+            continue
+        spot = entry.get("spot")
+        if isinstance(spot, str) and spot in in_use:
+            out.append(
+                Diagnostic(
+                    errors.OCCUPIED_SPOT_IN_USE,
+                    f"{spot!r} is declared occupied and is also being used by an "
+                    f"activity that is running: an occupancy is for a hold the plan "
+                    f"does not otherwise account for",
+                    "occupied",
+                )
+            )
+
+    # 2. A release later than the job's own history. §J1 holds only *pending* work to a
+    #    release -- history is pinned by what happened, and re-holding it would make the
+    #    past infeasible rather than say anything about the future -- so a release after
+    #    a started activity constrains nothing and contradicts the document that carries
+    #    it. Silently tolerated, it is a stated intention nothing enforces.
+    earliest: dict[str, int] = {}
+    for activity in activities:
+        if activity.get("status") not in ("completed", "running", "failed"):
+            continue
+        job = _job_of_activity(activity)
+        start = activity.get("start")
+        if job is None or not isinstance(start, int):
+            continue
+        earliest[job] = min(earliest.get(job, start), start)
+    for job_id, entry in sorted((entries or {}).items()):
+        release = entry.get("release")
+        if not isinstance(release, int) or job_id not in earliest:
+            continue
+        if release > earliest[job_id]:
+            out.append(
+                Diagnostic(
+                    errors.RELEASE_AFTER_HISTORY,
+                    f"job {job_id!r} is released at {release} but its history begins at "
+                    f"{earliest[job_id]}: a release holds back work that has not run, "
+                    f"and this job's had already started",
+                    "jobs",
+                )
+            )
+    return out
+
+
+def _carry_levels_to(target: int, now: int, current_at: int, diags: list) -> int | None:
+    """The moment a plan's `inventories` should be stated for, or None if `target` is
+    not a moment it could be stated for.
+
+    🔴 **The scheduler never moves `at` of its own accord.** Which moment a document's
+    levels are stated for is the caller's to decide -- they are the one who knows
+    whether the history before it may be let go of -- so this is reached only when they
+    ask (`carry_levels_to_now`). The scheduler's part is to work out the levels, which
+    is the half it can do and they cannot (§4.7.2).
+
+    Two targets are refused rather than adjusted:
+
+    - **later than `now`**, which is the same mistake as a document stating a moment in
+      the future, and carries the same code: the history can only have happened before
+      the present;
+    - **earlier than the moment the levels are already stated for**, because the history
+      before that moment is exactly what the caller is entitled to have let go of
+      (§4.7.2 requires it complete only *since* `at`), so there may be nothing left to
+      replay back to.
+
+    Neither is reachable through `carry_levels_to_now`, which asks for `now` and nothing
+    else, and both would be if a caller could name the moment. They are refusals rather
+    than a clamp for that reason: a quietly adjusted target is a mistake that keeps
+    working until the day it matters.
+    """
+    if target > now:
+        diags.append(
+            Diagnostic(
+                errors.INVENTORY_MOMENT_IN_FUTURE,
+                f"the levels cannot be stated as of {target}: it is later than now "
+                f"({now}), and the history can only have happened before the present",
+                "inventories.at",
+            )
+        )
+        return None
+    if target < current_at:
+        diags.append(
+            Diagnostic(
+                errors.INVENTORY_MOMENT_RETREATS,
+                f"the levels cannot be restated as of {target}: they are already stated "
+                f"as of {current_at}, and the history before that is not required to be "
+                f"here to replay back to it",
+                "inventories.at",
+            )
+        )
+        return None
+    return target
 
 
 def _job_specs(jobs, workflows, roster: dict[str, dict] | None, now: int) -> list[JobSpec]:
@@ -445,7 +730,15 @@ def _without(fixation: Fixation, instance, job: str, membership) -> Fixation:
     """
     activities = dict(fixation.activities)
     for i, owner in enumerate(membership):
-        if owner == job and i not in activities and instance.activities[i].boundary is None:
+        if owner != job or i in activities:
+            continue
+        boundary = instance.activities[i].boundary
+        # A workflow activity, or the residue this job's own history left behind -- a
+        # **derived** held node, which carries its owner for exactly this (§6.12). The
+        # job's *boundary* nodes stay: they are where its material entered and where
+        # its outputs rest, and the question here is what the others could do without
+        # this job's work, not what the laboratory would look like without the job.
+        if boundary is None or (boundary.kind == "held" and boundary.job == job):
             activities[i] = ActivityFixation("cancelled", fixation.now, fixation.now, 0)
     arcs = dict(fixation.arcs)
     for r, arc in enumerate(instance.arcs):
@@ -632,6 +925,7 @@ def schedule(
     random_seed: int | None = None,
     ignore_resources: bool = False,
     max_transport_legs: int = 1,
+    carry_levels_to_now: bool = False,
     collect_solutions: bool = False,
     workflow_source: str | None = None,
     environment_source: str | None = None,
@@ -684,6 +978,7 @@ def schedule(
         random_seed=random_seed,
         ignore_resources=ignore_resources,
         max_transport_legs=max_transport_legs,
+        carry_levels_to_now=carry_levels_to_now,
         collect_solutions=collect_solutions,
         environment_source=environment_source,
         document_source=document_source,
@@ -701,6 +996,7 @@ def schedule_jobs(
     random_seed: int | None = None,
     ignore_resources: bool = False,
     max_transport_legs: int = 1,
+    carry_levels_to_now: bool = False,
     collect_solutions: bool = False,
     environment_source: str | None = None,
     document_source: str | None = None,
@@ -765,6 +1061,7 @@ def schedule_jobs(
         random_seed=random_seed,
         ignore_resources=ignore_resources,
         max_transport_legs=max_transport_legs,
+        carry_levels_to_now=carry_levels_to_now,
         collect_solutions=collect_solutions,
         environment_source=environment_source,
         document_source=document_source,
@@ -782,6 +1079,7 @@ def _run(
     random_seed: int | None = None,
     ignore_resources: bool = False,
     max_transport_legs: int = 1,
+    carry_levels_to_now: bool = False,
     collect_solutions: bool = False,
     environment_source: str | None = None,
     document_source: str | None = None,
@@ -943,16 +1241,99 @@ def _run(
         return ScheduleReport(None, None, None, diagnostics)
     base = merge_instances(bases)
 
+    document_activities = _document_activities(doc_path, root)
+
+    contradictions = _check_document_contradictions(document_activities, entries, occupied)
+    if contradictions:
+        diagnostics += contradictions
+        return ScheduleReport(None, None, None, diagnostics)
+
+    # 🔴 A job may not take its draws with it. A stock's level is replayed from the
+    # moment `inventories` states (§4.7.2), so a departing job's draws are undone unless
+    # that moment has already absorbed them -- and the caller is the one who decides
+    # whether it moves (`carry_levels_to_now`). Refused rather than quietly carried
+    # forward: moving the moment is the caller's to ask for, and a scheduler that did it
+    # for them would be deciding how much history they may let go of.
+    if withdraw and not carry_levels_to_now:
+        stated_at = (inventories or {}).get("at")
+        stated_at = stated_at if isinstance(stated_at, int) else 0
+        unabsorbed = sorted(
+            {
+                job
+                for activity in document_activities
+                if activity.get("job") in set(withdraw)
+                and activity.get("status") in ("completed", "running")
+                and (activity.get("consumption") or {})
+                and activity.get("start", 0) >= stated_at
+                for job in [activity["job"]]
+            }
+        )
+        if unabsorbed:
+            diagnostics.append(
+                Diagnostic(
+                    errors.WITHDRAWAL_UNDOES_DRAWS,
+                    f"{', '.join(repr(job) for job in unabsorbed)} drew on a stock after "
+                    f"the moment the levels are stated for ({stated_at}), so leaving "
+                    f"would give it back; ask for the levels to be carried forward",
+                    "jobs",
+                )
+            )
+            return ScheduleReport(None, None, None, diagnostics)
+
     # What the withdrawing jobs are still holding, before the model is built: held
     # here as well as echoed, because a spot the model does not know is taken is a
     # spot this plan will use.
     frozen = (
-        _frozen_holds(
-            withdraw, entries, _document_activities(doc_path, root), occupied, now_value
-        )
+        _frozen_holds(withdraw, entries, document_activities, occupied, now_value)
         if withdraw
         else []
     )
+    # And what the jobs a terminal status stopped are still holding. Derived rather
+    # than declared, and **not** written into the plan: it is derivable from the
+    # history this document carries, so stating it would be the same claim twice --
+    # which is what `occupied_already_derived` refuses below. A job that is leaving is
+    # excluded: its history is about to go, so `frozen` writes its holds down instead.
+    residue: list[dict] = []
+    seen_residue: dict[str, dict] = {}
+    for job_id in sorted(_stopped_jobs(document_activities) - set(withdraw)):
+        for spot, since in sorted(
+            _holds_of(document_activities, entries, [job_id], now_value).items()
+        ):
+            # One spot, one hold. Two stopped jobs can claim the same one -- a failed
+            # transport claims both its ends, and the other end may be where another
+            # job's history left something -- and the earlier moment is the one that
+            # happened.
+            previous = seen_residue.get(spot)
+            if previous is None:
+                entry = {"spot": spot, "since": since, "job": job_id}
+                seen_residue[spot] = entry
+                residue.append(entry)
+            elif since < previous["since"]:
+                previous["since"] = since
+    stated_spots = {
+        entry["spot"]
+        for entry in (occupied or [])
+        if isinstance(entry, dict) and isinstance(entry.get("spot"), str)
+    }
+    clashing = sorted(stated_spots & set(seen_residue))
+    if clashing:
+        # Two holds on one spot contend over the same interval, so the document would
+        # come back `infeasible` with nothing to say why -- and the half that is
+        # derived never appears on the page, so the reader would see a single entry and
+        # an unschedulable plan. The refusal is what turns that into an explanation
+        # (the same reasoning as `occupied_duplicate_spot`, §6.12).
+        diagnostics.append(
+            Diagnostic(
+                errors.OCCUPIED_ALREADY_DERIVED,
+                f"{', '.join(repr(spot) for spot in clashing)} "
+                + ("is" if len(clashing) == 1 else "are")
+                + " already held by a stopped job's own history, so an `occupied` entry"
+                " says it a second time; drop the entry and let it be derived",
+                "occupied",
+            )
+        )
+        return ScheduleReport(None, None, None, diagnostics)
+
     instance, fixation, norm_diags = normalize(
         base,
         root,
@@ -962,6 +1343,7 @@ def _run(
         jobs=tuple(spec.id for spec in specs if spec.id),
         withdrawn=frozenset(withdraw),
         frozen=tuple(frozen),
+        derived=tuple(residue),
     )
     diagnostics += norm_diags.items
     if instance is None or fixation is None:
@@ -973,13 +1355,18 @@ def _run(
     if _has_error(reach.items):
         return ScheduleReport(None, None, None, diagnostics)
 
-    # A job that has left took its history with it, and some of that history is what
-    # the stocks are at now. So the plan states the levels as of `now` rather than
-    # echoing the ones it was given, which were the levels of a moment whose history
-    # is no longer all here (§6.10). Only on a withdrawal: every other plan echoes
+    # The levels move only when the caller asks (`carry_levels_to_now`), and then they
+    # are stated as of the moment asked for rather than echoed. Every other plan echoes
     # `inventories` unchanged, which is what keeps the section stable across replans.
+    #
+    # 🔴 **The scheduler does not decide this.** It used to: a withdrawal moved `at` to
+    # `now` on its own, because a departing job takes history the levels were made of.
+    # That is a true reason to move them and not a reason for this side to choose -- the
+    # caller may want the moment left where it is, and they are the one who knows
+    # whether the history before it may be let go of. So the reason is now theirs to act
+    # on, and withdrawing without acting on it is refused above rather than patched over.
     carried = inventories
-    if withdraw and fixation.levels:
+    if carry_levels_to_now and fixation.levels:
         carried = _carried_levels(env, fixation.stated_levels, fixation.now)
     if withdraw:
         # 🔴 **Reported before the solve, not after.** A frozen spot can be the reason

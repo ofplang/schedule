@@ -25,6 +25,7 @@ from ofplang.schedule.scheduler.cpsat import _interchangeable
 from ofplang.schedule.scheduler.model import JobSpec
 from ofplang.schedule.scheduler.status import ActivityFixation, Fixation
 from ofplang.schedule.scheduler.workflow import fingerprint, parse_workflow
+from tests.schedutil import with_spare_heater_stage
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
@@ -308,6 +309,10 @@ def test_a_stopped_job_frees_the_output_spot_it_will_never_reach():
     turned away.
     """
     workflow, env, document = _bay()
+    # A second stage on the heater: `job1` fails on one, and what this is about is the
+    # *rack*, not whether `job2` has anywhere left to heat (see
+    # `test_isolation_needs_somewhere_else_to_work` for that).
+    env = with_spare_heater_stage(env)
     plan = schedule_jobs(_bay_jobs(workflow), env, document_path=document).plan
 
     # `job1` fails while heating, after its sample had been collected from the bay.
@@ -397,12 +402,7 @@ def test_a_single_workflow_plan_has_no_roster():
 
 def test_a_joint_plan_round_trips_through_its_own_roster():
     """The plan is the next input (§6.2), so feeding it straight back has to work --
-    and it is the roster that makes the second call agree about who the jobs are.
-
-    On `simple` rather than the shared-refill example, because a plan carrying a
-    *pending* refill is not a replanning input at all (`pending_replenishment_in_status`:
-    how many to run is re-decided every solve). That rule is older than jobs and has
-    nothing to do with them."""
+    and it is the roster that makes the second call agree about who the jobs are."""
     workflow, env = _simple()
     first = schedule_jobs(
         [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
@@ -417,6 +417,31 @@ def test_a_joint_plan_round_trips_through_its_own_roster():
     )
     assert again.ok, [d.code for d in again.diagnostics]
     assert again.plan["jobs"] == first.plan["jobs"]
+    assert again.makespan == first.makespan
+
+
+def test_a_plan_carrying_an_unfinished_refill_round_trips_too():
+    """🔴 The case the test above had to avoid. A plan decides refills and renders them
+    `pending`; feeding that plan back is what a rolling run does every tick, and it was
+    refused outright. Only a refill that has *started* is history -- an unfinished one
+    is this solve's decision to make again."""
+    workflow, env, document = _consumable()
+    jobs = [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))]
+    first = schedule_jobs(jobs, env, document_path=document, random_seed=0)
+    assert first.ok, [d.code for d in first.diagnostics]
+    pending = [
+        a for a in first.plan["activities"]
+        if a["kind"] == "replenishment" and a.get("status") is None
+    ]
+    assert pending, "the example is only a test of this while it plans a refill"
+
+    again = schedule_jobs(
+        [JobInput("job1", copy.deepcopy(workflow)), JobInput("job2", copy.deepcopy(workflow))],
+        env,
+        document_path=first.plan,
+        random_seed=0,
+    )
+    assert again.ok, [d.code for d in again.diagnostics]
     assert again.makespan == first.makespan
 
 

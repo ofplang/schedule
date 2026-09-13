@@ -14,33 +14,28 @@
 # — cancelled work is pinned to a zero-length interval at `now`, so it holds no
 # machine and cannot be why anything waits.
 #
-# 🔴 **The plate is still on `oven.tray_1`.** Nothing in the activities says so: the
-# failed bake's interval has *ended*, so as far as the model can tell the tray is free.
-# `occupied` (§6.12) is what says otherwise.
+# 🔴 **The plate is still on `oven.tray_1`, and nothing here says so.** It does not
+# have to: the bake that failed names the tray it failed on, and a failed operation
+# applies no material effect — so what it was holding is still there. The scheduler
+# works that out from the history below and keeps the other two jobs off the tray;
+# they share `tray_2` and take turns, and the plan comes back at makespan 57.
 #
-# **Delete the `occupied` section and see what happens.** The plan comes back at
-# makespan 38 instead of 57 — because it puts `job3`'s plate on `tray_1`, where
-# `job2`'s is already sitting. With the section, the two remaining jobs have to share
-# `tray_2` and take turns. The nineteen seconds are what the truth costs, and the
-# shorter plan is the one that cannot be run.
-#
-# The entry names no job, and does not need to: it says the tray is taken, which is
-# what the plan has to know. A spot can be held for reasons no document records -- a
-# plate somebody left there, the leavings of an earlier run -- and this section is
-# how any of them are said.
+# **That is why there is no `occupied` section.** §6.12 is for a hold the plan cannot
+# work out for itself — a plate somebody left on a bench, the leavings of an earlier
+# run, what a job took with it when it left the plan. A claim that can be derived is
+# not written down: stated as well as derived it would be the same claim twice, two
+# holds would contend for the one tray, and the document would come back `infeasible`
+# with nothing to say why (`occupied_already_derived`, §10.4).
 #
 # `job2` keeps its roster entry. That is not leftover bookkeeping: the entry is what
-# says this job's material is still in the laboratory.
+# says this job's material is still in the laboratory — and it is what carries the
+# history the hold is derived from.
 now: 10
 
 jobs:
   - id: job1
   - id: job2
   - id: job3
-
-occupied:
-  - spot: oven.tray_1
-    since: 10
 
 activities:
   - kind: processing

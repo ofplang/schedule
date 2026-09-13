@@ -117,11 +117,26 @@ INVENTORY_EXCEEDS_CAPACITY = "inventory_exceeds_capacity"
 # the history records happened before it -- so the document says the run started in
 # the future rather than saying anything about a stock.
 INVENTORY_MOMENT_IN_FUTURE = "inventory_moment_in_future"
-# A replanning input carries a `pending` replenishment. Pending refills are not
-# carried over: the scheduler decides how many to run and re-derives the candidates
-# every solve, so one in the input describes a decision that is not the caller's
-# to make (§6.9).
-PENDING_REPLENISHMENT_IN_STATUS = "pending_replenishment_in_status"
+# A caller asked for the levels to be restated as of a moment **earlier** than the one
+# they are already stated for (§6.10). The history before `at` is exactly what a
+# document is entitled to have let go of -- §4.7.2 requires it complete only *since*
+# that moment -- so there may be nothing left to replay back to.
+INVENTORY_MOMENT_RETREATS = "inventory_moment_retreats"
+# A job is leaving the plan having drawn on a stock since the moment `inventories`
+# states its levels for (§6.10). Its history goes with it, so replaying from that
+# moment would give the stock back what the job took -- unless the moment is carried
+# forward first, which is the caller's to ask for and not the scheduler's to decide.
+WITHDRAWAL_UNDOES_DRAWS = "withdrawal_undoes_draws"
+# A job's roster entry states a `release` later than its own history begins (§6.11).
+# A release holds back work that has not run -- history is pinned by what happened,
+# and re-holding it would make the past infeasible -- so the document is stating an
+# intention its own activities deny.
+RELEASE_AFTER_HISTORY = "release_after_history"
+# `pending_replenishment_in_status` was here. A pending refill in a replanning input
+# used to be refused, on the reasoning that it stated a decision the caller does not
+# make. It is now passed over like any other unstarted entry: a plan is the next
+# document (§6.1) and carries the refills it decided on, so refusing one handed back
+# unexecuted made a plan unusable as the input it is defined to be (§6.9).
 
 # Warning (not an error): a composite carries a `scheduling` section, but this
 # scheduler does not implement scheduling_policies (§23) / object policies (§24) --
@@ -173,6 +188,17 @@ INTERFACE_OUTPUT_UNBOUND = "interface_output_unbound"
 # becomes a held node, two of them hold the one spot over the same interval, and the
 # document comes back `infeasible` with nothing to say why.
 OCCUPIED_DUPLICATE_SPOT = "occupied_duplicate_spot"
+# An `occupied` entry names a spot a stopped job's own history already holds (§6.12).
+# The claim is the same claim twice -- and the half that is *derived* never appears in
+# the document, so the two held nodes contend and the reader is left with a single
+# entry and an unschedulable plan. An occupancy is for what the plan cannot work out
+# for itself; this one it can.
+OCCUPIED_ALREADY_DERIVED = "occupied_already_derived"
+# An `occupied` entry names a spot an activity that is **running** is using (§6.12).
+# The section is for a hold the plan does not otherwise account for, and a running
+# activity accounts for its spots perfectly well -- so the two describe the one spot
+# over overlapping intervals and nothing can satisfy both.
+OCCUPIED_SPOT_IN_USE = "occupied_spot_in_use"
 # Two entries of the document's `jobs` roster share an id (§6.11). The id is the
 # whole of a job's identity -- it is what every one of its activities carries -- so
 # a repeat would merge two jobs' work on a replan.
@@ -349,13 +375,17 @@ ERROR_CODES = frozenset(
         MISSING_INVENTORIES,
         INVENTORY_EXCEEDS_CAPACITY,
         INVENTORY_MOMENT_IN_FUTURE,
-        PENDING_REPLENISHMENT_IN_STATUS,
+        INVENTORY_MOMENT_RETREATS,
+        WITHDRAWAL_UNDOES_DRAWS,
         INTERFACE_UNKNOWN_PORT,
         INTERFACE_PURE_DATA_PORT,
         INTERFACE_DUPLICATE_SPOT,
         INTERFACE_INPUT_MISSING,
         INTERFACE_OUTPUT_UNBOUND,
         OCCUPIED_DUPLICATE_SPOT,
+        OCCUPIED_ALREADY_DERIVED,
+        OCCUPIED_SPOT_IN_USE,
+        RELEASE_AFTER_HISTORY,
         DUPLICATE_JOB_ID,
         UNKNOWN_JOB,
         JOB_ROSTER_MISMATCH,

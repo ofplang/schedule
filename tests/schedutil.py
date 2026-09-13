@@ -24,6 +24,36 @@ def kinds(plan: dict, kind: str) -> list[dict]:
     return [a for a in plan["activities"] if a["kind"] == kind]
 
 
+def with_spare_heater_stage(env: dict) -> dict:
+    """`shared_bay.env.yaml` with a second stage on the heater, and a mode and routes
+    that reach it.
+
+    🔴 Somewhere else to work. A stopped job's material is where it is, and a failed
+    activity claims every spot it touched -- nothing says which of them the material is
+    on -- so on the example's single `heater.stage` one job failing there leaves the
+    other with nowhere to heat. That is true, and pinned by its own test; a test about
+    something else needs a laboratory with room in it.
+    """
+    import copy
+
+    env = copy.deepcopy(env)
+    heater = next(device for device in env["devices"] if device["id"] == "heater")
+    heater["spots"] = [*heater["spots"], "spare"]
+    (mode,) = env["processes"]["heat"]["modes"]
+    spare = copy.deepcopy(mode)
+    spare["id"] = "spare"
+    for key in ("input_spots", "output_spots"):
+        spare[key] = dict.fromkeys(spare[key], "heater.spare")
+    env["processes"]["heat"]["modes"] = [mode, spare]
+    env["transports"] = [
+        *env["transports"],
+        {"transporter": "arm", "from": "loader.stage", "to": "heater.spare", "duration": 2},
+        {"transporter": "arm", "from": "heater.spare", "to": "output.rack_a", "duration": 2},
+        {"transporter": "arm", "from": "heater.spare", "to": "output.rack_b", "duration": 2},
+    ]
+    return env
+
+
 def st_env(
     *,
     devices,
