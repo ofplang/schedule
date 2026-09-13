@@ -3,16 +3,16 @@ time:
 now: 10
 jobs:
 - id: job1
+  release: 0
   bound: 35
   fingerprint: 321e98b8ab8853b8
 - id: job2
+  release: 0
   fingerprint: 321e98b8ab8853b8
 - id: job3
+  release: 0
   bound: 57
   fingerprint: 321e98b8ab8853b8
-occupied:
-- spot: oven.tray_1
-  since: 10
 outcome: optimal
 objective:
   kind:

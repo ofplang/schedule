@@ -2,10 +2,12 @@ time:
   unit: second
 jobs:
 - id: job1
-  bound: 33
+  release: 0
+  bound: 19
   fingerprint: 321e98b8ab8853b8
 - id: job2
-  bound: 19
+  release: 0
+  bound: 33
   fingerprint: 321e98b8ab8853b8
 inventories:
   levels:
@@ -23,7 +25,7 @@ objective:
   - 1
 activities:
 - kind: processing
-  job: job2
+  job: job1
   start: 0
   end: 3
   process: make_plate
@@ -43,7 +45,7 @@ activities:
   amounts:
     reagent: 4
 - kind: transport
-  job: job2
+  job: job1
   start: 4
   end: 6
   from_spot: bench.slot_b
@@ -59,7 +61,7 @@ activities:
       - Assay
       port: plate
 - kind: processing
-  job: job1
+  job: job2
   start: 6
   end: 9
   process: make_plate
@@ -71,7 +73,7 @@ activities:
   output_spots:
     plate: bench.slot_b
 - kind: processing
-  job: job2
+  job: job1
   start: 6
   end: 16
   process: assay
@@ -87,7 +89,7 @@ activities:
   consumption:
     reader.reagent: 2
 - kind: transport
-  job: job2
+  job: job1
   start: 16
   end: 18
   from_spot: reader.stage
@@ -103,7 +105,7 @@ activities:
       - Drop
       port: plate
 - kind: processing
-  job: job2
+  job: job1
   start: 18
   end: 19
   process: discard
@@ -115,7 +117,7 @@ activities:
   input_spots:
     plate: bin.chute
 - kind: transport
-  job: job1
+  job: job2
   start: 18
   end: 20
   from_spot: bench.slot_b
@@ -131,7 +133,7 @@ activities:
       - Assay
       port: plate
 - kind: processing
-  job: job1
+  job: job2
   start: 20
   end: 30
   process: assay
@@ -147,7 +149,7 @@ activities:
   consumption:
     reader.reagent: 2
 - kind: transport
-  job: job1
+  job: job2
   start: 30
   end: 32
   from_spot: reader.stage
@@ -163,7 +165,7 @@ activities:
       - Drop
       port: plate
 - kind: processing
-  job: job1
+  job: job2
   start: 32
   end: 33
   process: discard

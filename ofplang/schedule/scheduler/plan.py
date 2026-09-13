@@ -35,6 +35,7 @@ def render_plan(
     occupied: list | None = None,
     ignore_resources: bool = False,
     jobs: tuple[JobSpec, ...] = (),
+    stopped: frozenset[str] = frozenset(),
 ) -> dict:
     """Build the execution-document dict for `solution`.
 
@@ -48,7 +49,11 @@ def render_plan(
     (`instance.prefix_instance`). Rendering splits that prefix back off into each
     activity's `job` field, so `node` stays the workflow-relative path it has always
     been. Empty -- the single-workflow case -- means node paths carry no prefix and no
-    activity gets a `job`, which is what keeps such a plan byte-for-byte what it was."""
+    activity gets a `job`, which is what keeps such a plan byte-for-byte what it was.
+
+    `stopped` names the jobs a terminal status has stopped (§6.2). They keep their
+    roster entry -- something of theirs is still in the laboratory -- but not their
+    promise; see `_job_entry`."""
     job_ids = tuple(job.id for job in jobs)
     activities: list[dict] = []
 
@@ -189,7 +194,7 @@ def render_plan(
     # qualify. Present exactly on a joint plan: a single-workflow plan has no roster
     # and no `job` on any activity, which is what leaves it unchanged.
     if jobs:
-        doc["jobs"] = [_job_entry(job) for job in jobs]
+        doc["jobs"] = [_job_entry(job, stopped) for job in jobs]
     # The interface boundary constraint (§6.8) round-trips: echo it verbatim so the
     # plan can be fed back as the next document.
     if interface:
@@ -225,15 +230,26 @@ def render_plan(
     return doc
 
 
-def _job_entry(job: JobSpec) -> dict:
-    """One roster entry (§6.11). `release` is written only where it is not 0 and
-    `bound` / `fingerprint` only where they are set, so a roster says no more than it
-    has to -- and a job that arrived at time 0 with no promise yet renders as the bare
-    `{id: ...}` it did before those fields existed."""
+def _job_entry(job: JobSpec, stopped: frozenset[str] = frozenset()) -> dict:
+    """One roster entry (§6.11).
+
+    🔴 **`release` is always written**, 0 included. An absent `release` means two
+    different things -- 0 for a job the roster names, `now` for one it does not (an
+    arrival, §6.11) -- so a reader that omits it is relying on which of the two the
+    document happens to be. Stating it costs a line and makes every plan-derived
+    document say what it means; a hand-written one may still leave it out and take
+    the default.
+
+    **A stopped job carries no `bound`.** The solve already drops its deadline
+    constraint -- a promise it can never reach would make every plan that continues
+    past a failure infeasible -- so keeping it here changes no schedule. What it would
+    change is the document, which would go on reporting a completion this job will not
+    reach: a lie a reader has no way to detect. A promise that cannot be kept is
+    withdrawn, not restated.
+    """
     entry: dict = {"id": job.id}
-    if job.release:
-        entry["release"] = job.release
-    if job.bound is not None:
+    entry["release"] = job.release
+    if job.bound is not None and job.id not in stopped:
         entry["bound"] = job.bound
     if job.fingerprint is not None:
         entry["fingerprint"] = job.fingerprint

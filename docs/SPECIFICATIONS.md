@@ -1293,10 +1293,18 @@ Each entry carries:
   tomorrow still outranks one submitted tomorrow. A job that joins an existing roster
   is released at `now` unless it says otherwise — it did not exist earlier, and a
   schedule that started it in the past would describe work nobody could have done.
+  That is why **a plan always writes `release`**, 0 included: absent, it means 0 for a
+  job the roster names and `now` for one it does not, so a document that leaves it out
+  can only be read by knowing which of the two it is. A hand-written document may still
+  leave it out and take the default; one that came from a plan never does.
 - `bound` (optional) — B_j, the completion time this job was promised, written by the
   scheduler when the job's first plan is made. **Scheduler-owned: it is not a
   deadline.** A promise that can no longer be met is relaxed (below), and a deadline
-  that quietly loosened would be worse than none.
+  that quietly loosened would be worse than none. **A stopped job carries none.** Its
+  deadline is already dropped from the model — holding it to a completion it cannot
+  reach would make every plan past a failure infeasible — so restating it changes no
+  schedule and leaves the document reporting a completion that will not happen. A
+  promise that cannot be kept is withdrawn, not restated.
 - `fingerprint` (optional) — a digest of the workflow the job runs, written by the
   scheduler. On a replan the workflow handed over under that id must match it
   (`job_workflow_mismatch`, §10.4): the ids of two jobs given in the other order match
@@ -1503,7 +1511,12 @@ place they chose and know. Everything else they may not have — the schedule ch
 where an unbound output came to rest, and a plate a failure left mid-workflow was
 nobody's choice. Entry material and an occupancy the document already carried are
 unaffected: the first was bound by the caller, and the second says a spot is held and
-outlasts whatever put the material there.
+outlasts whatever put the material there. **So is a spot a job that is staying still
+derives.** Two stopped jobs can claim one spot — a failed transport claims both its
+ends, and the other end may be where another job's history left something — and
+writing that one down would state a hold the remaining history goes on stating
+(`occupied_already_derived`, §10.4). The rule is written only for what nobody will be
+able to derive afterwards, and that spot is not it.
 
 **And it is reported** (`job_withdrawn`, §10.4, a warning — a plan is still
 produced). A withdrawal moves the baseline the stocks are counted from and may leave

@@ -605,9 +605,11 @@ def test_an_arriving_job_is_released_at_now():
     )
     assert report.ok, [d.code for d in report.diagnostics]
     entries = {entry["id"]: entry for entry in report.plan["jobs"]}
-    # The two that were already planned keep release 0 (omitted); the newcomer is
-    # released at `now`.
-    assert "release" not in entries["job1"]
+    # The two that were already planned keep release 0; the newcomer is released at
+    # `now`. Both are *written*: an absent `release` means 0 for a job the roster names
+    # and `now` for one it does not, so a plan states it rather than leave the reader to
+    # work out which kind of document they are holding.
+    assert entries["job1"]["release"] == 0
     assert entries["job3"]["release"] == 3
 
 

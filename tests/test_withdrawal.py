@@ -21,7 +21,7 @@ from pathlib import Path
 import yaml
 
 from ofplang.schedule import JobInput, schedule, schedule_jobs
-from ofplang.schedule.scheduler.api import _holds_of
+from ofplang.schedule.scheduler.api import _frozen_holds, _holds_of
 from tests.schedutil import with_spare_heater_stage
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
@@ -770,6 +770,61 @@ def test_a_failed_transport_claims_both_ends():
         _transport("job1", "failed", 2, 5, "bench.slot_a", "oven.tray_1"),
     ]
     assert _holds_of(activities, {}, ["job1"], 5) == {"bench.slot_a": 5, "oven.tray_1": 5}
+
+
+def test_a_spot_the_staying_job_still_derives_is_not_written():
+    """🔴 The withdrawal writes down only what nobody will be able to derive once the
+    job has gone -- and a spot two stopped jobs both claim does not qualify.
+
+    A failed transport claims both its ends, and the other end may be where another
+    job's history left something. Write it, and from the next replan on the document
+    holds that spot twice: once as the entry, once from the job that is still here to
+    derive it. That is refused (`occupied_already_derived`) -- and because the entry
+    rides in the echo, the refusal is not one bad call but every call after it.
+    """
+    activities = [
+        # job2 is stopped and staying; the tray is its plate.
+        _processing("job2", "Make", "completed", 0, 6, outputs={"out": "oven.tray_1"}),
+        _processing("job2", "Assay", "failed", 6, 9, inputs={"plate": "oven.tray_1"}),
+        # job1 is leaving. Its own bench slot is its alone; the failed move claims the
+        # tray as well, because nothing says which end its plate is at.
+        _processing("job1", "Make", "completed", 0, 2, outputs={"out": "bench.slot_a"}),
+        _transport("job1", "failed", 2, 5, "bench.slot_a", "oven.tray_1"),
+    ]
+    # Both claim the tray, which is what makes this the case worth refusing to write.
+    assert "oven.tray_1" in _holds_of(activities, {}, ["job1"], 9)
+    staying = _holds_of(activities, {}, ["job2"], 9)
+    assert "oven.tray_1" in staying
+
+    written = _frozen_holds(["job1"], {}, activities, None, 9, derived=set(staying))
+    assert [entry["spot"] for entry in written] == ["bench.slot_a"]
+
+    # Without being told what stays derivable it writes the tray as well -- the bug
+    # this guards, kept here so the guard is measured rather than assumed.
+    assert "oven.tray_1" in {
+        entry["spot"] for entry in _frozen_holds(["job1"], {}, activities, None, 9)
+    }
+
+
+def test_a_stopped_job_keeps_its_roster_entry_but_not_its_promise():
+    """🔴 The solve already drops a stopped job's deadline -- a promise it can never
+    reach would make every plan past a failure infeasible -- so restating it here
+    changes no schedule. What it would change is the document, which would go on
+    reporting a completion this job will not reach: a lie a reader has no way to
+    detect. And under a caller that echoes the plan back, it would be restated for the
+    rest of the run."""
+    workflow, env = _roomy()
+    plan = schedule_jobs(_jobs(workflow), env, random_seed=0).plan
+    assert all("bound" in entry for entry in plan["jobs"])
+    status = _stop(plan, "job1", failed_node=["SampleSource"], at=40)
+
+    report = schedule_jobs(_jobs(workflow), env, document_path=status, random_seed=0)
+    assert report.ok, [d.code for d in report.diagnostics]
+    entries = {entry["id"]: entry for entry in report.plan["jobs"]}
+    # Still on the roster: something of it is still in the laboratory.
+    assert set(entries) == {"job1", "job2"}
+    assert "bound" not in entries["job1"]
+    assert entries["job2"]["bound"] is not None
 
 
 def test_entry_material_nobody_collected_is_held():

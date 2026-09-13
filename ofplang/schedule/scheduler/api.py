@@ -328,7 +328,9 @@ def _frozen_note(frozen: list[dict]) -> str:
     )
 
 
-def _frozen_holds(withdraw, entries, activities, occupied, now: int) -> list[dict]:
+def _frozen_holds(
+    withdraw, entries, activities, occupied, now: int, derived: set[str] | None = None
+) -> list[dict]:
     """What a withdrawing job is still holding that nobody will be able to say once it
     has gone (D44, §6.12).
 
@@ -351,12 +353,21 @@ def _frozen_holds(withdraw, entries, activities, occupied, now: int) -> list[dic
     holds an entry from `max(since, now)` either way — but the stated `since` is
     echoed unchanged into the plan, so **it is the only record of when the material
     actually got there**, and the history that would have said so is about to go.
+
+    🔴 `derived` is what the jobs that are **staying** still hold, and nothing in it is
+    written. Two stopped jobs can claim one spot — a failed transport claims both its
+    ends, and the other end may be where another job's history left something — so a
+    spot the leaver holds may be one the stayer goes on deriving. Writing it would put
+    the same hold in the document twice from the next replan on, which
+    `occupied_already_derived` refuses; and because the entry rides in the echo, that
+    would not be one bad call but every call after it.
     """
     held = {
         str(entry.get("spot"))
         for entry in (occupied or [])
         if isinstance(entry, dict) and entry.get("spot") is not None
     }
+    held |= derived or set()
     out: list[dict] = []
     for job_id in sorted(withdraw):
         entry = (entries or {}).get(job_id) or {}
@@ -1280,19 +1291,15 @@ def _run(
             )
             return ScheduleReport(None, None, None, diagnostics)
 
-    # What the withdrawing jobs are still holding, before the model is built: held
-    # here as well as echoed, because a spot the model does not know is taken is a
-    # spot this plan will use.
-    frozen = (
-        _frozen_holds(withdraw, entries, document_activities, occupied, now_value)
-        if withdraw
-        else []
-    )
-    # And what the jobs a terminal status stopped are still holding. Derived rather
+    # What the jobs a terminal status stopped are still holding. Derived rather
     # than declared, and **not** written into the plan: it is derivable from the
     # history this document carries, so stating it would be the same claim twice --
     # which is what `occupied_already_derived` refuses below. A job that is leaving is
     # excluded: its history is about to go, so `frozen` writes its holds down instead.
+    #
+    # Worked out **before** the withdrawal's write-out, because that write-out is
+    # allowed to say only what nobody will be able to derive afterwards -- and these
+    # spots are exactly the ones that will still be derivable.
     residue: list[dict] = []
     seen_residue: dict[str, dict] = {}
     for job_id in sorted(_stopped_jobs(document_activities) - set(withdraw)):
@@ -1333,6 +1340,22 @@ def _run(
             )
         )
         return ScheduleReport(None, None, None, diagnostics)
+
+    # What the withdrawing jobs are still holding, before the model is built: held
+    # here as well as echoed, because a spot the model does not know is taken is a
+    # spot this plan will use.
+    frozen = (
+        _frozen_holds(
+            withdraw,
+            entries,
+            document_activities,
+            occupied,
+            now_value,
+            derived=set(seen_residue),
+        )
+        if withdraw
+        else []
+    )
 
     instance, fixation, norm_diags = normalize(
         base,
@@ -1427,6 +1450,7 @@ def _run(
         occupied=(list(occupied or []) + frozen) or None,
         ignore_resources=ignore_resources,
         jobs=settled,
+        stopped=frozenset(_stopped_jobs(document_activities) - set(withdraw)),
     )
 
     # 6. Check what is about to be handed out. The refill amounts in the document are

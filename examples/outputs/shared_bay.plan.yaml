@@ -2,6 +2,7 @@ time:
   unit: second
 jobs:
 - id: job1
+  release: 0
   bound: 14
   fingerprint: 8cd789557cafbc84
   interface:
