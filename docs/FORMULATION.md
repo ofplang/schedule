@@ -964,7 +964,10 @@ Per-job parameters (SPEC §6.11):
   its activities may start. Default $0$.
 - $B_j \in \mathbb{Z}_{\ge 0} \cup \{\infty\}$: the completion time this job was
   **promised** by an earlier solve, read back from the roster. $\infty$ (absent)
-  for a job that has not been promised anything yet.
+  for a job that has not been promised anything yet -- and for one that has
+  **stopped**, whose promise the plan withdraws rather than restating (SPEC §6.11).
+  The two read alike here because a stopped job is excluded from §J2 either way, so
+  nothing below depends on telling them apart.
 
 ## J1. Release times (adds to §3-bis and §9)
 
