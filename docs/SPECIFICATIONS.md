@@ -869,6 +869,13 @@ environment.
     environment's to know, so a reader given the document alone cannot tell an
     omission meant that way from one that forgot — and a move that quietly occupied
     no transporter is precisely the mistake worth catching.
+  - And it is null **on the way back in**. A replan reads a fixed leg's route from
+    what the document reports, so a null flattened to the empty string on the way
+    would have that leg occupy a transporter named `""` — one every transporter-less
+    leg in the history shares, so two that ran at the same time become an overlap on
+    a machine that does not exist, and the replan is infeasible for a reason nothing
+    in the laboratory can explain. It shows up only where a plan is fed straight back
+    as the next document, which is what a rolling run does.
 - `arc` (required) — provenance: the Object-bearing arc served (the logical
   connection), as `from` / `to`, each `{ node: <path>, port: <name> }`. When the
   arc's Object is moved in a single leg, `arc` and the `from_spot` / `to_spot`
@@ -1559,6 +1566,14 @@ bench for reasons no document records; the leavings of an earlier run; and — t
 the scheduler itself writes — what a job was holding when it **left the plan** (§6.11),
 whose history went with it. Those have no one form, which is why an entry says so
 little: a section that described any one of them would not describe the others.
+
+**The derivation can be asked for** (`ofplang.schedule.derived_holds`). A caller driving
+a run has to know what is held before it acts -- a job arriving onto the spot a stopped
+job's plate is sitting on cannot be admitted -- and a caller that worked it out for
+itself would be a second implementation of the rule above, differing from it in ways
+that show up only as an unplannable document. So the question is answered here and
+asked by anybody: hand it a document, get back the holds it implies, in the shape an
+entry has. Deriving is this package's; asking is not.
 
 Each entry holds its spot from `since` **until further notice**: for the rest of the
 plan, like a delivered Object (§6.8), and unlike one it takes no part in the makespan.

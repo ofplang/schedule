@@ -14,7 +14,15 @@ occupies none -- that mistake being silent is the whole reason to demand the wor
 
 from __future__ import annotations
 
-from ofplang.schedule import schedule, validate_document, validate_environment
+import copy
+
+from ofplang.schedule import (
+    JobInput,
+    schedule,
+    schedule_jobs,
+    validate_document,
+    validate_environment,
+)
 from ofplang.schedule.scheduler.envload import load_environment
 from ofplang.schedule.scheduler.plan import to_yaml
 from ofplang.schedule.scheduler.visualize import render_svg
@@ -36,6 +44,30 @@ processes:
   target:
     modes:
       - { devices: [station_0], duration: 2, input_spots: { target_in: station_0.side } }
+"""
+
+# Two machines, each able to hand off inside itself with nothing carrying the move.
+TWO_INTERNAL_ENV = """
+time: { unit: second }
+devices:
+  - { id: station_0, spots: [core, side] }
+  - { id: station_1, spots: [core, side] }
+transports:
+  - { transporter: null, from: station_0.core, to: station_0.side, duration: 1 }
+  - { transporter: null, from: station_1.core, to: station_1.side, duration: 1 }
+processes:
+  source:
+    modes:
+      - { devices: [station_0], duration: 2,
+          output_spots: { source_out: station_0.core } }
+      - { devices: [station_1], duration: 2,
+          output_spots: { source_out: station_1.core } }
+  target:
+    modes:
+      - { devices: [station_0], duration: 2,
+          input_spots: { target_in: station_0.side } }
+      - { devices: [station_1], duration: 2,
+          input_spots: { target_in: station_1.side } }
 """
 
 # The same move, but an arm could also make it -- slowly. Both routes are offered.
@@ -98,6 +130,66 @@ def test_plans_and_reports_a_null_transporter(tmp_path):
     # Written, and written as null. Omitting it would be indistinguishable from a
     # document that forgot to say which transporter carried the move.
     assert "transporter" in t and t["transporter"] is None
+
+
+def _ran(plan: dict, now: int) -> dict:
+    """`plan` as the status of a run that got as far as `now`: everything that had
+    finished by then is fixed history, and the rest is still to come."""
+    doc = copy.deepcopy(plan)
+    doc["now"] = now
+    for activity in doc["activities"]:
+        if activity["end"] <= now:
+            activity["status"] = "completed"
+    return doc
+
+
+def test_a_null_transporter_survives_being_read_back(tmp_path):
+    """🔴 Null is a meaning, not a missing value, and it has to come back the same.
+
+    Reading a document flattens a string field that is not a string to the empty string,
+    which is right for a spot or a mode id and wrong here: `transporter: null` says
+    **nothing carried this move** (§5.4), and flattened, the leg goes on to occupy a
+    transporter named by the empty string -- so two such moves, fixed history in some
+    later replan, contend for a machine that does not exist.
+
+    Invisible until a caller fed a plan straight back as the next document, which is
+    what a rolling run does: the move was planned null, reported null, read as `""`, and
+    reported `""` from the second plan on.
+    """
+    env = write(tmp_path, "env.yaml", INTERNAL_ENV)
+    first = schedule(SIMPLE_WF, env)
+    assert first.ok
+
+    status = write(tmp_path, "s.yaml", to_yaml(_ran(first.plan, 3)))
+    second = schedule(SIMPLE_WF, env, document_path=status)
+    assert second.ok, [d.code for d in second.diagnostics]
+    (t,) = kinds(second.plan, "transport")
+    assert "transporter" in t and t["transporter"] is None
+    assert second.makespan == first.makespan
+
+
+def test_two_fixed_transporter_less_moves_do_not_queue_behind_each_other(tmp_path):
+    """The consequence of the above, measured. Flattened to `""`, every transporter-less
+    leg in a document's history occupies one phantom machine, so two that ran at the same
+    time are an overlap on it -- and the replan they are handed to is infeasible for a
+    reason nothing in the laboratory can explain."""
+    env = write(tmp_path, "env.yaml", TWO_INTERNAL_ENV)
+    plan = schedule_jobs(
+        [JobInput("job1", SIMPLE_WF), JobInput("job2", SIMPLE_WF)], env, random_seed=0
+    )
+    assert plan.ok, [d.code for d in plan.diagnostics]
+    moves = kinds(plan.plan, "transport")
+    assert len(moves) == 2
+    # Each on its own machine, so they overlap -- which is the whole point.
+    assert min(m["end"] for m in moves) > max(m["start"] for m in moves)
+
+    status = write(tmp_path, "s.yaml", to_yaml(_ran(plan.plan, 3)))
+    again = schedule_jobs(
+        [JobInput("job1", SIMPLE_WF), JobInput("job2", SIMPLE_WF)], env,
+        document_path=status, random_seed=0,
+    )
+    assert again.ok, [d.code for d in again.diagnostics]
+    assert again.makespan == plan.makespan
 
 
 def test_the_rendered_plan_is_a_valid_document(tmp_path):

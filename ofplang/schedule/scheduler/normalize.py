@@ -67,6 +67,7 @@ from ofplang.schedule.scheduler.status import (
     RefillFixation,
     arc_key,
     job_of,
+    maybe_text,
     node_path,
     scoped,
     status_of,
@@ -876,7 +877,10 @@ def _read_status(root, node_index, arc_keys, now, diags, withdrawn=frozenset()):
                     end,
                     text(item.get("from_spot")),
                     text(item.get("to_spot")),
-                    text(item.get("transporter")),
+                    # Null here is not a missing value: it says nothing carried this
+                    # move (§5.4), and it has to survive being read back or the leg
+                    # occupies a transporter named by the empty string.
+                    maybe_text(item.get("transporter")),
                 )
             )
     return fixed_proc, legs_by_arc

@@ -193,6 +193,35 @@ def _trajectory(activities: list[dict], entry_spots: set[str]) -> tuple[set[str]
     return held, seen
 
 
+def derived_holds(document: dict) -> list[dict]:
+    """What this execution document says is held that it does not state (§6.12).
+
+    The answer to "which spots may nothing be planned onto, beyond the ones the
+    document names?" -- the holds a stopped job's own history implies, worked out
+    exactly as a solve works them out and reported the way `occupied` entries are.
+
+    🔴 **Published because the question has one answer and one place to give it.**
+    A runner driving a rolling run has to ask it -- a job arriving onto the spot a
+    stopped job's plate is sitting on cannot be admitted -- and a runner that worked
+    it out for itself would be a second implementation of a rule that already lives
+    here, differing from it in ways that show up only as an unplannable document.
+    Deriving it is this package's; asking is anybody's.
+
+    The document is read as it stands, with no validation: it is either one this
+    package produced or one about to be handed back to it, and a malformed one simply
+    describes fewer holds. Nothing is derived for a job the document does not say has
+    stopped, and a spot a running activity is using is not among them -- that activity
+    accounts for it perfectly well.
+    """
+    activities = [a for a in (document.get("activities") or []) if isinstance(a, dict)]
+    roster = document.get("jobs")
+    entries = _roster_entries(roster) if isinstance(roster, list) else {}
+    now = document.get("now")
+    now = now if isinstance(now, int) else 0
+    held = _holds_of(activities, entries, _stopped_jobs(activities), now)
+    return [{"spot": spot, "since": since} for spot, since in sorted(held.items())]
+
+
 def _stopped_jobs(activities: list[dict]) -> set[str]:
     """The jobs a terminal status has stopped (§6.2, §6.11): a `failed` or `cancelled`
     activity stops the job it belongs to, and only that job."""

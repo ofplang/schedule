@@ -20,7 +20,7 @@ from pathlib import Path
 
 import yaml
 
-from ofplang.schedule import JobInput, schedule, schedule_jobs
+from ofplang.schedule import JobInput, derived_holds, schedule, schedule_jobs
 from ofplang.schedule.scheduler.api import _frozen_holds, _holds_of
 from tests.schedutil import with_spare_heater_stage
 
@@ -914,3 +914,48 @@ def test_a_release_a_job_has_not_reached_is_ordinary():
     report = schedule_jobs(_jobs(workflow), env, document_path=status, random_seed=0)
     assert report.ok, [d.code for d in report.diagnostics]
     assert min(a["start"] for a in _of(report.plan, "job2")) >= 50
+
+
+# ---------------------------------------------------------------------------
+# Asking what a document implies is held (`derived_holds`, §6.12).
+# ---------------------------------------------------------------------------
+
+
+def test_the_derivation_is_published_because_a_caller_has_to_ask_it():
+    """🔴 The question has one answer and one place to give it.
+
+    A runner driving a rolling run has to know what a stopped job is still holding --
+    a job arriving onto that spot cannot be admitted -- and a runner that worked it out
+    for itself would be a second implementation of a rule that already lives here,
+    differing from it in ways that show up only as an unplannable document. That is not
+    hypothetical: it is where design.md's C8 lived.
+    """
+    activities = [
+        _processing("job1", "Make", "completed", 0, 2, outputs={"out": "bench.slot_a"}),
+        _processing("job1", "Assay", "failed", 2, 9, inputs={"plate": "bench.slot_a"}),
+        _processing("job2", "Make", "running", 4, 20, outputs={"out": "bench.slot_b"}),
+    ]
+    assert derived_holds({"now": 9, "activities": activities}) == [
+        {"spot": "bench.slot_a", "since": 9}
+    ]
+    # The same answer, from the same rules, as a solve works out for itself -- which is
+    # why a document stating it as well is refused for saying the same hold twice
+    # (`test_a_stopped_jobs_residue_may_not_also_be_declared`).
+    assert derived_holds({"now": 9, "activities": activities}) == [
+        {"spot": spot, "since": since}
+        for spot, since in sorted(_holds_of(activities, {}, ["job1"], 9).items())
+    ]
+
+
+def test_a_document_with_nothing_stopped_implies_no_holds():
+    """Nothing is derived for a job the document does not say has stopped, and a spot a
+    running activity uses is not among them -- that activity accounts for it."""
+    assert derived_holds({}) == []
+    assert derived_holds({"now": 5, "activities": []}) == []
+    assert derived_holds({
+        "now": 5,
+        "activities": [
+            _processing("job1", "Make", "completed", 0, 2, outputs={"out": "bench.slot_a"}),
+            _processing("job1", "Assay", "running", 2, 20, inputs={"plate": "bench.slot_a"}),
+        ],
+    }) == []

@@ -179,6 +179,14 @@ original file (`workflow_source` / `environment_source` / `document_source`).
 The package lives under the `ofplang` PEP 420 namespace (`ofplang.schedule`),
 shared across the organization's tools.
 
+`derived_holds(document)` answers the other question a driver of a rolling run has to
+ask: **which spots does this document imply are held, beyond the ones it states?**
+(§6.12). What a stopped job is still holding follows from its own history rather than
+being declared, so the scheduler works it out on every solve — and a caller that worked
+it out for itself would be a second implementation of the same rule, differing from it
+in ways that show up only as an unplannable document. Deriving it is this package's;
+asking is anybody's.
+
 ## Examples
 
 [`examples/`](examples/README.md) holds complete workflow + environment pairs used

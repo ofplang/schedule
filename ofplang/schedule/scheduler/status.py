@@ -111,6 +111,20 @@ def text(node: YNode | None) -> str:
     return node.value if isinstance(node, YScalar) and node.is_str else ""
 
 
+def maybe_text(node: YNode | None) -> str | None:
+    """A string field where **null is a meaning of its own**, kept as None.
+
+    `text` flattens anything that is not a string to the empty string, which is right
+    for a field that is always one -- a spot, a mode id. It is wrong for a transport's
+    `transporter`, where null says *nothing carried it* (SPEC §5.4): flattened, that
+    move goes on to occupy a transporter named by the empty string, and two such moves
+    contend for a machine that does not exist.
+    """
+    if isinstance(node, YScalar) and node.is_str:
+        return node.value
+    return None
+
+
 def times(item: YMap) -> tuple[int, int]:
     start = item.get("start")
     end = item.get("end")
