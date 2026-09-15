@@ -726,7 +726,11 @@ def _check_boundary_spots(specs: tuple[JobSpec, ...]) -> list[Diagnostic]:
 
     Refusing two bindings of *one* interface on one spot is a different claim and stays
     an error (`interface_duplicate_spot`, `instance.py`): those bindings are
-    simultaneous by construction, so no history can separate them.
+    simultaneous by construction, so no history can separate them -- and they are two
+    Objects rather than one named twice (a port carries one Object-bearing value, and
+    v0 §12.2 has every such value referred to exactly once), so one spot cannot satisfy
+    both. Nothing the solver could arrange would make it true, which is what separates
+    a refusal from a warning here.
     """
     out: list[Diagnostic] = []
     for side, code, severity in (

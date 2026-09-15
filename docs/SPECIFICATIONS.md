@@ -1354,7 +1354,12 @@ warning to be about.
 Two bindings of *one* interface on one spot are a different claim and stay refused
 (`interface_duplicate_spot`, §6.8): those bindings are simultaneous by construction —
 every input from its job's release, every output to the end of the plan — so no
-history can separate them.
+history can separate them. They also name two Objects rather than one Object twice: a
+binding is a port's, a port carries one Object-bearing value, and v0 §12.2 has every
+such value referred to exactly once — so two `returns` entries cannot carry one Object
+to two ports, and two entry inputs are two Objects by construction. One spot, two
+Objects, one interval: no arrangement of the work makes that true, which is why this
+one is refused rather than left to the solver.
 
 The roster makes the document self-describing rather than leaving the reader to infer
 the jobs from whichever `job` values happen to appear, and it is what lets a replan be
