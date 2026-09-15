@@ -70,7 +70,12 @@ then carries the job it belongs to. A job may be given its own `interface` and a
 `release` time in the document's `jobs` roster, and each is promised the completion
 its first plan achieves (`bound`) — which later plans keep, so a job already being
 planned is not disturbed by one that arrives later, and which a job that **stops**
-has withdrawn rather than restated. Every roster entry a plan writes states its
+has withdrawn rather than restated. Two jobs may share a loading bay where their
+releases leave the first job's material time to be collected (a warning, since whether
+they do is the solve's to decide); released together onto one spot, or delivering to
+one spot, they cannot, and the document is refused — a plan that comes true only
+because one of the jobs fails is not one to accept. A job that is not going to deliver
+leaves the plan instead, in the same call that plans the next one onto its spot. Every roster entry a plan writes states its
 `release`, 0 included: absent, a release means 0 for a job the roster names and `now`
 for one it does not, so a plan says which. A job completes when its output
 arrives somewhere it may rest; sitting there, or being moved aside later because
@@ -106,7 +111,10 @@ removed when nothing is — which the scheduler cannot see, hence an instruction
 than an inference, and one refused while the document says the job still has work to
 do or running. Pass no workflow for a job being withdrawn. What the job was holding is
 written down before it goes (§6.12), dated when the material actually got there:
-everything except what you **bound**, which leaving says you collected. And a job that
+everything except a spot you **bound as an output and whose product is on it**, which
+leaving says you collected. Only that — a delivery that failed on the way left no
+product, and entry material a job never collected is material you cannot know the fate
+of from outside, so both are written down rather than assumed gone. And a job that
 drew on a stock since the moment `inventories` states its levels for cannot leave
 quietly — its draws would be given back — so ask for the levels to be carried forward
 in the same call.

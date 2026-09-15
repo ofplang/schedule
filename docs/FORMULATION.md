@@ -1291,10 +1291,13 @@ rather than here:
   $v^{now}$. Where the caller has *not* asked and the job drew after the moment
   already stated, the withdrawal is refused rather than re-baselined for them
   (SPEC §6.10): which history a document may let go of is not the model's to decide;
-- its **holds keep their spots**. What the caller bound leaves with the job; everything
-  else it was holding (§J5) becomes a held node, carrying the moment the material
-  arrived rather than the moment the job left — the history that would have said so is
-  what is departing.
+- its **holds keep their spots**. A spot the caller bound as an output *and whose
+  product is on it* leaves with the job — that is what leaving says they collected;
+  everything else it was holding (§J5) becomes a held node, carrying the moment the
+  material arrived rather than the moment the job left — the history that would have
+  said so is what is departing. A binding whose delivery failed, and entry material a
+  job never collected, are among the everything else: the first put no product there,
+  and the second is material whose fate cannot be read from outside the history.
 
 What is *not* in the model is the judgement: whether anything of the job is still in
 the laboratory is a fact about the room, so leaving is instructed and refused only
