@@ -169,8 +169,11 @@ INTERFACE_PURE_DATA_PORT = "interface_pure_data_port"
 # Objects cannot start on one spot, and two delivered Objects cannot rest on one. The
 # bindings of an interface are simultaneous by construction -- every input from its
 # job's release, every output to the end of the plan -- so no schedule can separate
-# them and no history can make this true. Across *jobs* the claim is weaker and is a
-# warning instead (`interface_shared_input_spot` / `interface_shared_output_spot`).
+# them and no history can make this true. Across *jobs* the claim is weaker on the
+# entry side only, where two releases can separate the bindings
+# (`interface_shared_input_spot`); released together, or on the output side, it is the
+# same refusal (`interface_simultaneous_input_spot` /
+# `interface_shared_output_spot`).
 INTERFACE_DUPLICATE_SPOT = "interface_duplicate_spot"
 # An Object-bearing entry input has no `interface` binding (only where interface is
 # required; optional in the current phase).
@@ -234,13 +237,21 @@ JOBS_NOT_PLANNABLE_TOGETHER = "jobs_not_plannable_together"
 # so one loading bay can serve two runs -- but only if the releases leave room. Said
 # out loud because the failure, when it comes, is a bare "no feasible schedule found".
 INTERFACE_SHARED_INPUT_SPOT = "interface_shared_input_spot"
-# A warning: two jobs bind the same final-output spot (§6.8, §6.11). A delivered
-# Object holds its spot to the end of the plan, so this works only if one of the two
-# never delivers -- which a job that has stopped (§6.2) does not, and a job that has
-# left the plan cannot. That is a fact about the history and the run, not about the
-# document, so the verdict belongs to the solver: an instance where both really do
-# deliver comes back `infeasible`, with `jobs_not_plannable_together` naming the job.
-# Said out loud here because that failure names neither the spot nor the ports.
+# Two jobs bind the same entry spot and are **released together** (§6.8, §6.11). Entry
+# material is there, given, from its job's release, so at that instant both are on the
+# one spot however the work is arranged -- the same claim `interface_duplicate_spot`
+# refuses within one interface, reached here by two jobs whose releases coincide. A
+# different release is what separates them, so this is the one case of a shared entry
+# spot that no schedule can rescue.
+INTERFACE_SIMULTANEOUS_INPUT_SPOT = "interface_simultaneous_input_spot"
+# Two jobs bind the same final-output spot (§6.8, §6.11). A delivered Object holds its
+# spot to the end of the plan, so no arrangement of the work puts both there: the only
+# way for the document to come true is for one of the jobs not to deliver, which is to
+# say for something to go wrong, and a plan that succeeds only if a job fails is not
+# one to accept. A job that is not going to deliver leaves the plan instead
+# (`withdraw`, §6.11), and a leaving job is not among those this is checked over --
+# so "that one is going, this one takes the spot" is a document, not a workaround.
+# 🔴 A warning from 0.7.0 until 0.10.0 (design.md D43, and D52 for why it went back).
 INTERFACE_SHARED_OUTPUT_SPOT = "interface_shared_output_spot"
 # A joint plan (§6.11) was given a document carrying `interface`. The section binds
 # one workflow's boundary material to spots and says nothing about which job each
@@ -391,6 +402,7 @@ ERROR_CODES = frozenset(
         JOB_ROSTER_MISMATCH,
         JOB_WORKFLOW_MISMATCH,
         INTERFACE_SHARED_INPUT_SPOT,
+        INTERFACE_SIMULTANEOUS_INPUT_SPOT,
         INTERFACE_SHARED_OUTPUT_SPOT,
         JOBS_NOT_PLANNABLE_TOGETHER,
         MULTI_JOB_INTERFACE,

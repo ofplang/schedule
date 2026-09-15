@@ -11,19 +11,20 @@
 # **The bay is shared.** Entry material is *there*, given, from its job's release
 # until the move that collects it — so `job2`'s sample appears on the bay at 30, by
 # which time `job1`'s has long gone. The scheduler warns about the shared spot
-# (`interface_shared_input_spot`) because it can only work if the releases leave room:
-# release `job2` at 0 instead and both samples are on one bay at once, which is
-# infeasible rather than queued. That is a deliberate reading — v0 says entry material
-# is already placed, not waiting to be placed (design.md).
+# (`interface_shared_input_spot`) because it can only work if the releases leave room,
+# and whether they do is the solve's to decide. Release `job2` at 0 instead and there
+# is nothing left to decide: both samples are on the one bay at that instant however
+# the work is arranged, and the document is refused
+# (`interface_simultaneous_input_spot`). That is a deliberate reading — v0 says entry
+# material is already placed, not waiting to be placed (design.md).
 #
-# **The racks are not shared here, but they may be.** A delivered result holds its rack
-# to the end of the plan, so two jobs delivering to one rack works only if one of them
-# never delivers — which a job that has stopped (§6.2) does not. Whether that is the
-# case is in the history, not in the bindings, so the scheduler **warns**
-# (`interface_shared_output_spot`) and leaves the verdict to the solve: set both to
-# `rack_a` and this document comes back `infeasible`, with `jobs_not_plannable_together`
-# naming `job1`; do the same after `job1` has failed and the plan is produced, `job2`
-# delivering to the rack `job1` will now never reach.
+# **The racks are not shared, and may not be.** A delivered result holds its rack to
+# the end of the plan, so set both jobs to `rack_a` and the document is refused
+# (`interface_shared_output_spot`): the only way it comes true is if one of the two
+# fails to deliver, and a plan that succeeds only on a failure is not one to accept.
+# A job that already *has* failed does not change that — while `job1` is on the roster
+# its binding still claims the rack. What changes hands is the roster entry: withdraw
+# `job1` (§6.11) and the rack is nobody's, in the same call that plans `job2` onto it.
 #
 # `job1` is first in the roster, so it is first in priority: whatever completion the
 # first plan promises it, `job2` may not push it past.

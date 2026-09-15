@@ -1329,29 +1329,40 @@ the scheduler was asked to plan rather than what the document happens to list �
 initial joint plan is given a document with no roster yet, and sharing one boundary
 across its jobs is exactly the ambiguity being refused.
 
-**What two jobs may share.** Entry material is *there*, given, from its job's release
-until the move that collects it, so **two jobs may bind the same entry spot** — one
-loading bay serving two runs — provided their releases leave the first job's material
-time to be collected. Whether they do is the solver's to decide, so this is a warning
-(`interface_shared_input_spot`, §10.4) and not a refusal; released together onto one
-spot, both are on it at once and the instance is infeasible rather than queued (v0
-says entry material is already placed, not waiting to be placed). A delivered Object
-holds its spot to the end of the plan, so **two jobs may bind the same final-output
-spot only where one of them never delivers** — a job that has stopped (§6.2) does not,
-and a job that has left the plan cannot. That is a warning too
-(`interface_shared_output_spot`, §10.4), for the same reason as the entry spot:
-whether both jobs really deliver is what the history says, not what the bindings say.
-Where they both do, the instance is infeasible, and `jobs_not_plannable_together`
-(§10.4) names the job whose removal would let the rest be planned.
+**What two jobs may share.** One question decides it: is there a moment at which both
+bindings claim the spot? Two Objects cannot be in one place, so where the answer is
+yes the document asks for something no arrangement of the work provides, and it is
+**refused** rather than handed to a solver whose only answer is `infeasible`.
 
-One rule for both sides, then: a boundary spot two jobs share is **stated, not
-refused**. What the warnings add is the spot and the ports, which the failure that may
-follow does not name. A job that **leaves** the plan (below) frees a *bound* output's
-spot in exactly the way a stopped job's is freed, so the warning covers that too; an
-unbound output's spot it does not free, but an unbound output has no binding for a
-warning to be about.
+Entry material is *there*, given, from its job's release until the move that collects
+it, so **two jobs may bind the same entry spot** — one loading bay serving two runs —
+provided their releases leave the first job's material time to be collected. Whether
+they do is the solver's to decide, so that is a warning
+(`interface_shared_input_spot`, §10.4). **Released together onto one spot** it is not:
+both are on it at that instant however the work is arranged, so it is refused
+(`interface_simultaneous_input_spot`, §10.4). A different release is the only thing
+that can separate two bindings on one bay — v0 says entry material is already placed,
+not waiting to be placed — and where there is none there is nothing to decide.
 
-Two bindings of *one* interface on one spot are a different claim and stay refused
+A delivered Object holds its spot to the end of the plan, so **two jobs may not bind
+the same final-output spot** (`interface_shared_output_spot`, §10.4). The only way for
+such a document to come true is for one of the jobs not to deliver — which is to say,
+for something to go wrong — and **a plan that succeeds only if a job fails is not one
+to accept**. That a job *has* already stopped (§6.2) does not make it acceptable
+either: while it is on the roster its binding still claims the spot, and a document
+holding two live claims is one that a recovered job, or a reader who trusts the
+roster, would find contradicting itself.
+
+What changes hands is the roster entry. A job that is not going to deliver **leaves**
+the plan (below), and a leaving job is not among the workflows handed over, so "that
+one is going, this one takes the spot" is said in a single call rather than inferred
+from a failure. Leaving does not wait for the laboratory to be tidied: what the
+departing job is still holding is written down (§6.12), not assumed collected. An
+unbound output has no binding for any of this to be about; where its material came to
+rest is the scheduler's choice, and a withdrawal writes that down too.
+
+Two bindings of *one* interface on one spot are the same claim, reached by one job
+rather than two, and are refused for the same reason
 (`interface_duplicate_spot`, §6.8): those bindings are simultaneous by construction —
 every input from its job's release, every output to the end of the plan — so no
 history can separate them. They also name two Objects rather than one Object twice: a
@@ -1996,12 +2007,15 @@ leg is pinned like any committed leg; a pending one is re-derived).
   a history against the wrong workflow would pin it onto activities that never ran
   it. A top-level `interface` is refused when the call names jobs
   (`multi_job_interface`): it binds one workflow's ports, and a joint plan carries
-  one per job. Across jobs, a shared boundary spot is a **warning** rather than an
-  error: two entry bindings on one spot (`interface_shared_input_spot`) are legitimate
-  where the releases leave the first job's material time to be collected, and two
-  output bindings on one spot (`interface_shared_output_spot`) are legitimate where one
-  of the two never delivers (§6.11). Both turn on the history rather than on the
-  bindings, so the verdict is the solver's.
+  one per job. Across jobs, a shared **entry** spot is a warning where the releases
+  differ (`interface_shared_input_spot`) — whether they leave the first job's material
+  time to be collected is the solver's to decide — and an error where they coincide
+  (`interface_simultaneous_input_spot`), both samples being on the spot at that instant
+  however the work is arranged. A shared **final-output** spot is an error
+  (`interface_shared_output_spot`): a delivered Object holds its spot to the end of the
+  plan, so the document can only come true if one of the jobs fails to deliver, and a
+  plan that succeeds only on a failure is not one to accept. A job that is not going to
+  deliver leaves the plan instead (§6.11).
 - **Promises and stopping** (§6.11, §6.2). A promise that no schedule can keep is
   relaxed and reported (`job_bound_relaxed`, a warning: a plan is still produced). If
   nothing can be planned even with every promise lifted, the job whose removal would
@@ -2136,7 +2150,7 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `arc_unreachable` | no endpoint-mode pair and route (transporter or transporter-less, §5.4) can serve an Object-bearing arc (interior or boundary, §6.8) |
 | `interface_unknown_port` | an `interface` binding names a port that is not an Object-bearing boundary port on that side (§6.8) |
 | `interface_pure_data_port` | an `interface` binding names a Pure Data port (occupies no spot) |
-| `interface_duplicate_spot` | two bindings of one `interface`, on the same side (two inputs, or two outputs), bind the same spot. Across *jobs* the claim is weaker and warns instead (below) |
+| `interface_duplicate_spot` | two bindings of one `interface`, on the same side (two inputs, or two outputs), bind the same spot. Across *jobs* the same claim is `interface_simultaneous_input_spot` / `interface_shared_output_spot` (below) |
 | `interface_input_missing` | an Object-bearing entry input has no `interface` binding (§6.8) |
 | `interface_output_unbound` | **warning**: an Object-bearing final output has no `interface.outputs` binding (§6.8), so the schedule decides where it comes to rest. Binding every final output is the normal way to write the section |
 | `job_workflow_mismatch` | a job's workflow is not the one its roster entry's `fingerprint` records (§6.11) |
@@ -2150,8 +2164,9 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `withdrawal_empties_roster` | every job in the roster is leaving (§6.11), which would leave nothing to plan |
 | `job_withdrawn` | **warning**: a job left the plan (§6.11). Names the jobs, says whether the levels were restated as of `now` (§6.10), and names any spot kept occupied because an unbound final output came to rest there (§6.12) |
 | `jobs_not_plannable_together` | no schedule exists even with every promise lifted; names the job whose removal would let the rest be planned, or says none does (§6.11) |
-| `interface_shared_input_spot` | **warning**: two jobs bind the same entry spot (§6.11). Legitimate if their releases leave the first job's material time to be collected |
-| `interface_shared_output_spot` | **warning**: two jobs bind the same final-output spot (§6.11). Legitimate if one of them never delivers — a job that has stopped (§6.2), or one that has left the plan. Where both do deliver the instance is `infeasible` |
+| `interface_shared_input_spot` | **warning**: two jobs bind the same entry spot with *different* releases (§6.11). Legitimate if those releases leave the first job's material time to be collected, which is the solver's to decide |
+| `interface_simultaneous_input_spot` | two jobs bind the same entry spot and are **released together** (§6.11): entry material is there from its job's release, so both are on the spot at that instant however the work is arranged |
+| `interface_shared_output_spot` | two jobs bind the same final-output spot (§6.11). A delivered Object holds its spot to the end of the plan, so the document can only come true if one of them fails to deliver; a job that is not going to deliver leaves the plan instead. **Was a warning from 0.7.0 to 0.10.0** |
 | `missing_inventories` | the resource model is in effect but the document has no `inventories` (§6.10). An empty `levels` is the way to say every stock is empty at that moment |
 | `inventory_exceeds_capacity` | an `inventories.levels` level is above its resource's `capacity` |
 | `inventory_moment_in_future` | `inventories.at` is later than `now` (§6.10): the history can only have happened before the present |

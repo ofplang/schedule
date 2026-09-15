@@ -191,18 +191,21 @@ ofp-schedule schedule interface_load.workflow.yaml interface_load.workflow.yaml 
 **The bay is shared.** Entry material is *there*, given, from its job's release until
 the move that collects it — so `job2`'s sample appears on the bay at 30, by which time
 `job1`'s has long gone. The scheduler **warns** (`interface_shared_input_spot`),
-because it only works if the releases leave room: drop `job2`'s release and both
-samples are on one bay at once, which comes back `infeasible` rather than queued. That
-is deliberate — v0 says entry material is already placed, not waiting to be placed.
+because it only works if the releases leave room, and whether they do is the solve's
+to decide. Drop `job2`'s release and there is nothing to decide: both samples are on
+the one bay at that instant however the work is arranged, and the document is
+**refused** (`interface_simultaneous_input_spot`). That is deliberate — v0 says entry
+material is already placed, not waiting to be placed.
 
-**The racks are not shared here, but they may be.** A delivered result holds its rack
-to the end of the plan (§6.8), so two jobs delivering to one rack works only if one of
-them never delivers — which a job that has stopped does not. That is in the history
-rather than in the bindings, so the scheduler **warns**
-(`interface_shared_output_spot`) and lets the solve decide: set both to `rack_a` and
-this document comes back `infeasible`, naming `job1` as the job whose removal would let
-the rest be planned; set both to `rack_a` *after* `job1` has failed and the plan is
-produced, with `job2` delivering to the rack `job1` will now never reach.
+**The racks are not shared, and may not be.** A delivered result holds its rack to the
+end of the plan (§6.8), so set both jobs to `rack_a` and the document is **refused**
+(`interface_shared_output_spot`): the only way it could come true is for one of the two
+to fail to deliver, and a plan that succeeds only on a failure is not one to accept.
+Nor does it help that a job already *has* failed — while `job1` is on the roster its
+binding still claims the rack. What changes hands is the roster entry: withdraw `job1`
+(§6.11) and the rack is nobody's, in the same call that plans `job2` onto it. Leaving
+does not wait for the laboratory to be tidied — whatever `job1` is still holding is
+written into `occupied` rather than assumed collected.
 
 - `outputs/shared_bay.plan.yaml` (makespan 44) and `outputs/shared_bay.device.svg`.
 

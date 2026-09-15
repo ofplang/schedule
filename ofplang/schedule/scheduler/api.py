@@ -745,65 +745,105 @@ def _boundary_spots(spec: JobSpec, side: str) -> dict[str, str]:
 
 
 def _check_boundary_spots(specs: tuple[JobSpec, ...]) -> list[Diagnostic]:
-    """Two jobs sharing one boundary spot: said out loud, decided by the solver
-    (SPEC §6.8, §6.11).
+    """Two jobs binding one boundary spot (SPEC §6.8, §6.11).
 
-    One rule for both sides. Sharing an **entry** spot is legitimate where the
-    releases leave room -- entry material holds its spot only from its job's release
-    until the move that collects it, so one loading bay serves two runs. Sharing a
-    **final-output** spot is legitimate where one of the two never delivers -- a job
-    that has stopped (§6.2) does not, and a job that has left the plan cannot.
+    One question decides both sides: **is there a moment at which both bindings claim
+    the spot?** Two Objects cannot be in one place, so where the answer is yes the
+    document asks for something no arrangement of the work provides — and that is
+    refused here, rather than sent to a solver whose only answer is `infeasible`.
 
-    Neither is a property of the document, which is why neither is refused here.
-    Whether the releases leave room, and whether both jobs really do deliver, is what
-    the history says and what the solver decides: an instance where the spot genuinely
-    cannot serve both comes back `infeasible`, with `jobs_not_plannable_together`
-    naming the job whose removal would let the rest be planned. What that failure does
-    not say is *which spot*, so these warnings say it.
+    **Outputs: always.** A delivered Object holds its spot to the end of the plan
+    (§6.8), so two deliveries to one spot overlap there however the work is arranged.
+    The only way for the document to come true is for one of the jobs not to deliver —
+    which is to say, for something to go wrong — and **a plan that succeeds only if a
+    job fails is not one to accept**. A job that is not going to deliver leaves the
+    plan instead (`withdraw`, §6.11); a leaving job is not among the specs handed here,
+    so "that one is going, this one takes the spot" is a document this accepts in one
+    call, and it is the caller saying what happened rather than the scheduler inferring
+    it from a failure.
 
-    🔴 The output side used to be an error, on the argument that two delivered Objects
-    always overlap at the end of the plan. That is true only while both jobs deliver,
-    which this function cannot see: it is handed the roster, and runs before any status
-    is read. A job that had stopped -- whose delivery is cancelled and whose spot the
-    model frees -- was refused all the same, so a document with a perfectly good
-    schedule was turned away.
+    🔴 This side warned between 0.7.0 and 0.10.0 (design.md D43), on the argument that
+    a *stopped* job does not deliver and that this check, handed the roster before any
+    status is read, cannot see whether one has stopped. It cannot — and no longer needs
+    to. Accepting the document while the stopped job is still in the roster leaves two
+    live claims on one spot, held apart only by a fact recorded elsewhere; a job that
+    recovered, or a reader who trusted the roster, would find the document contradicting
+    itself. Withdrawal is what resolves it, and withdrawal is available without waiting
+    for the material to be collected: what a leaving job is still holding is written
+    down (§6.12) rather than assumed gone (D51, D52).
 
-    Refusing two bindings of *one* interface on one spot is a different claim and stays
-    an error (`interface_duplicate_spot`, `instance.py`): those bindings are
-    simultaneous by construction, so no history can separate them -- and they are two
-    Objects rather than one named twice (a port carries one Object-bearing value, and
-    v0 §12.2 has every such value referred to exactly once), so one spot cannot satisfy
-    both. Nothing the solver could arrange would make it true, which is what separates
-    a refusal from a warning here.
+    **Inputs: only where the releases coincide.** Entry material is *there*, given, from
+    its job's release until the move that collects it (§6.8), so one loading bay serves
+    two runs whose releases leave room — whether they do is what the history says and
+    the solver decides, which is a warning. Released **together**, both samples are on
+    the bay at that instant whatever the schedule does, and that is the same refusal as
+    the output side, reached by two jobs rather than by one interface
+    (`interface_duplicate_spot`).
+
+    🔴 Every earlier binder is compared against, not only the first: three jobs on one
+    bay at 0, 30 and 30 have a coinciding pair the first of them is not part of.
     """
     out: list[Diagnostic] = []
-    for side, code, severity in (
-        ("outputs", errors.INTERFACE_SHARED_OUTPUT_SPOT, WARNING),
-        ("inputs", errors.INTERFACE_SHARED_INPUT_SPOT, WARNING),
-    ):
-        owner: dict[str, tuple[str, str]] = {}
-        for spec in specs:
-            for spot, port in sorted(_boundary_spots(spec, side).items()):
-                if spot in owner:
-                    first_job, first_port = owner[spot]
-                    detail = (
-                        "a delivered Object holds its spot to the end of the plan, so "
-                        "this works only if one of them never delivers"
-                        if side == "outputs"
-                        else "their releases must leave the first job's material time "
-                        "to be collected before the second's arrives"
+
+    # The output side: the first binder owns the spot and every later one contradicts
+    # it. Which pair is named hardly matters -- all of them are refusals -- so the
+    # first is named, as the shape of the entry-side report does.
+    owner: dict[str, tuple[str, str]] = {}
+    for spec in specs:
+        for spot, port in sorted(_boundary_spots(spec, "outputs").items()):
+            if spot not in owner:
+                owner[spot] = (spec.id, port)
+                continue
+            first_job, first_port = owner[spot]
+            out.append(
+                Diagnostic(
+                    errors.INTERFACE_SHARED_OUTPUT_SPOT,
+                    f"job {first_job!r} ({first_port}) and job {spec.id!r} ({port}) "
+                    f"both bind {spot!r}: a delivered Object holds its spot to the end "
+                    f"of the plan, so no arrangement of the work puts both there. A job "
+                    f"that is not going to deliver leaves the plan (withdraw, §6.11) "
+                    f"rather than having its binding planned around",
+                    "jobs",
+                )
+            )
+
+    # The entry side, where the release decides. Collected per spot in roster order, so
+    # a binder is judged against the ones already there: a coinciding release refuses,
+    # and anything else is the warning the shared bay has always carried.
+    binders: dict[str, list[tuple[int, str, str]]] = {}
+    for spec in specs:
+        for spot, port in sorted(_boundary_spots(spec, "inputs").items()):
+            binders.setdefault(spot, []).append((spec.release, spec.id, port))
+    for spot in sorted(binders):
+        entries = binders[spot]
+        for index, (release, job, port) in enumerate(entries):
+            together = next((e for e in entries[:index] if e[0] == release), None)
+            if together is not None:
+                _, first_job, first_port = together
+                out.append(
+                    Diagnostic(
+                        errors.INTERFACE_SIMULTANEOUS_INPUT_SPOT,
+                        f"job {first_job!r} ({first_port}) and job {job!r} ({port}) "
+                        f"both bind {spot!r} and are released together (at {release}): "
+                        f"entry material is there from its job's release, so both are "
+                        f"on the spot at that moment. Release one of them later, or "
+                        f"give it a spot of its own",
+                        "jobs",
                     )
-                    out.append(
-                        Diagnostic(
-                            code,
-                            f"job {first_job!r} ({first_port}) and job {spec.id!r} "
-                            f"({port}) both bind {spot!r} -- {detail}",
-                            "jobs",
-                            severity=severity,
-                        )
+                )
+            elif index:
+                _, first_job, first_port = entries[0]
+                out.append(
+                    Diagnostic(
+                        errors.INTERFACE_SHARED_INPUT_SPOT,
+                        f"job {first_job!r} ({first_port}) and job {job!r} ({port}) "
+                        f"both bind {spot!r} -- their releases must leave the first "
+                        f"job's material time to be collected before the second's "
+                        f"arrives",
+                        "jobs",
+                        severity=WARNING,
                     )
-                else:
-                    owner[spot] = (spec.id, port)
+                )
     return out
 
 

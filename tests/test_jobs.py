@@ -266,47 +266,98 @@ def test_one_bay_serves_two_jobs_whose_releases_leave_room():
     assert first_start("job2") == 30  # its material is not on the bay before then
 
 
-def test_two_jobs_released_together_onto_one_bay_do_not_queue():
+def test_two_jobs_released_together_onto_one_bay_are_refused():
     """The deliberate reading: entry material is already placed, not waiting to be
-    placed. Two samples on one bay at once is infeasible, not a queue."""
+    placed. Two samples on one bay at one instant is not a queue -- and not something a
+    schedule could arrange away, so it is refused rather than solved for.
+
+    A different release is the only thing that separates two bindings on one bay, which
+    is why that case stays a warning and this one does not."""
     workflow, env, document = _bay()
     document = copy.deepcopy(document)
     del document["jobs"][1]["release"]
 
     report = schedule_jobs(_bay_jobs(workflow), env, document_path=document)
     assert not report.ok
-    assert report.outcome == "infeasible"
+    codes = {d.code for d in report.diagnostics}
+    assert "interface_simultaneous_input_spot" in codes
+    # Refused before the solve: no search was spent on an answer that was already known.
+    assert report.outcome is None
+    assert "infeasible" not in codes
 
 
-def test_two_jobs_delivering_to_one_spot_are_warned_not_refused():
+def test_a_coinciding_release_is_seen_against_every_earlier_job():
+    """🔴 Not only against the first. Three jobs on one bay at 0, 30 and 30: the pair
+    that coincides does not include the first of them, so a check that compared each
+    binder with the owner of the spot would report two warnings and no refusal."""
+    workflow, env, document = _bay()
+    document = copy.deepcopy(document)
+    # Its output is left unbound -- the laboratory has two racks and this test is about
+    # the bay, so `job3` is given nowhere in particular to deliver rather than a third
+    # rack there is not.
+    document["jobs"].append(
+        {
+            "id": "job3",
+            "release": 30,
+            "interface": {"inputs": {"sample": "loader.stage"}},
+        }
+    )
+    jobs = _bay_jobs(workflow) + [JobInput("job3", copy.deepcopy(workflow))]
+
+    report = schedule_jobs(jobs, env, document_path=document)
+    assert not report.ok
+    simultaneous = [
+        d for d in report.diagnostics if d.code == "interface_simultaneous_input_spot"
+    ]
+    assert len(simultaneous) == 1
+    # Named as the pair that actually coincides, not as "job3 and whoever was first".
+    assert "'job2'" in simultaneous[0].message and "'job3'" in simultaneous[0].message
+    # `job2` against `job1` is still only a warning: 0 and 30 may leave room. `job3`
+    # carries the refusal instead of a second warning -- it is the same pair of
+    # bindings, and the stronger thing to say about it is the one that is said.
+    warned = [d for d in report.diagnostics if d.code == "interface_shared_input_spot"]
+    assert [d.severity for d in warned] == ["warning"]
+    assert "'job1'" in warned[0].message and "'job2'" in warned[0].message
+
+
+def test_two_jobs_delivering_to_one_spot_are_refused():
     """A delivered result holds its rack to the end of the plan, so two jobs delivering
-    to one rack works only where one of them never delivers -- which is a fact about the
-    history, not about the bindings. So it is said out loud and the verdict left to the
-    solve. Here both jobs really do deliver, and the instance is infeasible."""
+    to one rack overlap there however the work is arranged. The document can only come
+    true if one of them fails to deliver -- and a plan that succeeds only because a job
+    failed is not one to accept, so this is refused rather than solved for.
+
+    Refusing it also says *what* is wrong. The solve's answer was
+    `jobs_not_plannable_together`, which names a job to remove and neither the spot nor
+    the ports."""
     workflow, env, document = _bay()
     document = copy.deepcopy(document)
     document["jobs"][1]["interface"]["outputs"]["result"] = "output.rack_a"
 
     report = schedule_jobs(_bay_jobs(workflow), env, document_path=document)
     assert not report.ok
-    assert report.outcome == "infeasible"
+    refused = [d for d in report.diagnostics if d.code == "interface_shared_output_spot"]
+    assert [d.severity for d in refused] == ["error"]
+    assert "output.rack_a" in refused[0].message
+    # And it points at what to do about it, which is the other half of the report.
+    assert "withdraw" in refused[0].message
+    # No solve was attempted: the answer did not need one.
+    assert report.outcome is None
 
-    warned = [d for d in report.diagnostics if d.code == "interface_shared_output_spot"]
-    assert [d.severity for d in warned] == ["warning"]
-    # The spot and the ports, which the failure that follows does not name.
-    assert "output.rack_a" in warned[0].message
-    assert "jobs_not_plannable_together" in {d.code for d in report.diagnostics}
 
+def test_a_stopped_job_does_not_free_the_spot_it_bound_but_leaving_does():
+    """🔴 The route by which a rack changes hands (design.md D52).
 
-def test_a_stopped_job_frees_the_output_spot_it_will_never_reach():
-    """🔴 Why that warning is not a refusal. `job1` has failed, so its delivery is
-    cancelled and the model frees its rack -- and `job2` may be sent there after all.
+    `job1` has failed, so its delivery is cancelled and it will never reach the rack it
+    bound. That is *not* enough to let `job2` be sent there: while `job1` is still on
+    the roster its binding still says the rack is its, and a document holding two live
+    claims on one spot is one a recovered job -- or a reader who trusts the roster --
+    would find contradicting itself. Between 0.7.0 and 0.10.0 this was allowed, on the
+    argument that the stopped job does not deliver (D43).
 
-    The rule used to refuse this document outright, on the argument that two deliveries
-    always overlap at the end of the plan. That argument holds only while both jobs
-    still deliver, and the check cannot see whether they do: it is handed the roster and
-    runs before any status is read. So a document with a perfectly good schedule was
-    turned away.
+    What changes hands is the roster entry. `job1` leaves (`withdraw`, §6.11) and the
+    rack is nobody's, in the same call that plans `job2` onto it -- and leaving does not
+    wait for the laboratory to be tidied: what `job1` is still holding is written down
+    (§6.12), not assumed collected.
     """
     workflow, env, document = _bay()
     # A second stage on the heater: `job1` fails on one, and what this is about is the
@@ -331,9 +382,20 @@ def test_a_stopped_job_frees_the_output_spot_it_will_never_reach():
     status["activities"] = [a for a in status["activities"] if a.get("job") != "job2"]
     status["jobs"][1]["interface"]["outputs"]["result"] = "output.rack_a"
 
-    report = schedule_jobs(_bay_jobs(workflow), env, document_path=status)
+    # Stopped is not gone: while `job1` is on the roster, the rack is still its.
+    refused = schedule_jobs(_bay_jobs(workflow), env, document_path=copy.deepcopy(status))
+    assert not refused.ok
+    assert "interface_shared_output_spot" in {d.code for d in refused.diagnostics}
+
+    # Leaving is. Said in the same call that plans `job2` onto the rack, because a job
+    # on its way out is not among the workflows handed over (§6.11).
+    report = schedule_jobs(
+        [JobInput("job2", copy.deepcopy(workflow))],
+        env,
+        document_path=status,
+        withdraw=["job1"],
+    )
     assert report.ok, [d.code for d in report.diagnostics]
-    assert "interface_shared_output_spot" in {d.code for d in report.diagnostics}
     # And it really is delivered there.
     delivered = [
         a["to_spot"]
@@ -341,6 +403,9 @@ def test_a_stopped_job_frees_the_output_spot_it_will_never_reach():
         if a.get("job") == "job2" and a["kind"] == "transport" and a["arc"]["to"]["node"] == []
     ]
     assert delivered == ["output.rack_a"]
+    # 🔴 Leaving did not require the laboratory to be tidy: what the failure left
+    # mid-workflow is written down rather than assumed collected (§6.12, D51).
+    assert [e["spot"] for e in report.plan["occupied"]] == ["heater.spare"]
 
 
 def test_a_joint_plan_refuses_a_top_level_interface():
