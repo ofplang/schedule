@@ -348,12 +348,41 @@ def _frozen_note(frozen: list[dict]) -> str:
     spots = ", ".join(entry["spot"] for entry in frozen)
     if len(frozen) == 1:
         return (
-            f"; {spots} stays occupied (§6.12): an unbound final output, so where it "
-            f"came to rest was never stated and cannot have been collected"
+            f"; {spots} stays occupied (§6.12): leaving collects a bound output spot "
+            f"holding the product it promised, and this is not one -- so nothing has "
+            f"said what is there is gone"
         )
     return (
-        f"; {spots} stay occupied (§6.12): unbound final outputs, so where they came "
-        f"to rest was never stated and cannot have been collected"
+        f"; {spots} stay occupied (§6.12): leaving collects a bound output spot "
+        f"holding the product it promised, and these are not -- so nothing has said "
+        f"what is there is gone"
+    )
+
+
+def _delivered_product(mine: list[dict], spot: str) -> bool:
+    """Whether what a leaving job holds at `spot` is the product its binding promised.
+
+    The evidence is the delivery itself (§6.8): a boundary output arc is carried by an
+    ordinary transport, so the product reached its spot exactly when a completed move
+    of this job arrived there — and it is still what is there only if nothing of this
+    job's touched the spot afterwards. Ties go to *not* delivered: over-claiming a hold
+    costs a slower plan, under-claiming puts a plate where a plate already is.
+    """
+    touched = [
+        a
+        for a in mine
+        if a.get("status") in ("completed", "failed") and spot in _activity_spots(a)
+    ]
+    if not touched:
+        return False
+    last_end = max(a.get("end", 0) for a in touched)
+    return all(
+        a.get("status") == "completed"
+        and a.get("kind") == "transport"
+        and a.get("to_spot") == spot
+        and ((a.get("arc") or {}).get("to") or {}).get("node") == []
+        for a in touched
+        if a.get("end", 0) == last_end
     )
 
 
@@ -370,12 +399,23 @@ def _frozen_holds(
     leaves and takes that history with it. So it is derived here, before the model is
     built, and written into the plan's `occupied` for the next document to carry.
 
-    **What the caller bound is left out.** They named the spot, so withdrawing is a
-    statement about a place they chose and know: they collected it. Anything else they
-    may not have — the schedule picked where an unbound output came to rest (§6.8),
-    and a plate a failure left mid-workflow was never anyone's choice — so freeing it
-    would hand a spot with something on it to the next job, which is measurable rather
-    than hypothetical (design.md D44).
+    **What the caller bound is left out — where it holds what the binding promised.**
+    They named the spot and asked for the product to end up there, so leaving is a
+    statement about a place they chose and a thing they know is on it. The delivery
+    having arrived, and arrived *last*, is what says so (`_delivered_product`): a
+    delivery that failed on the way, or material another part of the workflow came to
+    rest there afterwards, is not what they asked for, and freeing the spot on its
+    account would hand the next job a plate.
+
+    Anything else is written down. The schedule picked where an unbound output came to
+    rest (§6.8); a plate a failure left mid-workflow was never anyone's choice; and
+    **entry material is written too, though the caller bound its spot** — a job that
+    never started still has all of it sitting there, which a job that ran would have
+    had collected as its first move, and from outside nobody can tell those apart.
+    Whether it is still there, or went on its way and the bay has since been used by
+    someone else, is exactly what the history says and what is about to leave with it.
+    Freeing a spot with something on it is measurable rather than hypothetical
+    (design.md D44).
 
     `since` is the truthful moment, not the moment the claim is made: the end of the
     last of the job's own activities to touch the spot. It changes no plan — §6.12
@@ -400,12 +440,16 @@ def _frozen_holds(
     out: list[dict] = []
     for job_id in sorted(withdraw):
         entry = (entries or {}).get(job_id) or {}
-        # What the caller **bound** is the half they have just said they collected: they
-        # named the spot, so leaving is a statement about a place they chose and know.
+        # What the caller **bound** is the half they have just said they collected:
+        # they named the spot and asked for the product to end up there. Only where
+        # the product really is there, though -- a binding whose delivery failed, or
+        # whose spot something else came to rest on, promises nothing about what a
+        # leaving caller has in their hands.
+        mine = [a for a in activities if _job_of_activity(a) == job_id]
         bound = {
             spot
             for spot in ((entry.get("interface") or {}).get("outputs") or {}).values()
-            if isinstance(spot, str)
+            if isinstance(spot, str) and _delivered_product(mine, spot)
         }
         for spot, since in sorted(_holds_of(activities, entries, [job_id], now).items()):
             if spot in bound or spot in held:

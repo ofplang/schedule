@@ -1518,12 +1518,22 @@ all — takes nothing with it, and leaves with no such request.
 from its own history (§6.12) — and stops following from anything the instant that
 history leaves with it. So what it holds is derived while it is still here and written
 into the plan's `occupied`, dated when the material actually got there. What the
-caller **bound** is left out: they named the spot, so leaving is a statement about a
-place they chose and know. Everything else they may not have — the schedule chose
-where an unbound output came to rest, and a plate a failure left mid-workflow was
-nobody's choice. Entry material and an occupancy the document already carried are
-unaffected: the first was bound by the caller, and the second says a spot is held and
-outlasts whatever put the material there. **So is a spot a job that is staying still
+caller **bound** is left out — where it holds what the binding promised: they named
+the spot and asked for the product to end up there, so leaving is a statement about a
+place they chose and a thing they know is on it. A completed delivery arriving there,
+and nothing of that job's touching it since, is what says so; a delivery that failed
+on the way, or material another part of the workflow came to rest on that spot
+afterwards, is not the product they asked for, and freeing the spot on its account
+would hand the next job a plate.
+
+Everything else is written down. The schedule chose where an unbound output came to
+rest, and a plate a failure left mid-workflow was nobody's choice. **So is entry
+material, though the caller bound its spot**: a job that never started still has all
+of it sitting there — which a job that ran would have had collected as its first move
+— and from outside nobody can tell those apart. Whether it is still there, or went on
+its way and the bay has since been used by someone else, is exactly what the history
+says and what is about to leave with it. An occupancy the document already carried is
+unaffected: it says a spot is held and outlasts whatever put the material there. **So is a spot a job that is staying still
 derives.** Two stopped jobs can claim one spot — a failed transport claims both its
 ends, and the other end may be where another job's history left something — and
 writing that one down would state a hold the remaining history goes on stating

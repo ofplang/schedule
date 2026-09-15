@@ -414,6 +414,47 @@ def test_a_bound_final_output_is_taken_at_its_word():
     assert after.ok, _codes(after)
 
 
+def test_a_bound_output_whose_delivery_failed_is_not_taken_at_its_word():
+    """🔴 The word is about the *product*, not the spot. Binding a spot says "my result
+    ends up here", so leaving says "I took my result" -- which is a statement about a
+    thing the caller knows is there. A delivery that failed on the way put no result
+    there and may well have left the plate at either end, so freeing the rack on the
+    strength of the binding would hand the next job a spot with something on it.
+
+    The mirror of `test_a_bound_final_output_is_taken_at_its_word`: same binding, same
+    withdrawal, and the opposite answer, because what is on the rack is not what the
+    binding promised.
+    """
+    workflow, env, document = _bay(bind_job1=True, spare_stage=True)
+    plan = _first_plan(workflow, env, document)
+    spot = _resting_spot(plan, "job1")
+    assert spot == "output.rack_a"
+
+    # `job1` heats its sample and then fails on the way to the rack.
+    status = copy.deepcopy(plan)
+    delivery_end = max(a["end"] for a in plan["activities"] if a.get("job") == "job1")
+    status["now"] = delivery_end
+    for a in status["activities"]:
+        if a.get("job") != "job1":
+            continue
+        arc = a.get("arc") or {}
+        if a["kind"] == "transport" and arc.get("to", {}).get("node") == []:
+            a["status"], a["end"] = "failed", delivery_end
+        else:
+            a["status"] = "completed"
+    status["activities"] = [a for a in status["activities"] if a.get("status")]
+
+    report = schedule_jobs(
+        _jobs(workflow, "job2"), env, document_path=copy.deepcopy(status),
+        withdraw=["job1"], random_seed=0,
+    )
+    assert report.ok, _codes(report)
+    # A failed transport claims both its ends, and neither is collected by leaving.
+    frozen = {entry["spot"] for entry in report.plan["occupied"]}
+    assert spot in frozen
+    # And the report says so rather than claiming the caller has it.
+    assert spot in next(d.message for d in report.diagnostics if d.code == "job_withdrawn")
+
 def test_a_failed_job_can_leave():
     """🔴 The case the feature exists for: a job that died.
 
