@@ -610,3 +610,147 @@ def test_interface_load_example_end_to_end(tmp_path):
     out = tmp_path / "plan.yaml"
     out.write_text(to_yaml(report.plan), encoding="utf-8")
     assert validate_document(out).ok, [(d.code, d.path) for d in validate_document(out).errors]
+
+
+def test_a_pure_data_port_is_caught_however_the_workflow_wires_it(tmp_path):
+    """🔴 The check has to ask what the *port* is, not whether something consumes it.
+
+    A Pure Data entry input wired through `state:` is in `entry_inputs` like any other
+    -- that table says which activity consumes a port, not whether the port occupies a
+    spot -- so consulting it first took the binding for a good one and let it through to
+    fail later as `arc_unreachable`, which says nothing about the mistake. Only a
+    `bind:`-wired port was ever caught: the rule worked on one of the two ways of writing
+    the same thing.
+
+    Both sides, and both whether or not the binding also collides with a real one.
+    """
+    workflow = tmp_path / "wf.yaml"
+    workflow.write_text(WORKFLOW_WIRED_DATA, encoding="utf-8")
+    env = tmp_path / "env.yaml"
+    env.write_text(ENV_WIRED_DATA, encoding="utf-8")
+
+    def codes(interface: dict) -> set:
+        document = {"interface": interface, "activities": []}
+        report = schedule(str(workflow), str(env), document_path=document)
+        return {d.code for d in report.diagnostics}
+
+    # Entry side: on a spot of its own, and on the Object input's spot.
+    assert "interface_pure_data_port" in codes(
+        {"inputs": {"sample": "loader.stage", "limit": "heater.stage"},
+         "outputs": {"result": "rack.slot"}}
+    )
+    assert "interface_pure_data_port" in codes(
+        {"inputs": {"sample": "loader.stage", "limit": "loader.stage"},
+         "outputs": {"result": "rack.slot"}}
+    )
+    # ... and the collision is not what gets reported, the binding having no business
+    # naming a spot at all.
+    assert "interface_duplicate_spot" not in codes(
+        {"inputs": {"limit": "loader.stage", "sample": "loader.stage"},
+         "outputs": {"result": "rack.slot"}}
+    )
+
+    # Exit side: the same, for a Pure Data final output.
+    assert "interface_pure_data_port" in codes(
+        {"inputs": {"sample": "loader.stage"},
+         "outputs": {"result": "rack.slot", "reading": "heater.stage"}}
+    )
+    assert "interface_pure_data_port" in codes(
+        {"inputs": {"sample": "loader.stage"},
+         "outputs": {"result": "rack.slot", "reading": "rack.slot"}}
+    )
+
+
+def test_two_real_bindings_on_one_spot_are_still_a_duplicate(tmp_path):
+    """The check the reordering must not have cost: two bindings that *should* name a
+    spot, naming the same one."""
+    workflow = tmp_path / "wf.yaml"
+    workflow.write_text(WORKFLOW_WIRED_DATA, encoding="utf-8")
+    env = tmp_path / "env.yaml"
+    env.write_text(ENV_WIRED_DATA, encoding="utf-8")
+
+    document = {
+        "interface": {
+            "inputs": {"sample": "loader.stage"},
+            # `result` and the Object passthrough would both rest on the rack.
+            "outputs": {"result": "rack.slot", "kept": "rack.slot"},
+        },
+        "activities": [],
+    }
+    report = schedule(str(workflow), str(env), document_path=document)
+    assert "interface_duplicate_spot" in {d.code for d in report.diagnostics}
+
+
+#: An entry composite whose Pure Data input is threaded through `state:` (so it lands in
+#: `entry_inputs`) and whose final outputs include a Pure Data one -- the shapes the
+#: interface check has to tell apart from Object-bearing ones.
+WORKFLOW_WIRED_DATA = """
+spec_version: "0.0"
+types:
+  Plate:
+    domain: object
+processes:
+  heat:
+    kind: atomic
+    inputs:
+      plate: { type: Plate, phase: data }
+      limit: { type: Int, phase: data }
+    outputs:
+      out: { type: Plate, phase: data }
+      kept: { type: Plate, phase: data }
+      reading: { type: Float, phase: data }
+    objects:
+      map:
+        outputs.out: inputs.plate
+      create: [outputs.kept]
+  main:
+    kind: composite
+    inputs:
+      sample: { type: Plate, phase: data }
+      limit:  { type: Int, phase: data }
+    outputs:
+      result:  { type: Plate, phase: data }
+      kept:    { type: Plate, phase: data }
+      reading: { type: Float, phase: data }
+    body:
+      nodes:
+        - id: Heat
+          process: heat
+          state:
+            plate:
+              from: inputs.sample
+            limit:
+              from: inputs.limit
+      returns:
+        result:
+          from: Heat.out
+        kept:
+          from: Heat.kept
+        reading:
+          from: Heat.reading
+entry: main
+"""
+
+ENV_WIRED_DATA = """
+time: { unit: second }
+devices:
+  - { id: loader, spots: [stage] }
+  # Two spots, so the mode's two Object outputs each have one of their own -- what is
+  # under test is two *interface* bindings on one spot, not two mode outputs.
+  - { id: heater, spots: [stage, aux] }
+  - { id: rack,   spots: [slot, shelf] }
+transporters: [{ id: arm }]
+transports:
+  - { transporter: arm, from: loader.stage, to: heater.stage, duration: 2 }
+  - { transporter: arm, from: heater.stage, to: rack.slot, duration: 2 }
+  - { transporter: arm, from: heater.aux,   to: rack.slot, duration: 2 }
+  - { transporter: arm, from: heater.stage, to: rack.shelf, duration: 2 }
+  - { transporter: arm, from: heater.aux,   to: rack.shelf, duration: 2 }
+processes:
+  heat:
+    modes:
+      - devices: [heater]
+        duration: 5
+        input_spots:  { plate: heater.stage }
+        output_spots: { out: heater.stage, kept: heater.aux }
+"""

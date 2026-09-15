@@ -443,34 +443,47 @@ def _add_boundary_inputs(
     inputs = interface.get("inputs") or {}
     valid: list[tuple[str, str, Endpoint]] = []  # (port name, spot, consumer endpoint)
     spot_owner: dict[str, str] = {}
+    # 🔴 **Whether the port occupies a spot at all is asked first.** `entry_input_ports`
+    # is the table that knows (`{port: object_bearing}`); `entry_inputs` is the one that
+    # says which activity consumes it, and for a composite entry it holds Pure Data ports
+    # too -- a `state:`-wired one is in there like any other. Consulting that first took a
+    # Data binding for a good one and let it through to fail later as `arc_unreachable`,
+    # which says nothing about the mistake. Measured: only a `bind:`-wired Data port was
+    # ever caught, which is to say the rule worked on half the ways of writing the same
+    # thing.
+    #
+    # And the duplicate check comes after, for the same reason: a binding that should not
+    # name a spot at all is not "the second job to want this one". Reported in the order
+    # the reader can act on -- fix the port, then the spot.
     for name, spot in inputs.items():
         if not _spot_exists(spot, env, name, diags):
+            continue
+        object_bearing = workflow.entry_input_ports.get(name)
+        if object_bearing is None:
+            diags.error(
+                errors.INTERFACE_UNKNOWN_PORT,
+                f"interface input {name!r} is not an entry input of the workflow",
+            )
+            continue
+        if not object_bearing:
+            diags.error(
+                errors.INTERFACE_PURE_DATA_PORT,
+                f"interface input {name!r} is a Pure Data port and occupies no spot",
+            )
+            continue
+        consumer = workflow.entry_inputs.get(name)
+        if consumer is None:
+            diags.error(
+                errors.INTERFACE_UNKNOWN_PORT,
+                f"interface input {name!r} is a pass-through entry input with no consuming"
+                f" activity (out of scope)",
+            )
             continue
         if spot in spot_owner:
             diags.error(
                 errors.INTERFACE_DUPLICATE_SPOT,
                 f"interface inputs {name!r} and {spot_owner[spot]!r} both bind spot {spot!r}",
             )
-            continue
-        consumer = workflow.entry_inputs.get(name)
-        if consumer is None:
-            object_bearing = workflow.entry_input_ports.get(name)
-            if object_bearing is None:
-                diags.error(
-                    errors.INTERFACE_UNKNOWN_PORT,
-                    f"interface input {name!r} is not an entry input of the workflow",
-                )
-            elif not object_bearing:
-                diags.error(
-                    errors.INTERFACE_PURE_DATA_PORT,
-                    f"interface input {name!r} is a Pure Data port and occupies no spot",
-                )
-            else:
-                diags.error(
-                    errors.INTERFACE_UNKNOWN_PORT,
-                    f"interface input {name!r} is a pass-through entry input with no consuming"
-                    f" activity (out of scope)",
-                )
             continue
         spot_owner[spot] = name
         valid.append((name, spot, consumer))
@@ -542,34 +555,37 @@ def _add_boundary_outputs(
     outputs = interface.get("outputs") or {}
     valid: list[tuple[str, str, Endpoint]] = []  # (port name, spot, producer endpoint)
     spot_owner: dict[str, str] = {}
+    # The same order as the entry side, and for the same reason (see there): does this
+    # port occupy a spot at all, then is it produced, then is the spot already spoken for.
     for name, spot in outputs.items():
         if not _spot_exists(spot, env, name, diags):
+            continue
+        object_bearing = workflow.exit_output_ports.get(name)
+        if object_bearing is None:
+            diags.error(
+                errors.INTERFACE_UNKNOWN_PORT,
+                f"interface output {name!r} is not a final output of the workflow",
+            )
+            continue
+        if not object_bearing:
+            diags.error(
+                errors.INTERFACE_PURE_DATA_PORT,
+                f"interface output {name!r} is a Pure Data port and occupies no spot",
+            )
+            continue
+        producer = workflow.exit_outputs.get(name)
+        if producer is None:
+            diags.error(
+                errors.INTERFACE_UNKNOWN_PORT,
+                f"interface output {name!r} is a pass-through entry input returned"
+                f" directly (out of scope)",
+            )
             continue
         if spot in spot_owner:
             diags.error(
                 errors.INTERFACE_DUPLICATE_SPOT,
                 f"interface outputs {name!r} and {spot_owner[spot]!r} both bind spot {spot!r}",
             )
-            continue
-        producer = workflow.exit_outputs.get(name)
-        if producer is None:
-            object_bearing = workflow.exit_output_ports.get(name)
-            if object_bearing is None:
-                diags.error(
-                    errors.INTERFACE_UNKNOWN_PORT,
-                    f"interface output {name!r} is not a final output of the workflow",
-                )
-            elif not object_bearing:
-                diags.error(
-                    errors.INTERFACE_PURE_DATA_PORT,
-                    f"interface output {name!r} is a Pure Data port and occupies no spot",
-                )
-            else:
-                diags.error(
-                    errors.INTERFACE_UNKNOWN_PORT,
-                    f"interface output {name!r} is a pass-through entry input returned"
-                    f" directly (out of scope)",
-                )
             continue
         spot_owner[spot] = name
         valid.append((name, spot, producer))
