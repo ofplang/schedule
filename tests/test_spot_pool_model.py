@@ -283,3 +283,28 @@ def test_an_environment_with_one_spot_per_device_is_untouched(tmp_path):
     instance, _ = build_instance(wf, env)
     assert instance is not None
     assert aggregatable_spots(instance, interchangeable_classes(instance)) == {}
+
+
+# --- what the record says the model was -----------------------------------
+
+
+def test_the_record_says_both_what_the_laboratory_offers_and_what_the_model_got(tmp_path):
+    # 🔴 The spot collapse takes mostly *modes* off, so a record carrying only the
+    # route counts would have made it look like nothing happened. Both pairs are
+    # kept, and each pair is what shows the collapse.
+    three = _plan(tmp_path, env_text(3))
+    one = _plan(tmp_path, env_text(1))
+    model = three.stats.model
+    assert model.modes == one.stats.model.modes + 2 * 2, "three bays, two resting nodes"
+    assert model.encoded_modes == one.stats.model.encoded_modes
+    assert model.transport_options == 3 * one.stats.model.transport_options
+    assert model.encoded_transport_options == one.stats.model.encoded_transport_options
+    # The encoded counts are what the variables follow.
+    assert model.variables == one.stats.model.variables
+
+
+def test_nothing_collapsed_means_the_two_counts_agree(tmp_path):
+    only = _plan(tmp_path, env_text(1))
+    model = only.stats.model
+    assert model.encoded_modes == model.modes
+    assert model.encoded_transport_options == model.transport_options

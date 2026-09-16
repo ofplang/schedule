@@ -659,6 +659,12 @@ def solve(
         weights,
         recorder,
         sum(len(options) for options in arc_encoded),
+        # One mode per group: the modes a collapsed class made indistinguishable
+        # share a literal, and only the one that carries the group is in the model.
+        sum(
+            sum(1 for m, carries in enumerate(carrier) if carries == m)
+            for carrier in mode_carrier
+        ),
     )
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -765,6 +771,7 @@ def _solve_stats(
     weights: tuple[int, ...],
     recorder: _SolutionRecorder | None,
     encoded_options: int,
+    encoded_modes: int,
 ) -> SolveStats:
     """Assemble the record of what this solve cost (stats.py).
 
@@ -809,6 +816,7 @@ def _solve_stats(
             transport_options=sum(len(arc.options) for arc in instance.arcs),
             encoded_transport_options=encoded_options,
             modes=sum(len(act.modes) for act in instance.activities),
+            encoded_modes=encoded_modes,
             replenishments=len(instance.replenishments),
             horizon=horizon,
         ),
