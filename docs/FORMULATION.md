@@ -923,6 +923,15 @@ structure more directly with optional intervals.
   instance rather than off the environment, so only the processes the workflow
   instantiated and the routes its arcs kept are compared. Contrast J6, where
   symmetry among interchangeable **jobs** is broken by a constraint.
+- **A same-spot move occupies no transporter.** Where an arc's endpoints coincide
+  ($p = q$), the option set is the single route $(m, n, ot)$ of duration 0: no
+  $t \in \mathcal{T}$ serves it, so its body interval enters no transporter's
+  `NoOverlap`. It still enters the device's, like any move (§7). This is not a
+  simplification but the model the plan document already describes, which omits the
+  transporter for such a move — and it matters because a zero-length interval is
+  *not* inert in a `NoOverlap`: CP-SAT refuses a point strictly inside another
+  interval, so a route naming a transporter here would forbid placing a physical
+  no-op while that transporter was busy (design.md D54).
 - **A class of interchangeable transporters is collapsed.** For such a class
   $T \subseteq \mathcal{T}$, the $|T|$ per-transporter `NoOverlap` sets of §7 are
   replaced by a single cumulative resource of capacity $|T|$ over the same body

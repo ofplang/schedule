@@ -864,32 +864,40 @@ def routes(env: Environment, from_spot: str, to_spot: str) -> list[tuple[str | N
     equally optimal schedules CP-SAT returns depends on how its variables were
     built, so reordering here changes plans that were not meant to change.
     """
+    # 🔴 A same-spot hand-off (§5.4) is a physical no-op, and **no transporter
+    # carries it** (§6.4). One route, carrying none, decided before the tables are
+    # consulted at all.
+    #
+    # Before, because `transport_duration` answers 0 for a same-spot pair *for every
+    # transporter alike* -- so letting the loop below see one would produce one
+    # arm-named route per arm, each of which then holds that arm for zero time. A
+    # zero-length interval is not free in a non-overlap: CP-SAT refuses a point
+    # strictly inside another interval, so a move that is physically nothing could
+    # not be placed while that arm was busy (measured; dev-notes
+    # report-model-size-and-presolve.md §17.5). Three things already say it should
+    # carry none -- `TransportOption.transporter`'s own contract, the plan renderer,
+    # which omits the field exactly here, and this scheduler's *committed* path,
+    # where `normalize._frozen_leg_option` reads that absent field back as None. So
+    # a no-op used to stop occupying an arm the moment it became history, which is
+    # the disagreement this removes (design.md D54).
+    #
+    # It also makes an in-place workflow schedulable in a laboratory that defines no
+    # transporters at all, which is what the fallback this replaced was for.
+    if from_spot == to_spot:
+        return [(None, 0)]
+
     found: list[tuple[str | None, int]] = []
     # A route the environment declares with no transporter (§5.4): the move needs
     # none at all -- a device shifting material between its own spots, a chute. It
     # occupies the source and destination devices like any other move (§4.5) and
     # simply enters no transporter's non-overlap set.
-    #
-    # Only for two *different* spots. A same-spot pair is left to the no-op fallback
-    # below, which is where it has always been handled; routing it through here
-    # instead would put a second, identical route in front of the ones an
-    # environment that declares a same-spot entry already produces, and that order
-    # has to stay exactly as it was.
-    if from_spot != to_spot:
-        duration = env.transport_duration(None, from_spot, to_spot)
-        if duration is not None:
-            found.append((None, duration))
+    duration = env.transport_duration(None, from_spot, to_spot)
+    if duration is not None:
+        found.append((None, duration))
     for transporter in env.transporters:
         duration = env.transport_duration(transporter, from_spot, to_spot)
         if duration is not None:
             found.append((transporter, duration))
-    # A same-spot hand-off (§5.4) is a physical no-op that no transporter carries
-    # (§6.4). Ensure it is always schedulable -- even in an environment that defines
-    # no transporters (a purely in-place workflow) -- by synthesizing a
-    # transporter-less zero-duration route, matching the plan output which omits the
-    # transporter for a same-spot move.
-    if from_spot == to_spot and not found:
-        found.append((None, 0))
     return found
 
 

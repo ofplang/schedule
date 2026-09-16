@@ -508,6 +508,14 @@ Semantics:
   required move must be performable by at least one transporter, or by a
   transporter-less route.
 - Same-spot moves (`from == to`) are treated as duration `0` and may be omitted.
+  **No transporter performs one**, whatever the table says: a hand-off within one
+  spot is a physical no-op, so it is served by exactly one route, which carries no
+  transporter and enters no transporter's exclusion (§4.6) — the same route an
+  environment that declares no transporters at all gets. It still occupies the
+  device its spot belongs to, like any other move (§4.5), and the plan omits its
+  `transporter` field accordingly (§6.4). A consequence worth knowing: a same-spot
+  entry with a non-zero `duration` cannot be expressed — it reads as `0` either
+  way.
 
 ### 5.5 `processes`
 

@@ -578,11 +578,19 @@ def aggregatable_transporters(
     🔴 **Two guards, and a class that trips either is left alone.**
 
     - **Every route the class covers must take positive time.** §5.4 permits a
-      zero-duration transport that still names a transporter, and a zero-length
-      interval is the one place where a capacity resource is *weaker* than a
-      non-overlap: `NoOverlap` refuses a point strictly inside another interval
-      while counting concurrent demand does not. Collapsing such a class could
-      admit a schedule no assignment of arms can realise.
+      transport of zero duration, and a zero-length interval is the one place where
+      a capacity resource is *weaker* than a non-overlap: `NoOverlap` refuses a
+      point strictly inside another interval while counting concurrent demand does
+      not. Collapsing such a class could admit a schedule no assignment of arms can
+      realise.
+
+      What is left to trip this is a route the environment **declares** with
+      duration 0 between two *different* spots -- the plan writes a transporter
+      there, so the document says that arm carried it and it does occupy one. A
+      same-spot hand-off no longer trips it: it carries no transporter at all
+      (design.md D54), which is what it always should have. That mattered: until
+      D54 a single same-spot hand-off anywhere put one zero-duration route on every
+      arm, so this guard refused every real laboratory measured.
     - **Every group of routes the class multiplies must have exactly one member
       per arm.** That follows from the class being verified, so failing it means
       something is understood wrongly here rather than in the laboratory, and the
