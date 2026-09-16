@@ -175,6 +175,22 @@ measurement — how good was the schedule at time *t*? — reads; it is off by d
 because a solution callback runs inside the search. None of this enters the plan:
 a plan is a portable v0 document and says nothing about how it was found.
 
+The diagnostics carry one more thing about cost rather than correctness. Where an
+instance offers **several interchangeable ways of using one resource** — spots of a
+device, devices of a pool, arms that can make the same moves in the same times —
+its model holds a mode and a route for each of them, and every one of those
+choices leads to the same schedule. That grows the model quadratically in the size
+of such a class, and model size is what bounds solve time: on a 64-job instance
+8,064 of its 8,384 modes are that kind of choice, and the solver spends its whole
+budget in presolve. So each class is reported (`interchangeable_resources`, a
+warning), naming its members and how many modes and routes the choice costs.
+
+Nothing is done about it: no constraint is added and no plan differs. It is also a
+claim about *that instance* rather than about the laboratory — only the processes
+the workflow instantiated and the routes its arcs kept are compared — so a
+resource the document has pinned something to is never named, and a class shrinks
+as a run accumulates history.
+
 Each input is either a path or an already-loaded document (a mapping), so an
 embedder that holds them in memory — a rolling-horizon runner rendering a fresh
 status every replan — passes them straight in, with no temporary files and nothing

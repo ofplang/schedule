@@ -149,6 +149,14 @@ SCHEDULING_POLICIES_IGNORED = "scheduling_policies_ignored"
 # have been in effect -- switching off a stock nothing draws on changes nothing and
 # is not worth saying.
 RESOURCES_IGNORED = "resources_ignored"
+# Warning (not an error): this instance offers several interchangeable ways of using
+# one resource -- spots of a device, devices of a pool, transporters that can make
+# the same moves -- so its model carries modes and routes that only choose between
+# them, and every such choice leads to the same schedule. Nothing is wrong with the
+# laboratory or the document; the model is simply larger than the question needs,
+# and model size is what bounds solve time. Reported so that the cost is visible
+# where it is being paid, and nothing else is done about it (§10.4).
+INTERCHANGEABLE_RESOURCES = "interchangeable_resources"
 
 # The environment declares `objective`, which belongs to the execution document
 # (§6.1): how a run is to be optimised is a property of that run, not of the lab.

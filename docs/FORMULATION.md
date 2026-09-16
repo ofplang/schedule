@@ -911,6 +911,20 @@ structure more directly with optional intervals.
   between its own consuming activities. Getting this wrong in either direction is a
   real defect: too small silently turns feasible instances infeasible, too large
   slows every solve.
+- **Interchangeable resources are reported, not broken.** Where an instance offers
+  several interchangeable ways of using one resource — $|P_\ell|$ spots of a device,
+  a pool of like devices, transporters that can make the same moves in the same
+  times — every mode and route that only chooses between them is a distinct
+  $x_{i,m}$ / $q_{r,m,n,t}$ in the model, and all of those choices lead to the same
+  objective. The model grows quadratically in the size of such a class (one mode
+  per member, per activity that may use it, and one route option per member, per
+  arc that may reach it) and nothing in the formulation above prunes it. The
+  implementation **detects** these classes and reports them
+  (`interchangeable_resources`, SPEC §10.4) and adds no constraint: the claim is
+  read off the built instance rather than off the environment, and what to do about
+  it — a capacity resource with the assignment made after the solve, an ordering
+  among the members — is a formulation change that is not made here. Contrast J6,
+  where symmetry among interchangeable **jobs** *is* broken by a constraint.
 
 # Part II — several jobs, planned together
 

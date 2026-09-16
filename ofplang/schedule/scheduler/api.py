@@ -41,6 +41,7 @@ from ofplang.schedule.scheduler.plan import render_plan
 from ofplang.schedule.scheduler.plancheck import check_plan_inventories
 from ofplang.schedule.scheduler.stats import SolveStats
 from ofplang.schedule.scheduler.status import ActivityFixation, ArcFixation, Fixation
+from ofplang.schedule.scheduler.symmetry import report_interchangeable
 from ofplang.schedule.scheduler.workflow import fingerprint, parse_workflow
 from ofplang.schedule.validation import errors
 from ofplang.schedule.validation.document import validate_document_node
@@ -1494,6 +1495,15 @@ def _run(
     diagnostics += reach.items
     if _has_error(reach.items):
         return ScheduleReport(None, None, None, diagnostics)
+
+    # What this instance is paying for choices that lead nowhere (§10.4). After
+    # reachability, so the classes are read off the routes that actually survived,
+    # and before the solve, because it describes the model about to be handed over
+    # and not the answer that comes back -- an instance the solver cannot crack is
+    # exactly the one where knowing this matters most.
+    symmetry = Diagnostics()
+    report_interchangeable(instance, fixation, symmetry)
+    diagnostics += symmetry.items
 
     # The levels move only when the caller asks (`carry_levels_to_now`), and then they
     # are stated as of the moment asked for rather than echoed. Every other plan echoes
