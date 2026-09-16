@@ -911,20 +911,41 @@ structure more directly with optional intervals.
   between its own consuming activities. Getting this wrong in either direction is a
   real defect: too small silently turns feasible instances infeasible, too large
   slows every solve.
-- **Interchangeable resources are reported, not broken.** Where an instance offers
-  several interchangeable ways of using one resource — $|P_\ell|$ spots of a device,
-  a pool of like devices, transporters that can make the same moves in the same
-  times — every mode and route that only chooses between them is a distinct
-  $x_{i,m}$ / $q_{r,m,n,t}$ in the model, and all of those choices lead to the same
-  objective. The model grows quadratically in the size of such a class (one mode
-  per member, per activity that may use it, and one route option per member, per
-  arc that may reach it) and nothing in the formulation above prunes it. The
-  implementation **detects** these classes and reports them
-  (`interchangeable_resources`, SPEC §10.4) and adds no constraint: the claim is
-  read off the built instance rather than off the environment, and what to do about
-  it — a capacity resource with the assignment made after the solve, an ordering
-  among the members — is a formulation change that is not made here. Contrast J6,
-  where symmetry among interchangeable **jobs** *is* broken by a constraint.
+- **Interchangeable resources.** Where an instance offers several interchangeable
+  ways of using one resource — $|P_\ell|$ spots of a device, a pool of like devices,
+  transporters that can make the same moves in the same times — every mode and route
+  that only chooses between them is a distinct $x_{i,m}$ / $q_{r,m,n,t}$ in the
+  model, and all of those choices lead to the same objective. The model grows
+  quadratically in the size of such a class (one mode per member, per activity that
+  may use it, and one route option per member, per arc that may reach it) and
+  nothing in §4–§8 prunes it. The implementation detects these classes and reports
+  them (`interchangeable_resources`, SPEC §10.4); the claim is read off the built
+  instance rather than off the environment, so only the processes the workflow
+  instantiated and the routes its arcs kept are compared. Contrast J6, where
+  symmetry among interchangeable **jobs** is broken by a constraint.
+- **A class of interchangeable transporters is collapsed.** For such a class
+  $T \subseteq \mathcal{T}$, the $|T|$ per-transporter `NoOverlap` sets of §7 are
+  replaced by a single cumulative resource of capacity $|T|$ over the same body
+  intervals $[a_r,b_r]$, and each arc's route options are taken modulo $T$: the
+  members contribute one $q_{r,m,n,\cdot}$ between them. **Which** member makes each
+  move is not a decision variable at all; it is assigned after the solve, earliest
+  start first to the lowest-named free member.
+
+  That is exact, not a relaxation. A schedule is realisable on $|T|$ separate
+  transporters iff at no instant do more than $|T|$ of the moves assigned to $T$
+  overlap — the cumulative's condition — because the move intervals form an
+  interval graph, whose chromatic number equals its largest clique, and a clique of
+  intervals is a set covering a common point. So a cumulative-feasible assignment
+  can always be coloured, and greedy-by-start-time does it.
+
+  Two conditions are required and are checked rather than assumed. **(i)** Every
+  route of the class must have positive duration: §5.4 permits a zero-duration
+  transport that still names a transporter, and a zero-length interval is the one
+  place the two encodings differ — `NoOverlap` refuses a point strictly inside
+  another interval while a cumulative does not, so the collapse would admit
+  schedules no assignment realises. **(ii)** Every group of routes the class
+  multiplies must have exactly one member per transporter, which follows from the
+  class being verified. A class failing either is left encoded as it was.
 
 # Part II — several jobs, planned together
 

@@ -1,8 +1,10 @@
 """Interchangeable resource classes of one instance (SPECIFICATIONS.md §10.4).
 
-**This reports and does nothing else.** No constraint is added, no model is
-changed, no plan differs because of anything here. It exists because the size of
-the model is what bounds solve time (dev-notes/report-solver-scalability.md), and
+**This module decides nothing about a schedule.** It finds the classes and says
+what they cost; `aggregatable_transporters` then says which of them a solve may
+collapse, and `cpsat` does the collapsing. Every class it does not collapse is
+left in the model exactly as it was. It exists because the size of the model is
+what bounds solve time (dev-notes/report-solver-scalability.md), and
 the largest single source of size is a resource the instance offers *several
 interchangeable ways* of using: an environment whose loader has W spots gives
 every source and sink W modes and every loader-side arc W options, so the model
@@ -40,6 +42,16 @@ most: the standard RNA-seq laboratory has four identical arms, and **5,285 of it
 growth-curve laboratory carries four spot classes at once (a fridge of eight, an
 incubator of eight, and two two-spot devices), which together account for every
 mode and route that lab has over the single-spot version of itself.
+
+## What is done about it
+
+Only one scope is acted on, and only where acting cannot change the answer: a
+class of interchangeable **transporters** is collapsed into one resource of the
+class's size, because a transporter has no spots and no identity in the schedule
+beyond serialising its own moves. `aggregatable_transporters` carries the two
+guards that make that exact. Spot and device classes are reported and left alone:
+collapsing those needs the material's *place* to be decided after the solve, which
+is a formulation change this module does not make.
 
 ## How it is decided
 
@@ -404,15 +416,22 @@ def _transporter_swap(a: str, b: str) -> Subst:
 # --------------------------------------------------------------------------
 
 
-def _pinned(instance: Instance, fixation: Fixation | None) -> tuple[frozenset[str], frozenset[str]]:
-    """The spots and devices reported history has pinned to a particular one.
+def _pinned(
+    instance: Instance, fixation: Fixation | None
+) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
+    """The spots, devices and transporters reported history has pinned to a
+    particular one.
 
-    A completed or running activity ran in one mode on one machine; that is a fact
-    about the world and not a relabelling anybody is free to make."""
+    A completed or running activity ran in one mode on one machine, and a committed
+    move was made by one arm; that is a fact about the world and not a relabelling
+    anybody is free to make. **The transporter matters as much as the rest**: an arm
+    holding a committed leg is not interchangeable with an idle one, and a class
+    that claimed otherwise would be claiming a fact could be relabelled."""
     if fixation is None:
-        return frozenset(), frozenset()
+        return frozenset(), frozenset(), frozenset()
     spots: set[str] = set()
     devices: set[str] = set()
+    transporters: set[str] = set()
     for i, fix in fixation.activities.items():
         mode = instance.activities[i].modes[fix.mode_index]
         spots.update(mode.input_spots.values())
@@ -422,7 +441,9 @@ def _pinned(instance: Instance, fixation: Fixation | None) -> tuple[frozenset[st
         option = instance.arcs[r].options[arc_fix.option_index]
         spots.update((option.from_spot, option.to_spot))
         devices.update((_device_of(option.from_spot), _device_of(option.to_spot)))
-    return frozenset(spots), frozenset(devices)
+        if option.transporter is not None:
+            transporters.add(option.transporter)
+    return frozenset(spots), frozenset(devices), frozenset(transporters)
 
 
 def _cost(instance: Instance, index: _Index, members: frozenset[str]) -> tuple[int, int]:
@@ -503,7 +524,7 @@ def interchangeable_classes(
     Empty is the ordinary answer and not a failure: an instance whose modes are all
     distinguishable -- a different duration, a route that reaches only one of them
     -- has no class, and neither has one that offers no choice at all."""
-    pinned_spots, pinned_devices = _pinned(instance, fixation)
+    pinned_spots, pinned_devices, pinned_transporters = _pinned(instance, fixation)
 
     # Spots group within one device only: a spot of another device is a different
     # resource, and the grouping never crosses that line.
@@ -526,8 +547,11 @@ def interchangeable_classes(
         shape = tuple(sorted(instance.env.devices[device].spots))
         device_groups.setdefault(shape, []).append(device)
     # A transporter has no attributes of its own, so what tells two apart is only
-    # which moves they can make and how long they take.
-    transporter_group = [sorted(instance.env.transporters)]
+    # which moves they can make and how long they take -- and, on a replan, whether
+    # one of them is in the middle of a committed leg.
+    transporter_group = [
+        sorted(t for t in instance.env.transporters if t not in pinned_transporters)
+    ]
 
     return tuple(
         _classes_of_scope(instance, SPOT, spot_groups, _spot_swap)
@@ -536,19 +560,99 @@ def interchangeable_classes(
     )
 
 
-def report_interchangeable(
-    instance: Instance, fixation: Fixation | None, diags: Diagnostics
-) -> None:
-    """Emit `interchangeable_resources` for every class the choice within costs
-    the model something (§10.4).
+def aggregatable_transporters(
+    instance: Instance, classes: tuple[InterchangeableClass, ...]
+) -> dict[str, tuple[str, int]]:
+    """The transporter classes a solve may encode as **one resource of capacity
+    `len(members)`** instead of one non-overlap per arm, as
+    `member -> (representative, capacity)`.
 
-    A class that costs nothing is not reported: two spots nothing chooses between
-    are interchangeable in the same sense and say nothing about solve time, and a
-    diagnostic nobody can act on is noise. There is no threshold beyond that --
-    what the choice costs is in the message, and how much is too much is the
-    reader's to decide."""
-    for found in interchangeable_classes(instance, fixation):
+    Why this scope and not the others: a transporter has no spots and no identity
+    inside the schedule beyond serialising its own moves, so collapsing a class
+    changes nothing about *where* anything is. The route options the class
+    multiplies collapse to one, and which arm makes each move is decided after the
+    solve by colouring the chosen move intervals -- at most `len(members)` of them
+    ever overlap, and interval graphs are perfect, so a colouring always exists
+    (FORMULATION, CP-SAT implementation notes).
+
+    🔴 **Two guards, and a class that trips either is left alone.**
+
+    - **Every route the class covers must take positive time.** §5.4 permits a
+      zero-duration transport that still names a transporter, and a zero-length
+      interval is the one place where a capacity resource is *weaker* than a
+      non-overlap: `NoOverlap` refuses a point strictly inside another interval
+      while counting concurrent demand does not. Collapsing such a class could
+      admit a schedule no assignment of arms can realise.
+    - **Every group of routes the class multiplies must have exactly one member
+      per arm.** That follows from the class being verified, so failing it means
+      something is understood wrongly here rather than in the laboratory, and the
+      answer to that is to leave the encoding as it was.
+
+    An arm holding a committed leg is already outside every class (`_pinned`), so
+    a replan simply finds fewer classes rather than needing a guard of its own.
+    """
+    aggregated: dict[str, tuple[str, int]] = {}
+    for found in classes:
+        if found.scope != TRANSPORTER:
+            continue
+        members = frozenset(found.members)
+        representative = found.members[0]
+        if not _collapsible(instance, members):
+            continue
+        for member in members:
+            aggregated[member] = (representative, len(members))
+    return aggregated
+
+
+def _collapsible(instance: Instance, members: frozenset[str]) -> bool:
+    """Do this class's routes satisfy both guards in `aggregatable_transporters`?"""
+    for arc in instance.arcs:
+        groups: dict[tuple, int] = {}
+        for option in arc.options:
+            if option.transporter not in members:
+                continue
+            if option.duration <= 0:
+                return False  # a zero-length body; see the guard above
+            key = (
+                option.src_mode_index,
+                option.dst_mode_index,
+                option.from_spot,
+                option.to_spot,
+                option.duration,
+            )
+            groups[key] = groups.get(key, 0) + 1
+        if any(count != len(members) for count in groups.values()):
+            return False
+    return True
+
+
+def report_interchangeable(
+    instance: Instance,
+    fixation: Fixation | None,
+    diags: Diagnostics,
+    classes: tuple[InterchangeableClass, ...] | None = None,
+) -> None:
+    """Emit `interchangeable_resources` for every class whose cost this solve is
+    actually going to pay (§10.4).
+
+    Two kinds of class are left unsaid, for the same reason: nothing is being paid.
+
+    - One that **costs nothing** -- two spots nothing chooses between are
+      interchangeable in the same sense and say nothing about solve time.
+    - One the solve will **collapse** (`aggregatable_transporters`) -- the choice
+      it multiplied is gone from the model before the solver sees it, so reporting
+      it would be describing a cost that is not incurred. The detector still finds
+      it, which is what an investigation calls `interchangeable_classes` for.
+
+    There is no threshold beyond that: what the choice costs is in the message, and
+    how much is too much is the reader's to decide."""
+    if classes is None:
+        classes = interchangeable_classes(instance, fixation)
+    collapsed = aggregatable_transporters(instance, classes)
+    for found in classes:
         if found.modes == 0 and found.options == 0:
+            continue
+        if found.scope == TRANSPORTER and found.members[0] in collapsed:
             continue
         diags.warning(
             errors.INTERCHANGEABLE_RESOURCES,

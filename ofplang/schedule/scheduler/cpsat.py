@@ -15,7 +15,7 @@ applied per spot, per device, and per transporter.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ortools.sat.python import cp_model
@@ -23,6 +23,7 @@ from ortools.sat.python import cp_model
 from ofplang.schedule.core import objective as objective_stages
 from ofplang.schedule.core.identifiers import parse_qualified_resource, parse_qualified_spot
 from ofplang.schedule.scheduler.instance import (
+    ArcInstance,
     BoundaryInfo,
     Instance,
     RelayInfo,
@@ -37,6 +38,11 @@ from ofplang.schedule.scheduler.stats import (
     SolveStats,
 )
 from ofplang.schedule.scheduler.status import Fixation
+from ofplang.schedule.scheduler.symmetry import (
+    InterchangeableClass,
+    aggregatable_transporters,
+    interchangeable_classes,
+)
 
 
 @dataclass(frozen=True)
@@ -124,6 +130,7 @@ def solve(
     objective: tuple[str, ...] | None = None,
     jobs: tuple[JobSpec, ...] = (),
     collect_solutions: bool = False,
+    interchangeable: tuple[InterchangeableClass, ...] | None = None,
 ) -> Solution:
     """Build and solve the model. With a `fixation` (a replan), completed/running
     activities are pinned to their reported times, mode, and route, pending ones
@@ -154,6 +161,14 @@ def solve(
     that reproducibility only holds when the solve runs to completion (a solve
     truncated by `max_time_seconds` still depends on wall-clock timing).
 
+    `interchangeable` is this instance's interchangeable resource classes (§10.4),
+    which the caller has usually already computed to report them. Passing them in
+    only saves recomputing; omitting it changes nothing about the answer. What the
+    solve does with them is collapse the *transporter* classes it safely can into
+    one capacity resource each (`aggregatable_transporters`) -- exactly the same
+    schedules, over a much smaller model -- and which arm makes each move is then
+    decided after the solve.
+
     `collect_solutions` records each improving solution as the search finds it, into
     `Solution.stats.phases[-1].history`. Off by default because a solution callback
     is not free -- it runs inside the search and can perturb the very timings it is
@@ -162,6 +177,13 @@ def solve(
     model = cp_model.CpModel()
     now = fixation.now if fixation is not None else 0
     horizon = _horizon(instance, fixation, running_task_margin, jobs)
+
+    # Which transporters this solve treats as one machine with room for several
+    # moves at once (§10.4). Empty for every environment whose arms are told apart
+    # by anything at all, and then the model below is byte-for-byte what it was.
+    if interchangeable is None:
+        interchangeable = interchangeable_classes(instance, fixation)
+    pools = aggregatable_transporters(instance, interchangeable)
 
     # Which job each activity belongs to (§6.11), and what each job asks of the model.
     # With no roster this is one implicit job named `""`, so the per-job machinery
@@ -220,6 +242,9 @@ def solve(
     spot_iv: dict[str, list] = {}
     device_iv: dict[str, list] = {}
     transporter_iv: dict[str, list] = {}
+    # One list per collapsed class, keyed by its representative: these get a
+    # cumulative of the class's size instead of one non-overlap per arm.
+    pool_iv: dict[str, list] = {}
 
     def add(mapping: dict[str, list], key: str, interval) -> None:
         mapping.setdefault(key, []).append(interval)
@@ -347,6 +372,11 @@ def solve(
 
     # --- transport activities (one per arc) ---
     arc_starts, arc_ends, arc_opt_lits = [], [], []
+    # The routes each arc's selection is actually over. The same as `arc.options`
+    # unless a transporter class was collapsed, in which case the arms of one class
+    # contribute one route between them -- which is the whole of the model
+    # reduction. Kept per arc because the answer has to be read back through it.
+    arc_encoded: list[tuple[TransportOption, ...]] = []
     for r, arc in enumerate(instance.arcs):
         a = model.NewIntVar(0, horizon, f"a{r}")
         b = model.NewIntVar(0, horizon, f"b{r}")
@@ -354,8 +384,10 @@ def solve(
         s_dst = starts[arc.dst_activity]
         fr = fixation.arcs.get(r) if fixation is not None else None
 
+        options = _encoded_options(arc, fr, pools)
+        arc_encoded.append(options)
         lits = []
-        for k, opt in enumerate(arc.options):
+        for k, opt in enumerate(options):
             present = model.NewBoolVar(f"q{r}_{k}")
             lits.append(present)
             # Route selection must agree with the endpoint modes (§4).
@@ -384,9 +416,15 @@ def solve(
             if dst_device != src_device:
                 add(device_iv, dst_device, body)
             # A same-spot no-op route carries no transporter (opt.transporter is
-            # None), so it occupies no transporter resource.
+            # None), so it occupies no transporter resource. A route standing for a
+            # collapsed class occupies the class rather than the arm it happens to
+            # name: which arm that is has not been decided yet.
             if opt.transporter is not None:
-                add(transporter_iv, opt.transporter, body)
+                pool = pools.get(opt.transporter)
+                if pool is None:
+                    add(transporter_iv, opt.transporter, body)
+                else:
+                    add(pool_iv, pool[0], body)
             # Source spot held [e_src, b]; destination spot held [a, s_dst].
             src_size = model.NewIntVar(0, horizon, f"ss{r}_{k}")
             add(
@@ -452,6 +490,14 @@ def solve(
         model.AddNoOverlap(intervals)
     for intervals in transporter_iv.values():
         model.AddNoOverlap(intervals)
+    # A collapsed class is one machine with room for as many moves at once as it
+    # has arms. Exact rather than a relaxation: at most that many of the chosen
+    # move intervals ever overlap, and interval graphs are perfect, so the arms can
+    # always be handed out afterwards (`_assign_pooled_transporters`). The guards
+    # in `aggregatable_transporters` are what make the two encodings agree.
+    for representative, intervals in pool_iv.items():
+        capacity = pools[representative][1]
+        model.AddCumulative(intervals, [1] * len(intervals), capacity)
 
     # --- objective ---
     # c_max is the max over real activity ends and boundary-output deliveries
@@ -580,7 +626,15 @@ def solve(
     status = solver.Solve(model, recorder)
     outcome = _STATUS.get(status, "unknown")
     stats = _solve_stats(
-        model, solver, outcome, instance, horizon, stages, weights, recorder
+        model,
+        solver,
+        outcome,
+        instance,
+        horizon,
+        stages,
+        weights,
+        recorder,
+        sum(len(options) for options in arc_encoded),
     )
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -605,7 +659,7 @@ def solve(
     transport = tuple(
         TransportResult(
             arc=arc.arc,
-            option=arc.options[_selected(solver, arc_opt_lits[r])],
+            option=arc_encoded[r][_selected(solver, arc_opt_lits[r])],
             start=solver.Value(arc_starts[r]),
             end=solver.Value(arc_ends[r]),
             status=arc_fix[r].status if r in arc_fix else None,
@@ -613,6 +667,8 @@ def solve(
         )
         for r, arc in enumerate(instance.arcs)
     )
+    # Which arm makes each move of a collapsed class, now that the times are known.
+    transport = _assign_pooled_transporters(transport, pools)
     replenishment = _refill_results(
         solver, instance, fixation, refills, processing, running_task_margin
     )
@@ -679,6 +735,7 @@ def _solve_stats(
     stages: tuple[str, ...],
     weights: tuple[int, ...],
     recorder: _SolutionRecorder | None,
+    encoded_options: int,
 ) -> SolveStats:
     """Assemble the record of what this solve cost (stats.py).
 
@@ -721,6 +778,7 @@ def _solve_stats(
             activities=len(instance.activities),
             arcs=len(instance.arcs),
             transport_options=sum(len(arc.options) for arc in instance.arcs),
+            encoded_transport_options=encoded_options,
             modes=sum(len(act.modes) for act in instance.activities),
             replenishments=len(instance.replenishments),
             horizon=horizon,
@@ -1197,6 +1255,92 @@ def _resting(logical, seq, job_id, arrived: dict) -> bool:
         return False
     delivered = arrived.get((job_id, logical))
     return delivered is not None and (seq or 0) > delivered
+
+
+def _encoded_options(
+    arc: ArcInstance, fr, pools: dict[str, tuple[str, int]]
+) -> tuple[TransportOption, ...]:
+    """The routes this arc's selection is encoded over.
+
+    Every route it has, unless a transporter class was collapsed: then the arms of
+    one class contribute **one** route between them, since they differ in nothing
+    the model can still see. That is the reduction -- on the case-study RNA-seq
+    laboratory it takes an arc from 268 routes to 4.
+
+    A **fixed** arc keeps all of them. Its route is pinned by index
+    (`fr.option_index` names one of `arc.options`), so the two lists have to stay
+    the same list; and there is nothing to gain, a committed move having no choice
+    left to collapse.
+    """
+    if fr is not None:
+        return tuple(arc.options)
+    kept: list[TransportOption] = []
+    seen: set[tuple] = set()
+    for option in arc.options:
+        pool = pools.get(option.transporter) if option.transporter is not None else None
+        if pool is None:
+            kept.append(option)
+            continue
+        key = (
+            option.src_mode_index,
+            option.dst_mode_index,
+            option.from_spot,
+            option.to_spot,
+            option.duration,
+            pool[0],
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(option)
+    return tuple(kept)
+
+
+def _assign_pooled_transporters(
+    transport: tuple[TransportResult, ...], pools: dict[str, tuple[str, int]]
+) -> tuple[TransportResult, ...]:
+    """Name the arm that makes each move of a collapsed class (§10.4).
+
+    The solve decided *when* each move happens and that no more of them overlap
+    than the class has arms; this hands out the arms. Earliest start first, to the
+    lowest-named arm that is free -- the textbook colouring of an interval graph,
+    which cannot get stuck: the chromatic number of an interval graph is its
+    largest overlap, and the cumulative bounded that by the number of arms.
+
+    The route a move reports then differs from the one the model carried in exactly
+    one field, the transporter, which is the field the collapsed model stopped
+    distinguishing. Everything else -- times, spots, duration -- is the solver's own
+    answer.
+    """
+    out = list(transport)
+    by_pool: dict[str, list[int]] = {}
+    for i, move in enumerate(transport):
+        arm = move.option.transporter
+        if arm is None or arm not in pools:
+            continue
+        by_pool.setdefault(pools[arm][0], []).append(i)
+    if not by_pool:
+        return transport
+    for representative, indices in by_pool.items():
+        arms = sorted(
+            arm for arm, (rep, _) in pools.items() if rep == representative
+        )
+        # When each arm last put something down. `-1` for an arm that has not moved
+        # yet, which no start can precede.
+        free_at: dict[str, int] = dict.fromkeys(arms, -1)
+        for i in sorted(indices, key=lambda i: (transport[i].start, transport[i].end)):
+            move = transport[i]
+            arm = next((a for a in arms if free_at[a] <= move.start), None)
+            # Unreachable: the cumulative held, so fewer moves overlap here than
+            # there are arms. Left as a check rather than a silent fallback,
+            # because handing out a plan with two moves on one arm would be worse
+            # than failing.
+            assert arm is not None, (
+                f"no arm free for the move at {move.start} on pool {representative}"
+            )
+            free_at[arm] = move.end
+            out[i] = replace(move, option=replace(move.option, transporter=arm))
+    return tuple(out)
 
 
 def _selected(solver: cp_model.CpSolver, lits) -> int:
