@@ -117,11 +117,19 @@ class InterchangeableClass:
     """One verified class: what kind of resource, which members, and what the
     instance is paying for the choice between them.
 
-    `modes` / `options` count the modes and routes that would collapse into one if
-    the class were treated as a single resource of capacity `len(members)`. They
-    are what makes a finding worth reporting -- a class of two spots that no
-    activity chooses between is interchangeable in exactly the same sense and says
-    nothing about solve time."""
+    `modes` / `options` count the modes and routes that would go if **this class on
+    its own** were treated as a single resource of capacity `len(members)`. They are
+    what makes a finding worth reporting -- a class of two spots that no activity
+    chooses between is interchangeable in exactly the same sense and says nothing
+    about solve time.
+
+    ⚠ **On its own**, so two classes' figures do not add up: collapsing one can be
+    what makes the other's modes coincide, or can already have removed a route the
+    other would also have removed. An instance carrying several classes is worth
+    less than their sum, sometimes much less -- `normalize_envC` reports a class of
+    two handlers costing 8 modes and 44 routes, and collapsing every class it has
+    removes nothing at all, because each of those modes names a second device that
+    does not collapse with it."""
 
     scope: str  # SPOT | DEVICE | TRANSPORTER
     members: tuple[str, ...]
@@ -446,32 +454,72 @@ def _pinned(
     return frozenset(spots), frozenset(devices), frozenset(transporters)
 
 
-def _cost(instance: Instance, index: _Index, members: frozenset[str]) -> tuple[int, int]:
-    """How many modes and routes the choice between these members costs: per
-    activity and per arc, every alternative it offers but one.
+def _quotient(scope: str, members: frozenset[str], representative: str) -> Subst:
+    """The substitution that maps every member of a class onto one of them. Not a
+    swap: this is what "treat them as one resource" does to a mode or a route."""
+    if scope == SPOT:
+        return (lambda q: representative if q in members else q), _identity, _identity
+    if scope == DEVICE:
 
-    Read off the index, so this is proportional to what the class touches rather
-    than to the whole instance."""
-    per_activity: dict[int, int] = {}
-    for member in members:
-        for activity, _mode in index.modes_at.get(member, frozenset()):
-            per_activity[activity] = per_activity.get(activity, 0) + 1
-    modes = sum(count - 1 for count in per_activity.values() if count > 1)
+        def spot(q: str) -> str:
+            device, _, name = q.partition(".")
+            return f"{representative}.{name}" if device in members else q
 
-    per_arc: dict[int, int] = {}
-    for r in {r for m in members for r in index.arcs_at.get(m, frozenset())}:
-        count = 0
-        for option in instance.arcs[r].options:
-            if (
-                option.from_spot in members
-                or option.to_spot in members
-                or _device_of(option.from_spot) in members
-                or _device_of(option.to_spot) in members
-                or option.transporter in members
-            ):
-                count += 1
-        per_arc[r] = count
-    options = sum(count - 1 for count in per_arc.values() if count > 1)
+        return spot, (lambda d: representative if d in members else d), _identity
+    return (
+        _identity,
+        _identity,
+        (lambda t: representative if t is not None and t in members else t),
+    )
+
+
+def _cost(
+    instance: Instance,
+    scope: str,
+    members: frozenset[str],
+    representative: str,
+    fixed_activities: frozenset[int],
+    fixed_arcs: frozenset[int],
+) -> tuple[int, int]:
+    """How many modes and routes treating this class as one resource would remove.
+
+    🔴 **The quotient, not "one alternative per activity".** It is tempting to
+    count, per activity, every mode that names a member but one -- and that was
+    wrong twice over. An activity can offer *several* groups of modes over one
+    class (one per spot it might also use), so only each group collapses, not all
+    of them into one; and an arc's routes name their endpoint modes, so two routes
+    are the same route only once the modes they name are. Counting the loose way
+    reported 152 removable routes for an instance that has 120
+    (dev-notes/report-model-size-and-presolve.md §19).
+
+    A **fixed** activity or arc is excluded: its choice is pinned by history, so
+    there is nothing there to collapse -- which is also what `cpsat` does.
+    """
+    subst = _quotient(scope, members, representative)
+
+    # Which surviving mode each mode of each activity becomes, so that a route can
+    # be read in terms of the modes that are left.
+    surviving: list[dict[int, int]] = []
+    modes = 0
+    for i, act in enumerate(instance.activities):
+        if i in fixed_activities:
+            surviving.append({m: m for m in range(len(act.modes))})
+            continue
+        first: dict[tuple, int] = {}
+        mapping: dict[int, int] = {}
+        for m, mode in enumerate(act.modes):
+            mapping[m] = first.setdefault(_mode_key(mode, subst), m)
+        surviving.append(mapping)
+        modes += len(act.modes) - len(first)
+
+    options = 0
+    for r, arc in enumerate(instance.arcs):
+        if r in fixed_arcs:
+            continue
+        src = surviving[arc.src_activity]
+        dst = surviving[arc.dst_activity]
+        kept = {_option_key(o, src, dst, subst) for o in arc.options}
+        options += len(arc.options) - len(kept)
     return modes, options
 
 
@@ -485,6 +533,8 @@ def _classes_of_scope(
     scope: str,
     candidates: Iterable[Iterable[str]],
     swap: Callable[[str, str], Subst],
+    fixed_activities: frozenset[int],
+    fixed_arcs: frozenset[int],
 ) -> list[InterchangeableClass]:
     """Verify each proposed group of one scope, and cost what survives.
 
@@ -511,7 +561,14 @@ def _classes_of_scope(
             ]
             if len(members) < 2:
                 continue
-            modes, options = _cost(instance, index, frozenset(members))
+            modes, options = _cost(
+                instance,
+                scope,
+                frozenset(members),
+                members[0],
+                fixed_activities,
+                fixed_arcs,
+            )
             found.append(InterchangeableClass(scope, tuple(members), modes, options))
     return found
 
@@ -553,10 +610,28 @@ def interchangeable_classes(
         sorted(t for t in instance.env.transporters if t not in pinned_transporters)
     ]
 
+    fixed_activities = frozenset(fixation.activities) if fixation is not None else frozenset()
+    fixed_arcs = frozenset(fixation.arcs) if fixation is not None else frozenset()
     return tuple(
-        _classes_of_scope(instance, SPOT, spot_groups, _spot_swap)
-        + _classes_of_scope(instance, DEVICE, device_groups.values(), _device_swap)
-        + _classes_of_scope(instance, TRANSPORTER, transporter_group, _transporter_swap)
+        _classes_of_scope(
+            instance, SPOT, spot_groups, _spot_swap, fixed_activities, fixed_arcs
+        )
+        + _classes_of_scope(
+            instance,
+            DEVICE,
+            device_groups.values(),
+            _device_swap,
+            fixed_activities,
+            fixed_arcs,
+        )
+        + _classes_of_scope(
+            instance,
+            TRANSPORTER,
+            transporter_group,
+            _transporter_swap,
+            fixed_activities,
+            fixed_arcs,
+        )
     )
 
 
@@ -665,7 +740,7 @@ def report_interchangeable(
         diags.warning(
             errors.INTERCHANGEABLE_RESOURCES,
             f"{len(found.members)} interchangeable {found.scope}s "
-            f"({', '.join(found.members)}): the instance offers "
-            f"{found.modes} modes and {found.options} routes that only choose "
-            "between them, and every choice leads to the same schedule",
+            f"({', '.join(found.members)}): treating them as one would remove "
+            f"{found.modes} modes and {found.options} routes from the model, and "
+            "every choice between them leads to the same schedule",
         )

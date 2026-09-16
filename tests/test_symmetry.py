@@ -300,3 +300,48 @@ def test_an_environment_whose_spots_differ_is_left_alone(tmp_path):
         document_path=EXAMPLES / "consumable.document.yaml",
     )
     assert [d.code for d in report.diagnostics if d.code == CODE] == []
+
+
+# --- what a class is reported to cost ------------------------------------
+
+
+def test_the_cost_is_the_quotient_not_one_alternative_per_activity(tmp_path):
+    # Two interchangeable spots, and an activity that offers *two* groups of modes
+    # over them -- one per duration it may run for. Only each group collapses, so
+    # four modes become two. Counting "every mode that names a member but one"
+    # would say three.
+    classes = _classes(
+        tmp_path,
+        st_env(
+            devices=[("station_0", ["core"]), ("station_1", ["core", "side"])],
+            transports=[
+                ("station_0.core", "station_1.core", 2),
+                ("station_0.core", "station_1.side", 2),
+            ],
+            target_modes=(
+                ("station_1", "station_1.core", 2),
+                ("station_1", "station_1.side", 2),
+                ("station_1", "station_1.core", 7),
+                ("station_1", "station_1.side", 7),
+            ),
+        ),
+    )
+    assert _summary(classes) == [(SPOT, ("station_1.core", "station_1.side"))]
+    # Four target modes -> two, and four routes -> two.
+    assert (classes[0].modes, classes[0].options) == (2, 2)
+
+
+def test_a_cost_never_exceeds_what_the_instance_has(tmp_path):
+    # The loose count could report more removable routes than an instance had at
+    # all, which is how the error was found.
+    report = schedule(EXAMPLES / "storage.workflow.yaml", EXAMPLES / "storage.env.yaml")
+    assert report.stats is not None
+    total_modes = report.stats.model.modes
+    total_routes = report.stats.model.transport_options
+    wf, _ = parse_workflow(EXAMPLES / "storage.workflow.yaml")
+    env, _ = load_environment(EXAMPLES / "storage.env.yaml")
+    instance, _ = build_instance(wf, env)
+    assert instance is not None
+    for found in interchangeable_classes(instance):
+        assert found.modes < total_modes
+        assert found.options < total_routes
