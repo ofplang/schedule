@@ -90,9 +90,10 @@ use: the resting spot enters the model only as the $\sigma^{\mathrm{in}}$ of the
 `producer → output node` arc (§4, §5), so a spot no route reaches contributes no
 feasible $q_{r,m,n,t}$ and can be dropped without removing a schedule, while a spot
 some route reaches is selectable exactly when that route is. Staying put is always
-among the candidates — a same-spot move is defined for every transporter and has
-duration 0 (SPEC §5.4) — and it adds nothing to $C_{\max}$, so an unbound output
-comes to rest where it was produced unless another activity needs that spot. Nothing
+among the candidates — a same-spot move is served by one route, of duration 0 and
+no transporter (SPEC §5.4, §6.4; §Parameters) — and it adds nothing to $C_{\max}$,
+so an unbound output comes to rest where it was produced unless another activity
+needs that spot. Nothing
 else in the model distinguishes these modes from any other: the route selection (§4),
 the transport duration (§5), the spot and device occupancy (§6, §7) and the replanning
 rules (§9) are stated over $M_i$ and $M_j$ and are unchanged.
@@ -204,6 +205,15 @@ Processing and transport:
   destination device, and the transporter $t$ (so typically $|L_{r,m,n,t}| = 3$;
   SPEC §4.5). For $t = \bot$ it contains the two endpoint devices and nothing else
   ($|L_{r,m,n,\bot}| \le 2$): there is no transporter to hold.
+- A **same-spot** pair $p = q$ is served by the single route $t = \bot$ of duration
+  0, so $|L_{r,m,n,\bot}| = 1$: one device, no transporter. The duration table
+  answers 0 for such a pair whatever transporter is asked (SPEC §5.4), but a
+  hand-off within one spot is a physical no-op that *none* of them performs (SPEC
+  §6.4, which is why a plan omits the field for it), so none is offered.
+  🔴 Not a tidying: a zero-length interval is **not** inert in a `NoOverlap` — CP-SAT
+  refuses a point strictly inside another interval — so a route naming a transporter
+  here would forbid placing a physical no-op while that arm was busy (design.md
+  D54).
 - $k_r^{\mathrm{out}}$, $k_r^{\mathrm{in}}$: the source output port and
   destination input port of arc $r$.
 
@@ -873,13 +883,15 @@ structure more directly with optional intervals.
   The boundary nodes are ordinary occupiers: the input node's interval $[0,0]$ and
   the output node's interval $[s_{\mathrm{out}},C_{\max}]$ carry their spots into
   the same `NoOverlap`, so the waiting entry-input and the resting final-output
-  need no boundary-specific machinery.
+  need no boundary-specific machinery. (Spots a schedule never tells apart share
+  one cumulative instead — Part III R2, which changes the encoding and not this.)
 - Device non-overlap: feed processing intervals and the transport body interval
   $[a_r,b_r]$ into each device's `NoOverlap`. The transporter is a device like any
   other: route each transport option's body interval into its chosen transporter's
   `NoOverlap` (present iff $q_{r,m,n,t}$), so each transporter serialises only its
   own moves while different transporters run in parallel. (Boundary nodes have no
-  device, so they add nothing here.)
+  device, so they add nothing here. Transporters a schedule never tells apart share
+  one cumulative instead — Part III R1.)
 - Boundary nodes: create $C_{\max}$ before the activity intervals so the output
   node's interval can end at it; pin the input node to $[0,0]$ (exempt from the
   replan $s\ge now$ lower bound) and the output node's end to $C_{\max}$.
@@ -912,50 +924,13 @@ structure more directly with optional intervals.
   real defect: too small silently turns feasible instances infeasible, too large
   slows every solve.
 - **Interchangeable resources.** Where an instance offers several interchangeable
-  ways of using one resource — $|P_\ell|$ spots of a device, a pool of like devices,
+  ways of using one resource — spots of a device, a pool of like devices,
   transporters that can make the same moves in the same times — every mode and route
-  that only chooses between them is a distinct $x_{i,m}$ / $q_{r,m,n,t}$ in the
-  model, and all of those choices lead to the same objective. The model grows
-  quadratically in the size of such a class (one mode per member, per activity that
-  may use it, and one route option per member, per arc that may reach it) and
-  nothing in §4–§8 prunes it. The implementation detects these classes and reports
-  them (`interchangeable_resources`, SPEC §10.4); the claim is read off the built
-  instance rather than off the environment, so only the processes the workflow
-  instantiated and the routes its arcs kept are compared. Contrast J6, where
-  symmetry among interchangeable **jobs** is broken by a constraint.
-- **A same-spot move occupies no transporter.** Where an arc's endpoints coincide
-  ($p = q$), the option set is the single route $(m, n, ot)$ of duration 0: no
-  $t \in \mathcal{T}$ serves it, so its body interval enters no transporter's
-  `NoOverlap`. It still enters the device's, like any move (§7). This is not a
-  simplification but the model the plan document already describes, which omits the
-  transporter for such a move — and it matters because a zero-length interval is
-  *not* inert in a `NoOverlap`: CP-SAT refuses a point strictly inside another
-  interval, so a route naming a transporter here would forbid placing a physical
-  no-op while that transporter was busy (design.md D54).
-- **A class of interchangeable transporters is collapsed.** For such a class
-  $T \subseteq \mathcal{T}$, the $|T|$ per-transporter `NoOverlap` sets of §7 are
-  replaced by a single cumulative resource of capacity $|T|$ over the same body
-  intervals $[a_r,b_r]$, and each arc's route options are taken modulo $T$: the
-  members contribute one $q_{r,m,n,\cdot}$ between them. **Which** member makes each
-  move is not a decision variable at all; it is assigned after the solve, earliest
-  start first to the lowest-named free member.
-
-  That is exact, not a relaxation. A schedule is realisable on $|T|$ separate
-  transporters iff at no instant do more than $|T|$ of the moves assigned to $T$
-  overlap — the cumulative's condition — because the move intervals form an
-  interval graph, whose chromatic number equals its largest clique, and a clique of
-  intervals is a set covering a common point. So a cumulative-feasible assignment
-  can always be coloured, and greedy-by-start-time does it.
-
-  Two conditions are required and are checked rather than assumed. **(i)** Every
-  route of the class must have positive duration: §5.4 permits a zero-duration
-  transport that still names a transporter, and a zero-length interval is the one
-  place the two encodings differ — `NoOverlap` refuses a point strictly inside
-  another interval while a cumulative does not, so the collapse would admit
-  schedules no assignment realises. **(ii)** Every group of routes the class
-  multiplies must have exactly one member per transporter, which follows from the
-  class being verified. A class failing either is left encoded as it was.
-
+  that only chooses between them is a distinct $x_{i,m}$ / $q_{r,m,n,t}$, and all of
+  those choices lead to the same objective. The model then grows quadratically in
+  the size of such a class, and nothing above prunes it, so the implementation
+  detects these classes and reduces two of the three kinds. **Part III** is where
+  that is set out; it changes no statement made here or in §4–§11.
 # Part II — several jobs, planned together
 
 Several workflows may be planned in one solve, as **jobs** competing for the same
@@ -1367,3 +1342,136 @@ with Part I — it **is** Part I's problem, with every addition above switched o
 its own definition. The implementation holds itself to the same statement by
 measurement: the plans, charts and diagnostics of every single-workflow example are
 byte-for-byte what they were before any of Part II existed.
+
+# Part III — reductions: the same problem, a smaller model
+
+**Nothing here changes the model.** Parts I and II say what is being solved; each
+reduction below hands the solver a *smaller* model with the same feasible schedules
+— up to relabelling one resource's interchangeable members — and the same optimal
+value, and puts back what it left out after the solve. They are written separately
+for that reason: the model is the model, and these are how the implementation
+avoids paying for a part of it that cannot change the answer.
+
+## The principle
+
+Call a set $\Gamma$ of resources **interchangeable for an instance** when the
+relabelling that permutes its members maps the instance onto itself: every activity
+keeps the same mode set $M_i$, and every arc the same route set, once the members
+are renamed. Then
+
+- every $x_{i,m}$ whose mode differs from another's only in which member of
+  $\Gamma$ it names, and every $q_{r,m,n,t}$ likewise, is one of $|\Gamma|$ copies
+  of the same statement; and
+- the objective (§Objective, §J3) is a function of $s_i$, $e_i$, $a_r$, $b_r$,
+  $\bar{y}_\omega$ and $C_j$ alone — **no resource identity enters it**.
+
+So the copies can be replaced by one, the per-member exclusions of §7 by a single
+cumulative resource of capacity $|\Gamma|$ over the same intervals, and *which*
+member each thing gets decided after the solve. The model then grows with the
+instance rather than with $|\Gamma|$ times it.
+
+Which sets are interchangeable is decided of the **built instance**, not of the
+environment: only the processes the workflow instantiated and the routes its arcs
+kept are compared, so a laboratory whose bays differ in some process this workflow
+never runs still has interchangeable bays here. A member the document has pinned
+something to — reported history, a boundary binding (SPEC §6.8), an `occupied` hold
+(§J5) — is never in a class, so a class shrinks as a run accumulates history. Every
+class is reported, whether or not it is reduced (`interchangeable_resources`,
+SPEC §10.4).
+
+Contrast **§J6**, where symmetry among interchangeable *jobs* is broken by a
+constraint instead. A constraint prunes the search and leaves the model the size it
+was; these reductions shrink the model and leave the search alone. Both were
+measured, and for resources the constraint is the worse of the two: ordering the
+bay choice instead of removing it slowed every instance it was tried on
+(`dev-notes/report-model-size-and-presolve.md` §23).
+
+## When a cumulative and the exclusions it replaces differ
+
+A cumulative counts concurrent demand; an exclusion forbids overlap. For intervals
+of positive length over a set that must be handed out one member each, the two
+agree — which is what makes a reduction exact. Three things break that agreement,
+and each makes a reduction unavailable rather than approximate:
+
+1. **A zero-length occupancy.** CP-SAT's `NoOverlap` refuses an interval that is a
+   single point strictly inside another; counting demand over an empty span refuses
+   nothing. So a class one of whose occupancies can have zero length is left as it
+   was. Here an occupancy is at least as long as the mode or route that makes it, so
+   the test is "no mode or route of the class takes no time" — which a relay
+   (SPEC §6.4.1) and a hand-off that stays put (§Parameters) both do.
+2. **An occupancy whose length is a decision.** A boundary `output` node holds its
+   spots to $C_{\max}$ and a `held` node to the horizon (§J5), so their lengths are
+   the solver's to choose and can come out zero. A pinned one carries a single mode
+   and is excluded already; an **unbound** final output carries one mode per
+   candidate resting spot (§Activities) and is not, so it is excluded explicitly.
+3. **Two occupancies that must share a member and overlap in time.** Then no
+   assignment exists for the cumulative's count to reflect. Which shapes those are
+   depends on the scope, so they are listed per reduction below.
+
+## R1. Interchangeable transporters
+
+For a class $\Gamma \subseteq L^{\mathrm{tr}}$, the $|\Gamma|$ per-transporter
+exclusions of §7 become one cumulative of capacity $|\Gamma|$ over the same body
+intervals $[a_r,b_r]$, and each arc's route options are taken modulo $\Gamma$: its
+members contribute one $q_{r,m,n,\cdot}$ between them. Which member makes each move
+is not a variable at all; it is assigned after the solve, earliest start first to
+the lowest-named free member.
+
+**Exact.** A schedule is realisable on $|\Gamma|$ separate transporters iff at no
+instant do more than $|\Gamma|$ of the moves assigned to $\Gamma$ overlap — the
+cumulative's condition — because the move intervals form an interval graph, whose
+chromatic number equals its largest clique, and a clique of intervals is a set
+covering one instant. So a cumulative-feasible schedule can always be coloured, and
+greedy-by-start-time colours it.
+
+**Unavailable when** (1) holds of any route of the class, or when some group of
+routes the class multiplies does not have exactly one member per transporter —
+which follows from the class being verified, so failing it means the reduction is
+understood wrongly rather than the laboratory being unusual. Condition (3) cannot
+arise here: each move contributes one interval and they are independent of each
+other.
+
+## R2. Interchangeable spots
+
+For a class $\Gamma \subseteq P$ — necessarily spots of one device, a spot of
+another being a different resource — the $|\Gamma|$ per-spot exclusions of §7 become
+one cumulative of capacity $|\Gamma|$, and the modes and routes are taken modulo
+$\Gamma$ as in R1.
+
+What is different is that **material stays put**, so the intervals are not
+independent. Call a **stay** the set of occupancies that must name one and the same
+member:
+
+$$
+\mathrm{stay}(i,p) \;=\; \{\,[s_i,e_i]\,\}
+\;\cup\; \{\,[e_i,b_r] \;\mid\; r \text{ leaves } i \text{ from } p \,\}
+\;\cup\; \{\,[a_r,s_i] \;\mid\; r \text{ arrives at } i \text{ on } p \,\}
+$$
+
+The route selection (§4) ties a move's source hold to the spot its source
+activity's mode bound, and its destination hold to the spot its destination
+activity's mode bound — and ties the two sides of a move to **nothing in common**.
+So a stay is one activity's residency. It could reach across a move only where the
+move begins and ends on one spot, and such a move takes no time and is excluded by
+(1); a relay takes no time either, and is itself the activity rather than a bridge
+between two. A stay's occupancies meet at its activity's endpoints, so a stay
+covers one interval.
+
+**Exact**, then, by R1's argument with stays in place of moves: the stays of one
+class are intervals, the cumulative bounds their largest overlap by $|\Gamma|$, and
+greedy-by-start-time hands out the members.
+
+**Unavailable when** (1) or (2) holds of the class, or in either shape of (3): a
+mode that puts two Object inputs, or two outputs, on one member (two Objects in one
+bay — refused by §7 today, allowed by a cumulative), and an Object output port that
+feeds two moves from a member (two departures holding one bay from one instant). A
+mode that binds two *different* members of one class is excluded too: it is two
+occupancies where the reduced reading sees one.
+
+## R3. Interchangeable devices — detected, not reduced
+
+A class of like devices is found and reported, and nothing is done about it.
+Reducing one means reducing the *place* as well, a device owning its spots, so it is
+R2 plus the machine rather than a third case of the same shape — and measured, the
+return on the case-study laboratories is between nothing and a third of the
+variables, against three-and-a-half times for R1 and twice for R2 (report §19).

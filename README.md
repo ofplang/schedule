@@ -178,29 +178,47 @@ a plan is a portable v0 document and says nothing about how it was found.
 ## Resources the instance never tells apart
 
 Where an instance offers **several interchangeable ways of using one resource** —
-spots of a device, devices of a pool, arms that can make the same moves in the same
+bays of a device, devices of a pool, arms that can make the same moves in the same
 times — its model holds a mode and a route for each of them, and every one of those
 choices leads to the same schedule. That grows the model quadratically in the size
 of such a class, and model size is what bounds solve time. It is not a small effect
-on a real laboratory: in the standard RNA-seq case study, **5,285 of the model's
-5,360 route options exist only to choose between four identical arms**.
+on a real laboratory: the standard RNA-seq case study spends three quarters of its
+route options choosing between four identical arms, and a growth-curve protocol
+run against a laboratory whose devices are written with several places to put
+things pays for that annotation with half its model.
 
-So a class of interchangeable **transporters** is collapsed: the arms become one
-resource with room for as many moves at once as there are arms, their route options
-collapse to one between them, and which arm makes each move is decided after the
-solve. The schedule cannot change — at most that many moves ever overlap, and a set
-of intervals that thin can always be handed out, so every schedule the arms allow
-is still there and no other is added. It is not applied where the two encodings
-could differ: a class one of whose routes takes no time (a transport may, §5.4) is
-left as it was.
+So two of the three kinds are **reduced away** before the solver sees them. A class
+of interchangeable arms becomes one machine with room for as many moves at once as
+there are arms; a class of interchangeable bays becomes one shelf with room for as
+many Objects. Their modes and routes collapse to one between them, and which arm
+makes each move — and which bay holds each Object — is decided after the solve.
 
-Every class it does not collapse is reported instead (`interchangeable_resources`,
-a warning), naming its members and how many modes and routes the choice costs. It
-is a claim about *that instance* rather than about the laboratory — only the
-processes the workflow instantiated and the routes its arcs kept are compared — so
-a resource the document has pinned something to is never named, and a class shrinks
-as a run accumulates history. `stats.model` carries both counts, the routes the
-laboratory offers and the routes the model was given, so the difference is visible.
+The schedule cannot change. At most that many things ever overlap, and a set of
+intervals that thin can always be handed out, so every schedule the separate
+resources allowed is still there and no other is added. Bays are the harder of the
+two because material stays put: what gets a bay is not one interval but one
+Object's whole **stay** — the activity that holds it, the move that brought it,
+and the move that takes it away. And neither is applied where the two encodings
+could differ, chiefly where an occupancy can have no length at all (a transport
+may take no time, §5.4). `docs/FORMULATION.md` Part III sets out both, and what
+makes them exact.
+
+Measured on the benchmark, the sixty-four-job instance goes from 34,498 variables
+to 2,242 and enters the search for the first time; sixteen jobs solve in under two
+seconds where it used to take longer to prove the same answer.
+
+Every class that is **not** reduced is reported instead
+(`interchangeable_resources`, a warning), naming its members and what treating
+them as one would take off. A class that is reduced says nothing, there being no
+cost left to report. It is a claim about *that instance* rather than about the
+laboratory — only the processes the workflow instantiated and the routes its arcs
+kept are compared — so a resource the document has pinned something to is never
+named, and a class shrinks as a run accumulates history.
+
+Nothing about the plan changes: it names one concrete bay, machine and arm per
+activity, as always. `stats.model` carries both sides of the count — the modes and
+routes the laboratory offers, and the `encoded_` ones the model was given — so the
+difference is visible.
 
 Each input is either a path or an already-loaded document (a mapping), so an
 embedder that holds them in memory — a rolling-horizon runner rendering a fresh

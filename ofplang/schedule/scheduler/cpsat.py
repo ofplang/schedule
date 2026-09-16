@@ -9,8 +9,11 @@ Occupancy bookkeeping mirrors FORMULATION §6/§7: a processing activity holds i
 mode's spots and devices over its run interval; a transport holds the source spot
 over [e_src, b], the destination spot over [a, s_dst], and the source device,
 destination device, and transporter over its body interval [a, b] -- except a
-non-accessing processing mode (§4.4.2), which holds its spots and no device. NoOverlap is
-applied per spot, per device, and per transporter.
+non-accessing processing mode (§4.4.2), which holds its spots and no device.
+NoOverlap is applied per spot, per device, and per transporter -- except over a
+class of spots or transporters an instance never tells apart, which share one
+`AddCumulative` of the class's size instead, and are handed out individually after
+the solve (FORMULATION Part III; `symmetry`, `spotpool`).
 """
 
 from __future__ import annotations

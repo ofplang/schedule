@@ -45,13 +45,16 @@ mode and route that lab has over the single-spot version of itself.
 
 ## What is done about it
 
-Only one scope is acted on, and only where acting cannot change the answer: a
-class of interchangeable **transporters** is collapsed into one resource of the
-class's size, because a transporter has no spots and no identity in the schedule
-beyond serialising its own moves. `aggregatable_transporters` carries the two
-guards that make that exact. Spot and device classes are reported and left alone:
-collapsing those needs the material's *place* to be decided after the solve, which
-is a formulation change this module does not make.
+Two of the three scopes are acted on, and only where acting cannot change the
+answer. A class of interchangeable **transporters** becomes one resource of the
+class's size (`aggregatable_transporters`), and so does a class of interchangeable
+**spots** (`aggregatable_spots`) -- the harder of the two, because material stays
+put, so what gets a bay is one Object's whole stay rather than one interval
+(`spotpool`). A class of interchangeable **devices** is reported and left alone:
+reducing one means reducing the place as well, a device owning its spots, so it is
+the spot case plus the machine rather than a third case of the same shape -- and
+measured, it is the one with least to gain. FORMULATION Part III sets out all
+three and what makes the two exact.
 
 ## How it is decided
 
