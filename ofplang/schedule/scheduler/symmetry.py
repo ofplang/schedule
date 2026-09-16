@@ -26,13 +26,20 @@ modes and every arc the same set of routes. Then no schedule is lost by choosing
 differently among them, which is exactly why the choice costs the search without
 buying anything.
 
-Three scopes, because they are separate shapes and an instance rarely has more
-than one of them:
+Three scopes, because they are separate shapes and a laboratory can carry all
+three at once:
 
 - **spot** -- spots of one device (a plate hotel's slots, a loader's bays);
 - **device** -- whole devices, carried with their spots (a pool of thermal
   cyclers, two readers of the same model);
 - **transporter** -- arms that can make the same moves in the same times.
+
+Measured on the case studies, the transporter scope is the one that finds the
+most: the standard RNA-seq laboratory has four identical arms, and **5,285 of its
+5,360 route options exist only to choose between them**. The capacity-annotated
+growth-curve laboratory carries four spot classes at once (a fridge of eight, an
+incubator of eight, and two two-spot devices), which together account for every
+mode and route that lab has over the single-spot version of itself.
 
 ## How it is decided
 
