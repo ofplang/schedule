@@ -687,6 +687,99 @@ def aggregatable_transporters(
     return aggregated
 
 
+def aggregatable_spots(
+    instance: Instance, classes: tuple[InterchangeableClass, ...]
+) -> dict[str, tuple[str, int]]:
+    """The spot classes a solve may encode as **one resource of capacity
+    `len(members)`** instead of one non-overlap per bay, as
+    `member -> (representative, capacity)`.
+
+    Harder than the transporter case in one way and easier in another. Harder,
+    because material stays put: the occupancies describing one stay of one Object
+    must all name the same bay, so which bay each gets is decided by colouring
+    *stays* rather than intervals (`spotpool`). Easier, because a spot class lives
+    inside one device, so nothing about which machine is held, how long anything
+    takes, or what it consumes can differ between members -- the verification
+    already compares all of that.
+
+    🔴 **Five guards, and a class tripping any one is left encoded as it was.**
+    Collapsing replaces the members' non-overlaps with one capacity resource, so
+    **every** interval that held any member enters it -- not only the ones whose
+    modes were collapsed. So the guards ask about everything that can land there.
+
+    - **G1 no occupancy can be zero-length.** A spot is held by an activity's own
+      interval (its mode's duration) and by each move's spot holds, which are at
+      least the move's duration -- so this is "no mode or route of it takes no
+      time". A relay is zero-duration by construction (§6.4.1) and a hand-off that
+      stays put is a zero-duration route (§5.4, D54). A zero-length interval is the
+      one place a capacity resource is *weaker* than a non-overlap, and collapsing
+      such a class could admit a schedule no assignment of bays realises.
+    - **G2 no mode binds two *different* members.** Such a mode is two occupancies
+      where the canonical reading sees one, so collapsing it would lose an
+      occupancy. Supporting it would mean a key that records *which bay* rather
+      than which spot; nothing measured needs one, so this refuses instead.
+    - **G3 no boundary node binds a member.** An `output` or `held` node holds its
+      spots to the makespan with a *free* size, so it can be zero-length -- and an
+      **unbound** final output offers one mode per resting place (§6.8), so unlike a
+      pinned one it is not already rejected by the verification.
+    - **G6 no mode puts two inputs, or two outputs, on one member.** Two Objects on
+      one bay at once: the non-overlap already refuses it, a capacity resource
+      would allow it on two bays, and the stay would then demand one. (The same
+      spot on an input *and* an output is the ordinary identity map -- one Object,
+      one occupancy -- and is fine.)
+    - **G7 no Object output port feeds two moves from a member.** Two departures
+      holding one bay from the same instant: refused today, allowed by a capacity
+      resource, and again a stay that wants one bay.
+
+    History needs no guard of its own: a spot a fixed activity or leg pinned is
+    already outside every class (`_pinned`).
+    """
+    aggregated: dict[str, tuple[str, int]] = {}
+    for found in classes:
+        if found.scope != SPOT:
+            continue
+        members = frozenset(found.members)
+        if not _spot_collapsible(instance, members):
+            continue
+        for member in members:
+            aggregated[member] = (found.members[0], len(members))
+    return aggregated
+
+
+def _spot_collapsible(instance: Instance, members: frozenset[str]) -> bool:
+    """Do this spot class's occupancies satisfy every guard in
+    `aggregatable_spots`?"""
+    for act in instance.activities:
+        for mode in act.modes:
+            bound = set(mode.input_spots.values()) | set(mode.output_spots.values())
+            touched = bound & members
+            if not touched:
+                continue
+            if mode.duration == 0:
+                return False  # G1: a zero-length stay
+            if len(touched) > 1:
+                return False  # G2: two bays in one mode
+            if act.boundary is not None:
+                return False  # G3: a hold whose size the solver chooses
+            for side in (mode.input_spots, mode.output_spots):
+                if len([s for s in side.values() if s in members]) > 1:
+                    return False  # G6: two Objects on one bay
+    seen_departures: set[tuple[int, str]] = set()
+    for arc in instance.arcs:
+        for option in arc.options:
+            ends = {option.from_spot, option.to_spot} & members
+            if not ends:
+                continue
+            if option.duration == 0:
+                return False  # G1 again, on a route
+        if any(o.from_spot in members for o in arc.options):
+            key = (arc.src_activity, arc.arc.src.port)
+            if key in seen_departures:
+                return False  # G7: one port, two departures
+            seen_departures.add(key)
+    return True
+
+
 def _collapsible(instance: Instance, members: frozenset[str]) -> bool:
     """Do this class's routes satisfy both guards in `aggregatable_transporters`?"""
     for arc in instance.arcs:
