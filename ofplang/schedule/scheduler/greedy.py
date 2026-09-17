@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 
 from ofplang.schedule.core import objective as objective_stages
 from ofplang.schedule.core.identifiers import parse_qualified_spot
-from ofplang.schedule.scheduler.instance import Instance, TransportOption
+from ofplang.schedule.scheduler.instance import Instance, TransportOption, job_membership
 from ofplang.schedule.scheduler.model import JobSpec, Mode
 from ofplang.schedule.scheduler.result import ProcessingResult, Solution, TransportResult
 from ofplang.schedule.scheduler.status import Fixation
@@ -49,9 +49,9 @@ REFUSALS = {
     "replenishment": "a refill is scheduled work whose need depends on the draws",
     "consumption": "a stock draw makes an activity's admissibility depend on the order",
     "relay": "a transport junction is a chain whose legs share one arc",
-    "boundary": "a boundary node's length is a decision, not a duration",
+    "held": "an occupied spot is held to the horizon, which is not a duration",
     "fixation": "a replan has activities already placed, which is a different problem",
-    "jobs": "a joint plan's releases and bounds constrain what may be placed when",
+    "bound": "a promised completion has to be measured the way the model measures it",
 }
 
 # How many times a start may be pushed later before this gives up. Each push
@@ -90,6 +90,17 @@ class _Timeline:
             if start < busy_end:
                 start = busy_end
         return start
+
+    def free(self, start: int, duration: int) -> bool:
+        """Whether the resource is free over exactly this span. A zero-length span
+        is free unless it falls strictly inside a use, which is what `AddNoOverlap`
+        does with a point (§Parameters, design.md D54)."""
+        if self.pending is not None:
+            return False
+        end = start + duration
+        if start == end:
+            return not any(busy_start < start < busy_end for busy_start, busy_end in self.busy)
+        return all(end <= busy_start or start >= busy_end for busy_start, busy_end in self.busy)
 
     def clear_from(self, after: int, *, ours: bool = False) -> int | None:
         """The first instant at or after `after` with nothing booked from then on,
@@ -164,11 +175,22 @@ def _spots_of(mode: Mode) -> tuple[str, ...]:
 
 
 def _refuse(instance: Instance, fixation: Fixation | None, jobs: tuple) -> str | None:
-    """The first shape this cannot handle, or None when the instance is in scope."""
+    """The first shape this cannot handle, or None when the instance is in scope.
+
+    A joint plan is in scope while no job carries a promised completion. The
+    release is easy -- it is a floor on when a job's work may start, and a forward
+    pass has a floor already -- but the promise is a cap on $C_j$, and $C_j$ is
+    measured over the job's *own* work: not its boundary nodes, and not the parts
+    of a move that are the material resting rather than travelling (§J, and
+    `cpsat._resting`). Measuring it some other way here would mean checking a
+    promise against a number the model does not use. So a roster with promises in
+    it is declined, and a fresh one -- which is every roster the case-study
+    laboratories submit -- is not.
+    """
     if instance.replenishments:
         return "replenishment"
-    if jobs:
-        return "jobs"
+    if any(spec.bound is not None for spec in jobs):
+        return "bound"
     if fixation is not None and (
         fixation.activities or fixation.arcs or fixation.replenishments or fixation.levels
     ):
@@ -176,11 +198,35 @@ def _refuse(instance: Instance, fixation: Fixation | None, jobs: tuple) -> str |
     for act in instance.activities:
         if act.relay is not None:
             return "relay"
-        if act.boundary is not None:
-            return "boundary"
+        if act.boundary is not None and act.boundary.kind == "held":
+            return "held"
         if any(mode.consumption for mode in act.modes):
             return "consumption"
     return None
+
+
+def _floors(instance: Instance, jobs: tuple[JobSpec, ...]) -> dict[int, int]:
+    """The earliest each activity may start, where a job's release says so (§6.11).
+
+    An ordinary activity of a job is *held* at its release; an input node is
+    *pinned* there, the entry material being a fact about the world rather than
+    something the schedule decides. Boundary nodes are otherwise exempt, as they
+    are in the model.
+    """
+    if not jobs:
+        return {}
+    membership = job_membership(instance, [spec.id for spec in jobs])
+    by_job = {spec.id: spec.release for spec in jobs}
+    floors: dict[int, int] = {}
+    for index, act in enumerate(instance.activities):
+        if act.boundary is not None:
+            if act.boundary.kind == "input":
+                floors[index] = by_job.get(act.boundary.job or "", 0)
+        else:
+            owner = membership[index]
+            if owner is not None:
+                floors[index] = by_job.get(owner, 0)
+    return floors
 
 
 def _edges(instance: Instance) -> tuple[dict[int, list[int]], dict[int, list[int]]]:
@@ -386,6 +432,27 @@ def _depart(
     return True
 
 
+def _is_output(instance: Instance, activity: int) -> bool:
+    boundary = instance.activities[activity].boundary
+    return boundary is not None and boundary.kind == "output"
+
+
+def _choose(instance: Instance, rule, ready: list[int], counts: dict[int, int]) -> int:
+    """Apply the priority rule, but only to real work while any is left.
+
+    An output node parks its material in a bay **until the run is over** (§8), so
+    placing one early takes that bay out of circulation for good -- and where the
+    bay is a machine's, every other job that needs the machine is then stuck. It
+    is not work, and nothing waits on it, so it costs nothing to leave until last.
+    """
+    work = [activity for activity in ready if not _is_output(instance, activity)]
+    if not work:
+        return rule(instance, ready, counts)
+    chosen = rule(instance, work, counts)
+    ready.remove(chosen)
+    return chosen
+
+
 def _consumer_ready(instance: Instance, ready: list[int], counts: dict[int, int]) -> int:
     """Which of the ready activities to place next.
 
@@ -441,9 +508,10 @@ def construct(
     """
     if _refuse(instance, fixation, jobs) is not None:
         return None
+    floors = _floors(instance, jobs)
     best: Solution | None = None
     for rule in _RULES:
-        found = _pass(instance, rule)
+        found = _pass(instance, rule, floors)
         if found is None:
             continue
         if best is None or (found.makespan or 0) < (best.makespan or 0):
@@ -451,7 +519,7 @@ def construct(
     return best
 
 
-def _pass(instance: Instance, rule) -> Solution | None:
+def _pass(instance: Instance, rule, floors: dict[int, int]) -> Solution | None:
     """One forward pass under one priority rule.
 
     **A departure is attempted, not imposed.** The spot an activity ran in is
@@ -475,7 +543,11 @@ def _pass(instance: Instance, rule) -> Solution | None:
     # Material resting with its departure not yet placed, as arc -> when it was
     # ready to leave.
     resting: dict[int, int] = {}
-    floor = dict.fromkeys(range(len(instance.activities)), 0)
+    floor = {index: floors.get(index, 0) for index in range(len(instance.activities))}
+    # Output nodes are placed twice: once here, to settle when their material
+    # arrives, and again at the end, because their end *is* the makespan (§8) and
+    # that is not known until everything else is placed.
+    outputs: list[int] = []
 
     ready = sorted((i for i, count in counts.items() if count == 0), reverse=True)
     while ready or resting:
@@ -484,9 +556,36 @@ def _pass(instance: Instance, rule) -> Solution | None:
             if not moved:
                 return None  # nothing can move and nothing can run
             continue
-        activity = rule(instance, ready, counts)
+        activity = _choose(instance, rule, ready, counts)
         act = instance.activities[activity]
         candidates = [settled[activity]] if activity in settled else range(len(act.modes))
+        if act.boundary is not None:
+            pinned = _place_boundary(
+                board, instance, activity, candidates, floor[activity], arriving[activity], moves
+            )
+            if pinned is None:
+                if not moved:
+                    return None  # waiting will not free the instant it is pinned to
+                ready.append(activity)
+                continue
+            mode_index, at, until = pinned
+            placed[activity] = _Placement(activity, mode_index, at, until)
+            if act.boundary.kind == "output":
+                # Its bay stays held: the material arrived and stays put, and the
+                # hold closes at the makespan once that is known.
+                outputs.append(activity)
+            for arc_index in leaving[activity]:
+                resting[arc_index] = until
+                for option in instance.arcs[arc_index].options:
+                    if option.src_mode_index == mode_index:
+                        board.spot(option.from_spot).hold(until)
+                        break
+            for target in orders[activity]:
+                floor[target] = max(floor[target], until)
+                counts[target] -= 1
+                if counts[target] == 0:
+                    ready.append(target)
+            continue
         best: tuple[int, int] | None = None
         for mode_index in candidates:
             start = _earliest_start(
@@ -541,9 +640,20 @@ def _pass(instance: Instance, rule) -> Solution | None:
 
     if len(placed) != len(instance.activities) or len(moves) != len(instance.arcs):
         return None  # a cycle, or an arc whose ends were never both placed
+    makespan = _makespan(instance, placed, moves)
+    for activity in outputs:
+        # An output node's end *is* the makespan (§8), so its bay is the material's
+        # from the delivery until the run is over. Nothing could have taken that bay
+        # meanwhile: the delivery's hold was never closed.
+        placement = placed[activity]
+        placed[activity] = _Placement(activity, placement.mode_index, placement.start, makespan)
+        for index in arriving[activity]:
+            bay = board.spot(moves[index].option.to_spot)
+            if bay.pending is not None:
+                bay.release(makespan)
     if any(line.pending is not None for line in board.spots.values()):
         return None  # material left resting with nothing to take it away
-    return _assemble(instance, placed, moves)
+    return _assemble(instance, placed, moves, makespan)
 
 
 def _send_what_can_go(
@@ -566,7 +676,13 @@ def _send_what_can_go(
     while resting:
         order = sorted(
             resting,
-            key=lambda index: (counts[instance.arcs[index].dst_activity] != 1, index),
+            key=lambda index: (
+                # A delivery into an output node parks its material for the rest of
+                # the run, so it goes after every delivery that does not.
+                _is_output(instance, instance.arcs[index].dst_activity),
+                counts[instance.arcs[index].dst_activity] != 1,
+                index,
+            ),
         )
         for arc_index in order:
             source = instance.arcs[arc_index].src_activity
@@ -591,12 +707,74 @@ def _send_what_can_go(
     return moved
 
 
+def _makespan(
+    instance: Instance,
+    placed: dict[int, _Placement],
+    moves: dict[int, _Move],
+) -> int:
+    """The makespan the model would report (§8).
+
+    Not simply the last thing to happen. An output or held node's end is not work
+    -- the first is pinned to this very number and the second to the horizon -- so
+    neither is counted. A delivery *into* an output node is counted, because that
+    node is pinned here and a delivery arriving later than every real end has to
+    fit before it. Every other move is followed by the activity that receives it,
+    so counting it would change nothing.
+    """
+    ends = [
+        placement.end
+        for index, placement in placed.items()
+        if (boundary := instance.activities[index].boundary) is None
+        or boundary.kind not in ("output", "held")
+    ]
+    ends += [
+        move.end
+        for index, move in moves.items()
+        if (boundary := instance.activities[instance.arcs[index].dst_activity].boundary) is not None
+        and boundary.kind == "output"
+    ]
+    return max(ends, default=0)
+
+
+def _place_boundary(
+    board: _Board,
+    instance: Instance,
+    activity: int,
+    candidates,
+    floor: int,
+    arriving: list[int],
+    moves: dict[int, _Move],
+) -> tuple[int, int, int] | None:
+    """Place a boundary node by its pinning rather than by looking for a slot.
+
+    An input node sits at its job's release and takes no time: the material is
+    given, so the schedule does not choose when it appears. An output node starts
+    where its material lands and ends at the makespan, which is settled once
+    everything else is placed -- so it is given a zero length here and stretched
+    afterwards, and its bay is deliberately *not* taken, the delivery's own hold
+    already covering it.
+    """
+    act = instance.activities[activity]
+    assert act.boundary is not None
+    mode_index = next(iter(candidates))
+    if act.boundary.kind == "input":
+        start = floor
+        # Zero length, so the pinned instant must not fall inside another use of
+        # the spot -- which is exactly what `AddNoOverlap` refuses (§Parameters).
+        for spot in _spots_of(act.modes[mode_index]):
+            if not board.spot(spot).free(start, 0):
+                return None
+        return mode_index, start, start
+    start = max([floor, *(moves[index].end for index in arriving)])
+    return mode_index, start, start
+
+
 def _assemble(
     instance: Instance,
     placed: dict[int, _Placement],
     moves: dict[int, _Move],
+    makespan: int,
 ) -> Solution:
-    makespan = max([*(p.end for p in placed.values()), *(m.end for m in moves.values())], default=0)
     return Solution(
         outcome="feasible",
         makespan=makespan,

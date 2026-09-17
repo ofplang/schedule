@@ -79,10 +79,40 @@ def _violations(instance: Instance, solution: Solution) -> list[str]:
         act = instance.activities[placement.activity]
         if placement.mode not in act.modes:
             wrong.append(f"{placement.node}: mode is not one the activity offers")
-        if placement.end != placement.start + placement.mode.duration:
-            wrong.append(f"{placement.node}: end is not start plus the mode's duration")
         if placement.start < 0:
             wrong.append(f"{placement.node}: starts before zero")
+        # A boundary node's length is not its mode's duration: an input node takes
+        # no time and an output node runs to the makespan (§Activities, §8).
+        kind = None if act.boundary is None else act.boundary.kind
+        if kind is None:
+            if placement.end != placement.start + placement.mode.duration:
+                wrong.append(f"{placement.node}: end is not start plus the mode's duration")
+        elif kind == "input":
+            if placement.end != placement.start:
+                wrong.append(f"input node {placement.activity}: takes time")
+        elif kind == "output":
+            if placement.end != solution.makespan:
+                wrong.append(
+                    f"output node {placement.activity}: ends at {placement.end}, "
+                    f"not at the makespan {solution.makespan}"
+                )
+
+    # §8: the makespan is the last real end, counting a delivery into an output node
+    # and counting neither an output nor a held node's own end.
+    counted = [
+        p.end
+        for p in solution.processing
+        if (b := instance.activities[p.activity].boundary) is None
+        or b.kind not in ("output", "held")
+    ]
+    counted += [
+        move.end
+        for index, move in enumerate(solution.transport)
+        if (b := instance.activities[instance.arcs[index].dst_activity].boundary) is not None
+        and b.kind == "output"
+    ]
+    if counted and solution.makespan != max(counted):
+        wrong.append(f"makespan is {solution.makespan}, but the last real end is {max(counted)}")
 
     for index, move in enumerate(solution.transport):
         arc = instance.arcs[index]
@@ -179,20 +209,20 @@ def test_the_shapes_outside_the_scope_are_refused_rather_than_guessed(name):
         assert _violations(instance, solution) == []
 
 
-def test_a_boundary_node_is_refused():
-    # An output or held node's length is a decision rather than a duration, and
-    # list scheduling has no way to choose it. Marking one activity as a boundary
-    # node is enough to take the instance out of scope, and refusing says so.
+def test_a_held_spot_is_refused_where_an_output_node_is_not():
+    # A held node runs to the horizon (§6.12) and is not work, which list
+    # scheduling has no way to place; an output node runs to the makespan, which it
+    # can. So one is refused and the other is not.
     instance = _instance("simple")
-    marked = replace(
+    held = replace(
         instance,
         activities=(
-            replace(instance.activities[0], boundary=BoundaryInfo(kind="output")),
-            *instance.activities[1:],
+            replace(instance.activities[-1], boundary=BoundaryInfo(kind="held", since=0)),
+            *instance.activities[:-1],
         ),
     )
     assert construct(instance) is not None
-    assert construct(marked) is None
+    assert construct(held) is None
 
 
 def test_the_same_instance_gives_the_same_schedule_twice():
