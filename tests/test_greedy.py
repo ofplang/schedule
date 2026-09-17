@@ -52,6 +52,11 @@ def _intervals(instance: Instance, solution: Solution):
         if option.transporter is not None:
             claims.append(("arm", option.transporter, move.start, move.end, f"arc{index}"))
         if option.from_spot != option.to_spot:
+            # A move reaches inside both machines, so it holds both for as long as
+            # it takes -- once where they are the same machine, because an interval
+            # registered twice would overlap itself.
+            for device in {option.from_spot.split(".")[0], option.to_spot.split(".")[0]}:
+                claims.append(("device", device, move.start, move.end, f"arc{index}.dev"))
             source = by_activity[arc.src_activity]
             claims.append(("spot", option.from_spot, source.end, move.end, f"arc{index}.from"))
             target = by_activity[arc.dst_activity]

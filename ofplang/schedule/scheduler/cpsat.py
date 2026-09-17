@@ -632,6 +632,7 @@ def solve(
             sum(1 for m, carries in enumerate(carrier) if carries == m)
             for carrier in mode_carrier
         ),
+        None if constructed is None else constructed.makespan,
     )
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -739,6 +740,7 @@ def _solve_stats(
     recorder: _SolutionRecorder | None,
     encoded_options: int,
     encoded_modes: int,
+    hint_makespan: int | None,
 ) -> SolveStats:
     """Assemble the record of what this solve cost (stats.py).
 
@@ -789,6 +791,7 @@ def _solve_stats(
         ),
         objective_kind=stages,
         phases=(phase,),
+        hint_makespan=hint_makespan,
     )
 
 

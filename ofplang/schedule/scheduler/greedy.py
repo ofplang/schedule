@@ -38,6 +38,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ofplang.schedule.core import objective as objective_stages
+from ofplang.schedule.core.identifiers import parse_qualified_spot
 from ofplang.schedule.scheduler.instance import Instance, TransportOption
 from ofplang.schedule.scheduler.model import JobSpec, Mode
 from ofplang.schedule.scheduler.result import ProcessingResult, Solution, TransportResult
@@ -283,31 +284,55 @@ def _earliest_start(
     return None
 
 
+def _devices_of(option: TransportOption) -> tuple[str, ...]:
+    """The devices a move occupies: the one it takes from and the one it puts
+    into, counted once where they are the same device (§7).
+
+    This is easy to miss, and was: a move reaches inside both machines, so it
+    holds both for as long as it takes, not merely the two bays and the arm. An
+    environment where one device is both the resting place and the destination of
+    every move is bound by that device long before it is bound by its bays.
+    """
+    source = parse_qualified_spot(option.from_spot)
+    target = parse_qualified_spot(option.to_spot)
+    assert source is not None and target is not None  # both are validated spots
+    return (source[0],) if source[0] == target[0] else (source[0], target[0])
+
+
 def _time_move(board: _Board, option: TransportOption, after: int) -> tuple[int, int] | None:
     """When a move on this route could set off and land, at or after `after`.
 
-    A move books its arm for its duration and takes its destination bay from the
-    moment it sets off -- a bay has to be empty to be moved into, and stays the
-    material's until the receiving activity starts. So the bay has to be free
-    from the departure onwards, with nothing booked in it later. When it is not,
-    the answer is None and the material stays where it is: that is the whole
-    reason a departure is attempted rather than imposed.
+    A move books its arm and both of its devices for its duration, and takes its
+    destination bay from the moment it sets off -- a bay has to be empty to be
+    moved into, and stays the material's until the receiving activity starts. So
+    the bay has to be free from the departure onwards, with nothing booked in it
+    later. Where none of that lines up the answer is None and the material stays
+    where it is: that is the whole reason a departure is attempted, not imposed.
     """
     if option.from_spot == option.to_spot:
         # A hand-off that stays put takes no time and names no arm (§Parameters):
         # the material does not move, so there is nothing to book.
         return after, after
-    start = board.spot(option.to_spot).clear_from(after)
-    if start is None:
-        return None
-    if option.transporter is not None:
-        booked = board.transporter(option.transporter).earliest(start, option.duration)
-        if booked is None:
+    devices = _devices_of(option)
+    start = after
+    for _ in range(_PUSHES):
+        pushed = board.spot(option.to_spot).clear_from(start)
+        if pushed is None:
             return None
-        # Waiting for the arm cannot make the bay busy again: nothing is booked in
-        # it past `start`, which is what `clear_from` chose it for.
-        start = booked
-    return start, start + option.duration
+        if option.transporter is not None:
+            booked = board.transporter(option.transporter).earliest(pushed, option.duration)
+            if booked is None:
+                return None
+            pushed = max(pushed, booked)
+        for device in devices:
+            free = board.device(device).earliest(pushed, option.duration)
+            if free is None:
+                return None
+            pushed = max(pushed, free)
+        if pushed == start:
+            return start, start + option.duration
+        start = pushed
+    return None
 
 
 def _depart(
@@ -344,6 +369,9 @@ def _depart(
     landed, start, option_index, option = chosen
     if option.transporter is not None:
         board.transporter(option.transporter).take(start, landed)
+    if option.from_spot != option.to_spot:
+        for device in _devices_of(option):
+            board.device(device).take(start, landed)
     # The source spot is the material's until the move completes, and the
     # destination's from the moment it sets off (FORMULATION §7). The source's
     # open hold, taken when the material was left resting, ends here.

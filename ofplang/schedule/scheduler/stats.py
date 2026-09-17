@@ -152,6 +152,13 @@ class SolveStats:
     # the order every `objective_values` tuple here follows.
     objective_kind: tuple[str, ...]
     phases: tuple[PhaseStats, ...] = field(default_factory=tuple)
+    # The makespan of the schedule the constructive pass handed the solver as a
+    # hint (`scheduler.greedy`), or None where it declined the instance. Both
+    # halves of that are worth reading: whether a hint was offered at all, and how
+    # far off it was, since the hint is where a solve that returns something
+    # immediately gets the something from. A timing without it cannot say whether
+    # the search did the work or the hint did.
+    hint_makespan: int | None = None
 
     @property
     def wall_time(self) -> float:
