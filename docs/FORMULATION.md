@@ -403,6 +403,15 @@ C_{\max}]$). On a replan the input node stays pinned at 0 (a given origin, exemp
 from the $s \ge now$ rule of §9); the output node's end tracks the current
 $C_{\max}$.
 
+**One resting place per finished product.** Two output nodes cannot bind the same
+spot: both occupancies end at $C_{\max}$, so either overlaps the other unless its
+whole residency is a single instant, and the incoming arc's $[a_r,
+s_{\mathrm{out}}]$ rules that out. So a plan needs a resting place per final
+output, and one with more products than places has no schedule at all. That is a
+counting argument, settled before the model is built rather than by it
+(`final_outputs_crowded`, SPEC §10.4) -- the alternative being to hand the solver
+an instance nobody can satisfy and wait.
+
 ### 4. Transport route selection
 
 Exactly one feasible route (source mode, destination mode, transporter) is chosen

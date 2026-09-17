@@ -103,6 +103,9 @@ PURE_DATA_PORT_MAPPED = "pure_data_port_mapped"
 # A mode does not map every Object-bearing port of its process (§9.3 coverage).
 MODE_PORTS_INCOMPLETE = "mode_ports_incomplete"
 ARC_UNREACHABLE = "arc_unreachable"
+# More finished products than places for them to sit in until the run is over. A
+# counting argument, so it is settled before any solve rather than left to one.
+FINAL_OUTPUTS_CROWDED = "final_outputs_crowded"
 INFEASIBLE = "infeasible"
 
 # Consumable resources (§4.7, §6.10, §9.3). The model is in effect when some mode
@@ -389,6 +392,7 @@ ERROR_CODES = frozenset(
         PURE_DATA_PORT_MAPPED,
         MODE_PORTS_INCOMPLETE,
         ARC_UNREACHABLE,
+        FINAL_OUTPUTS_CROWDED,
         INFEASIBLE,
         OBJECTIVE_IN_ENVIRONMENT,
         MISSING_INVENTORIES,

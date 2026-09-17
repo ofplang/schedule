@@ -33,6 +33,7 @@ from ofplang.schedule.scheduler.instance import (
     job_membership,
     merge_instances,
     prefix_instance,
+    report_crowded_outputs,
     report_unreachable,
 )
 from ofplang.schedule.scheduler.model import JobSpec, Workflow
@@ -1495,6 +1496,12 @@ def _run(
 
     reach = Diagnostics()
     report_unreachable(instance, set(fixation.arcs), reach)
+    # And whether the finished products have anywhere to sit. Beside reachability
+    # because it is the same kind of statement -- a counting argument about the
+    # instance, settled without solving -- and because the solve it saves is the
+    # expensive kind: measured, twelve minutes spent returning `unknown` on a plan
+    # that never had a schedule.
+    report_crowded_outputs(instance, reach)
     diagnostics += reach.items
     if _has_error(reach.items):
         return ScheduleReport(None, None, None, diagnostics)

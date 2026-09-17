@@ -404,6 +404,90 @@ def merge_instances(instances: Sequence[Instance]) -> Instance:
     )
 
 
+# How many combinations of resting places `report_crowded_outputs` will try before
+# giving up. A plan with more finished products than this has other problems; the
+# cap is only here so that an unusually branchy laboratory ends in silence rather
+# than in a long wait, silence being the answer that claims nothing.
+_PACKING_LIMIT = 200_000
+
+
+def report_crowded_outputs(instance: Instance, diags: Diagnostics) -> None:
+    """Emit `final_outputs_crowded` when the finished products cannot be given
+    somewhere to sit.
+
+    A boundary `output` node holds the spots its mode binds **until the makespan**
+    (FORMULATION §J5): the finished product sits there and the run is over when the
+    last one does. Two of them therefore cannot share a spot -- both intervals end
+    at the same instant, so any positive length overlaps -- and a plan with more
+    finished products than places to put them has no schedule at all, whatever
+    else is true of it.
+
+    That is worth saying before solving rather than after. Measured on the RNA-seq
+    laboratory at five jobs, whose two bays cannot hold five libraries: the solver
+    spent twelve minutes and returned `unknown`, having proved nothing, where the
+    count takes no time at all.
+
+    **A necessary condition, not a sufficient one.** Silence here says the products
+    can be placed, not that the plan is schedulable -- the same laboratory at two
+    jobs passes this and still defeats the solver.
+
+    The search is over one mode per output node, since a mode binds every one of a
+    job's Object-bearing outputs at once and choosing it takes all of them. Modes
+    are read as the instance offers them, so a replan whose output has already
+    arrived somewhere is judged on the whole candidate set rather than on the one
+    spot it is pinned to -- which can only make this quieter, never louder.
+    """
+    demands: list[tuple[int, tuple[frozenset[str], ...]]] = []
+    for index, act in enumerate(instance.activities):
+        if act.boundary is None or act.boundary.kind != "output":
+            continue
+        places = []
+        for mode in act.modes:
+            spots = frozenset(mode.input_spots.values()) | frozenset(mode.output_spots.values())
+            if spots:
+                places.append(spots)
+        if places:
+            demands.append((index, tuple(dict.fromkeys(places))))
+    if len(demands) < 2:
+        return
+    # Fewest choices first: the node that can go almost nowhere is the one that
+    # settles the question, and trying it first is what keeps this instant.
+    demands.sort(key=lambda entry: (len(entry[1]), entry[0]))
+    if _can_place([places for _, places in demands]):
+        return
+    available = sorted({spot for _, places in demands for group in places for spot in group})
+    diags.error(
+        errors.FINAL_OUTPUTS_CROWDED,
+        f"{len(demands)} final outputs have to rest somewhere until the run is over, "
+        f"and no two of them can rest in the same place, but between them they name "
+        f"only {len(available)}: {', '.join(available)}. No schedule exists. Either "
+        f"bind the outputs to places of their own (interface.outputs, SPEC §6.8) or "
+        f"plan fewer jobs at once",
+    )
+
+
+def _can_place(choices: list[tuple[frozenset[str], ...]]) -> bool:
+    """Whether one group of spots can be picked per output so that no spot is
+    picked twice. True when the cap is reached without an answer, silence being
+    the claim-nothing outcome."""
+    budget = [_PACKING_LIMIT]
+
+    def walk(depth: int, taken: frozenset[str]) -> bool:
+        if depth == len(choices):
+            return True
+        for group in choices[depth]:
+            budget[0] -= 1
+            if budget[0] <= 0:
+                return True
+            if group & taken:
+                continue
+            if walk(depth + 1, taken | group):
+                return True
+        return False
+
+    return walk(0, frozenset())
+
+
 def report_unreachable(instance: Instance, fixed_arc_indices: set[int], diags: Diagnostics) -> None:
     """Emit `arc_unreachable` for every **pending** leg (an arc not in
     `fixed_arc_indices`) that no route can serve. Committed (fixed) legs are
