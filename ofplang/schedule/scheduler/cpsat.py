@@ -18,24 +18,32 @@ the solve (FORMULATION Part III; `symmetry`, `spotpool`).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 from ortools.sat.python import cp_model
 
 from ofplang.schedule.core import objective as objective_stages
 from ofplang.schedule.core.identifiers import parse_qualified_resource, parse_qualified_spot
-from ofplang.schedule.scheduler import spotpool
+from ofplang.schedule.scheduler import greedy, spotpool
 from ofplang.schedule.scheduler.instance import (
     ActivityInstance,
     ArcInstance,
-    BoundaryInfo,
     Instance,
-    RelayInfo,
     TransportOption,
     job_membership,
 )
-from ofplang.schedule.scheduler.model import Arc, JobSpec, Mode, NodePath
+from ofplang.schedule.scheduler.model import JobSpec, Mode
+
+# The answer's shape lives in `result`, so that `greedy` can produce the same
+# thing without importing this module. Re-exported because callers have always
+# read these off `cpsat`.
+from ofplang.schedule.scheduler.result import (  # noqa: E402
+    ProcessingResult,
+    RefillResult,
+    Solution,
+    TransportResult,
+)
 from ofplang.schedule.scheduler.stats import (
     ModelStats,
     PhaseStats,
@@ -50,74 +58,7 @@ from ofplang.schedule.scheduler.symmetry import (
     interchangeable_classes,
 )
 
-
-@dataclass(frozen=True)
-class ProcessingResult:
-    activity: int
-    node: NodePath
-    process: str
-    mode: Mode
-    start: int
-    end: int
-    # On a replan, the reported status of a fixed activity; None when pending.
-    status: str | None = None
-    # Set (opaquely, by the solver) when this activity is a relay junction; drives
-    # rendering (`kind: relay`). None for a normal processing activity.
-    relay: RelayInfo | None = None
-    # Set when this activity is a synthetic boundary node (§6.8); rendering skips it.
-    boundary: BoundaryInfo | None = None
-
-
-@dataclass(frozen=True)
-class TransportResult:
-    arc: Arc
-    option: TransportOption
-    start: int
-    end: int
-    status: str | None = None
-    # A leg's chain position (§6.6); None for a single-leg transport.
-    seq: int | None = None
-
-
-@dataclass(frozen=True)
-class RefillResult:
-    """A refill in the plan (§6.9). `amounts` is what it adds, keyed by bare
-    resource name -- `device` already says whose stock it is."""
-
-    id: str
-    device: str
-    replenisher: str
-    amounts: dict[str, int]
-    start: int
-    end: int
-    status: str | None = None
-
-
-@dataclass(frozen=True)
-class Solution:
-    outcome: str  # optimal | feasible | infeasible | unknown
-    makespan: int | None
-    processing: tuple[ProcessingResult, ...]
-    transport: tuple[TransportResult, ...]
-    replenishment: tuple[RefillResult, ...] = ()
-    # The objective actually minimised, and what each of its stages reached. These
-    # are the *effective* stages (`core.objective.effective`): a stage this
-    # instance cannot tell two schedules apart by is dropped, so a plan from an
-    # environment without resources reports the bare makespan it always did.
-    # Defaulted so the infeasible return below stays a four-argument call.
-    objective_kind: tuple[str, ...] = (objective_stages.MAKESPAN,)
-    objective_values: tuple[int, ...] = ()
-    # What the solve cost and how it got there (stats.py). Set on every path that
-    # reached the solver, including the infeasible one -- how long it takes to
-    # prove an instance unschedulable is as much a measurement as how long it takes
-    # to schedule one. None only where no solve ran.
-    stats: SolveStats | None = None
-    # What each job of a joint plan (§6.11) finished at, by id. This is where a job's
-    # promised bound B_j comes from -- a bound is the completion the solve achieved,
-    # not a value derived some other way (design.md D38) -- so the caller needs it per
-    # job rather than folded into `objective_values`. Empty for a single workflow.
-    job_completions: dict[str, int] = field(default_factory=dict)
-
+__all__ = ["ProcessingResult", "RefillResult", "Solution", "TransportResult", "solve"]
 
 _STATUS = {
     cp_model.OPTIMAL: "optimal",
@@ -639,6 +580,29 @@ def solve(
     for weight, stage in zip(weights, stages, strict=True):
         expression = expression + weight * terms[stage]
     model.Minimize(expression)
+
+    # --- a constructed schedule as a starting point (greedy.py) ---
+    # Offered, never imposed. CP-SAT is free to ignore a hint, so an instance the
+    # constructive pass gets wrong is still solved correctly, and one it gets
+    # right can be proved optimal without searching for it at all. That asymmetry
+    # is why this is a hint and not a first phase.
+    #
+    # Only the times are offered. The choices -- which mode, which route -- are
+    # presolved away before the hint is read, so hinting them conveys nothing
+    # (measured: hinting the choice literals alone leaves the presolved model with
+    # none of them hinted, while hinting the times alone closes the widest
+    # synthetic instance at optimal with zero branches; report §29.6).
+    constructed = greedy.construct(
+        instance, fixation=fixation, jobs=jobs, objective=objective
+    )
+    if constructed is not None:
+        for placement in constructed.processing:
+            model.AddHint(starts[placement.activity], placement.start)
+            model.AddHint(ends[placement.activity], placement.end)
+        # `transport` comes back in arc order, which is the order these are in.
+        for r, move in enumerate(constructed.transport):
+            model.AddHint(arc_starts[r], move.start)
+            model.AddHint(arc_ends[r], move.end)
 
     solver = cp_model.CpSolver()
     if max_time_seconds is not None:
