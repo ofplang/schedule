@@ -396,7 +396,7 @@ def _lowest_index(instance: Instance, ready: list[int], counts: dict[int, int]) 
 # instance is schedulable under `_lowest_index` alone. A pass costs milliseconds,
 # so all of them are run and the best schedule kept. This is ordinary multi-pass
 # list scheduling; the only judgement in it is which rules to carry, and that was
-# settled by measuring (report §29.7).
+# settled by measuring (report §30.7).
 _RULES = (_consumer_ready, _breadth_first, _lowest_index)
 
 
