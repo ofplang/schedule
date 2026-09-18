@@ -1486,6 +1486,15 @@ rest be planned — or that no single one accounts for it
 (`jobs_not_plannable_together`, §10.4). It **reports and does nothing else**: dropping
 a job would be quietly discarding work somebody asked for.
 
+**Only on a proof.** All of this follows the solver *proving* there is no schedule. A
+solve that ran out of time has proved nothing, so none of it is said and none of it is
+looked for: no `infeasible`, no taking jobs out one at a time. The outcome is `unknown`,
+which is the whole of what is known. Taking each job out costs another solve at the full
+budget apiece, so a plan that merely ran late used to spend the budget once per job and
+then announce that its jobs could not be planned together — neither of which the solver
+had shown. And one probe that runs out of time withdraws the claim about all of them:
+"no single job accounts for this" is a statement about every job in the roster.
+
 #### When a job leaves
 
 The roster is not a ledger of everything ever run. It is the set of jobs **something

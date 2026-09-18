@@ -906,11 +906,20 @@ def _unplannable(instance, specs: tuple[JobSpec, ...], solve_kwargs: dict) -> li
     kwargs = dict(solve_kwargs)
 
     culprits = []
+    settled = True
     for spec in specs:
         kwargs["fixation"] = _without(fixation, instance, spec.id, membership)
-        if solve(instance, jobs=unbounded, **kwargs).outcome in _SOLVED:
+        outcome = solve(instance, jobs=unbounded, **kwargs).outcome
+        if outcome in _SOLVED:
             culprits.append(spec.id)
+        elif outcome != "infeasible":
+            # This probe ran out of time, so it says nothing about the job it took
+            # out -- and "no single job accounts for this" would be a claim about
+            # every job, which one silent probe is enough to withdraw.
+            settled = False
     if not culprits:
+        if not settled:
+            return []
         return [
             Diagnostic(
                 errors.JOBS_NOT_PLANNABLE_TOGETHER,
@@ -1574,9 +1583,18 @@ def _run(
     }
     solution, settled, relax_diags = _solve_within_bounds(instance, named, solve_kwargs)
     diagnostics += relax_diags
-    if solution.outcome not in ("optimal", "feasible"):
-        diagnostics.append(Diagnostic(errors.INFEASIBLE, "no feasible schedule found"))
-        diagnostics += _unplannable(instance, named, solve_kwargs)
+    if solution.outcome not in _SOLVED:
+        # Only a *proof* is reported as one. `infeasible` says the solver showed
+        # there is no schedule (SPEC §10.4), and running out of time shows nothing
+        # -- the outcome already says `unknown`, which is the whole of what is
+        # known. Saying more used to cost as well as mislead: the per-job probe ran
+        # on a timeout too, and each probe is another solve at the full budget, so
+        # a joint plan that timed out spent the budget once per job and then
+        # announced that its jobs could not be planned together. Measured at 6.2
+        # times the budget on five jobs, with neither claim established.
+        if solution.outcome == "infeasible":
+            diagnostics.append(Diagnostic(errors.INFEASIBLE, "no feasible schedule found"))
+            diagnostics += _unplannable(instance, named, solve_kwargs)
         return ScheduleReport(solution.outcome, None, None, diagnostics, solution.stats)
 
     # One job's provenance is the string it always was; a joint plan's is the list of
