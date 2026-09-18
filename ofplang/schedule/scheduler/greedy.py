@@ -437,7 +437,9 @@ def _is_output(instance: Instance, activity: int) -> bool:
     return boundary is not None and boundary.kind == "output"
 
 
-def _choose(instance: Instance, rule, ready: list[int], counts: dict[int, int]) -> int:
+def _choose(
+    instance: Instance, rule, ready: list[int], counts: dict[int, int], placed: set[int]
+) -> int:
     """Apply the priority rule, but only to real work while any is left.
 
     An output node parks its material in a bay **until the run is over** (§8), so
@@ -447,13 +449,15 @@ def _choose(instance: Instance, rule, ready: list[int], counts: dict[int, int]) 
     """
     work = [activity for activity in ready if not _is_output(instance, activity)]
     if not work:
-        return rule(instance, ready, counts)
-    chosen = rule(instance, work, counts)
+        return rule(instance, ready, counts, placed)
+    chosen = rule(instance, work, counts, placed)
     ready.remove(chosen)
     return chosen
 
 
-def _consumer_ready(instance: Instance, ready: list[int], counts: dict[int, int]) -> int:
+def _consumer_ready(
+    instance: Instance, ready: list[int], counts: dict[int, int], placed: set[int]
+) -> int:
     """Which of the ready activities to place next.
 
     Material waits in the bay its move delivered it to until the receiving
@@ -472,14 +476,18 @@ def _consumer_ready(instance: Instance, ready: list[int], counts: dict[int, int]
     return ready.pop()
 
 
-def _breadth_first(instance: Instance, ready: list[int], counts: dict[int, int]) -> int:
+def _breadth_first(
+    instance: Instance, ready: list[int], counts: dict[int, int], placed: set[int]
+) -> int:
     """The activity that became ready first. Spreads the work across branches
     instead of driving one to the end, which on a grid of like branches keeps
     every machine busy rather than queueing behind one."""
     return ready.pop(0)
 
 
-def _lowest_index(instance: Instance, ready: list[int], counts: dict[int, int]) -> int:
+def _lowest_index(
+    instance: Instance, ready: list[int], counts: dict[int, int], placed: set[int]
+) -> int:
     """The lowest-numbered activity, which is the order the workflow was written
     in. It commits to no strategy at all, and that is its use: the strategies
     above can talk themselves into a corner this one walks straight past."""
@@ -493,6 +501,48 @@ def _lowest_index(instance: Instance, ready: list[int], counts: dict[int, int]) 
 # list scheduling; the only judgement in it is which rules to carry, and that was
 # settled by measuring (report §30.7).
 _RULES = (_consumer_ready, _breadth_first, _lowest_index)
+
+
+class _JobByJob:
+    """A rule that will not start a job while the one before it is unfinished.
+
+    The last resort, and a different kind of thing from the rules above: they
+    choose among what is ready, this one narrows what counts as ready. It is here
+    because of how a forward pass fails on a shared laboratory -- never for want
+    of somewhere to *start*, always for want of somewhere to *send* material that
+    has already been made (measured: every standstill is on the departure side).
+    Two jobs in flight through the same machines can each be holding the bay the
+    other needs next, and no ordering of the ready set can undo that once it has
+    happened. One job at a time cannot get there.
+
+    It paces the *placement*, not the clock: a later job is still put as early as
+    the resources allow, so the schedule is not simply one job after another.
+
+    Where the current job has work left that is not ready yet, anything is let
+    through rather than nothing -- standing still is what this is here to avoid.
+    """
+
+    def __init__(self, instance: Instance, jobs: tuple[JobSpec, ...]) -> None:
+        owner = job_membership(instance, [spec.id for spec in jobs])
+        self.owner = owner
+        self.order = tuple(spec.id for spec in jobs)
+        self.members = {
+            spec.id: [index for index, job in enumerate(owner) if job == spec.id] for spec in jobs
+        }
+        self.index = 0
+
+    def __call__(
+        self, instance: Instance, ready: list[int], counts: dict[int, int], placed: set[int]
+    ) -> int:
+        while self.index < len(self.order):
+            job = self.order[self.index]
+            if any(member not in placed for member in self.members[job]):
+                mine = [activity for activity in ready if self.owner[activity] == job]
+                if mine:
+                    return ready.pop(ready.index(min(mine)))
+                break
+            self.index += 1
+        return ready.pop(ready.index(min(ready)))
 
 
 def construct(
@@ -516,6 +566,12 @@ def construct(
             continue
         if best is None or (found.makespan or 0) < (best.makespan or 0):
             best = found
+    if best is None and jobs:
+        # Only when nothing else came out. Pacing the jobs gives up the good
+        # schedules the rules above find when they find one, so it is a last
+        # resort and not a fourth opinion -- and leaving it out of the ordinary
+        # path is also what keeps every instance that already works unchanged.
+        best = _pass(instance, _JobByJob(instance, jobs), floors)
     return best
 
 
@@ -556,7 +612,7 @@ def _pass(instance: Instance, rule, floors: dict[int, int]) -> Solution | None:
             if not moved:
                 return None  # nothing can move and nothing can run
             continue
-        activity = _choose(instance, rule, ready, counts)
+        activity = _choose(instance, rule, ready, counts, set(placed))
         act = instance.activities[activity]
         candidates = [settled[activity]] if activity in settled else range(len(act.modes))
         if act.boundary is not None:
