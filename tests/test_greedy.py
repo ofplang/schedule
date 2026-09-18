@@ -18,11 +18,20 @@ import pytest
 
 from ofplang.schedule.scheduler.envload import load_environment
 from ofplang.schedule.scheduler.greedy import construct
-from ofplang.schedule.scheduler.instance import BoundaryInfo, Instance, build_instance
+from ofplang.schedule.scheduler.instance import (
+    ActivityInstance,
+    ArcInstance,
+    BoundaryInfo,
+    Instance,
+    TransportOption,
+    build_instance,
+)
+from ofplang.schedule.scheduler.model import Arc, Endpoint, Environment, Mode
 from ofplang.schedule.scheduler.result import Solution
 from ofplang.schedule.scheduler.workflow import parse_workflow
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
+_ENV = Environment("second", {}, (), {}, {})
 
 
 def _intervals(instance: Instance, solution: Solution):
@@ -90,12 +99,11 @@ def _violations(instance: Instance, solution: Solution) -> list[str]:
         elif kind == "input":
             if placement.end != placement.start:
                 wrong.append(f"input node {placement.activity}: takes time")
-        elif kind == "output":
-            if placement.end != solution.makespan:
-                wrong.append(
-                    f"output node {placement.activity}: ends at {placement.end}, "
-                    f"not at the makespan {solution.makespan}"
-                )
+        elif kind == "output" and placement.end != solution.makespan:
+            wrong.append(
+                f"output node {placement.activity}: ends at {placement.end}, "
+                f"not at the makespan {solution.makespan}"
+            )
 
     # §8: the makespan is the last real end, counting a delivery into an output node
     # and counting neither an output nor a held node's own end.
@@ -243,3 +251,44 @@ def test_the_outcome_is_feasible_and_never_claims_optimality():
     assert solution is not None
     assert solution.outcome == "feasible"
     assert solution.objective_values == (solution.makespan,)
+
+
+def test_a_finished_product_parks_where_it_is_least_wanted():
+    # Two places to rest: a shelf nothing else uses, and the machine's own bay,
+    # which the work needs. Arriving on the machine's bay is no slower, so the
+    # earliest-landing rule used to take it -- and a product parks until the run is
+    # over, which is how every later job found the machine occupied.
+    maker = ActivityInstance(
+        ("make",),
+        "make",
+        (Mode("m", ("mk",), 1, {}, {"o": "mk.bay"}),),
+    )
+    other = ActivityInstance(
+        ("other",),
+        "other",
+        (Mode("m", ("mk",), 1, {"i": "mk.bay"}, {"o": "mk.bay"}),),
+    )
+    output = ActivityInstance(
+        (),
+        "",
+        (
+            Mode("machine", (), 0, {"i": "mk.bay"}, {}),
+            Mode("shelf", (), 0, {"i": "shelf.bay"}, {}),
+        ),
+        boundary=BoundaryInfo(kind="output"),
+    )
+    arc = ArcInstance(
+        Arc(Endpoint(("make",), "o"), Endpoint((), "out")),
+        0,
+        2,
+        (
+            TransportOption(0, 0, "arm0", "mk.bay", "mk.bay", 0),
+            TransportOption(0, 1, "arm0", "mk.bay", "shelf.bay", 1),
+        ),
+    )
+    instance = Instance(_ENV, "second", (maker, other, output), (arc,), ((0, 1),))
+    solution = construct(instance)
+    assert solution is not None
+    assert _violations(instance, solution) == []
+    resting = solution.processing[2].mode.input_spots["i"]
+    assert resting == "shelf.bay"

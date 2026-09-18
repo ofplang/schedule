@@ -389,6 +389,7 @@ def _depart(
     src_mode: int,
     moves: dict[int, _Move],
     settled: dict[int, int],
+    pressure: dict[str, float],
 ) -> bool:
     """Try to send the material along one arc, committing the move if it fits.
 
@@ -396,9 +397,16 @@ def _depart(
     receiving activity's mode too -- a route names the spots both ends bound (§4).
     A destination already committed by an earlier arrival narrows the choice to
     the routes that agree with it.
+
+    **Into an output node the route is chosen for where it parks**, and only then
+    for when it lands. The material is not going anywhere afterwards, so an early
+    arrival buys nothing and a badly chosen bay costs the rest of the run
+    (`_pressure`). Everywhere else the earliest landing wins, which is what moves
+    work along.
     """
     arc = instance.arcs[arc_index]
-    chosen: tuple[int, int, int, TransportOption] | None = None
+    parking = _is_output(instance, arc.dst_activity)
+    chosen: tuple[tuple, int, int, TransportOption] | None = None
     for option_index, option in enumerate(arc.options):
         if option.src_mode_index != src_mode:
             continue
@@ -408,11 +416,17 @@ def _depart(
         if timing is None:
             continue
         start, landed = timing
-        if chosen is None or landed < chosen[0]:
-            chosen = (landed, start, option_index, option)
+        rank = (
+            (pressure.get(option.to_spot, 0.0), landed, option_index)
+            if parking
+            else (landed, option_index)
+        )
+        if chosen is None or rank < chosen[0]:
+            chosen = (rank, start, option_index, option)
     if chosen is None:
         return False
-    landed, start, option_index, option = chosen
+    _rank, start, option_index, option = chosen
+    landed = start + (0 if option.from_spot == option.to_spot else option.duration)
     if option.transporter is not None:
         board.transporter(option.transporter).take(start, landed)
     if option.from_spot != option.to_spot:
@@ -430,6 +444,34 @@ def _depart(
     moves[arc_index] = _Move(arc_index, option_index, option, start, landed)
     settled[arc.dst_activity] = option.dst_mode_index
     return True
+
+
+def _pressure(instance: Instance) -> dict[str, float]:
+    """How much the real work wants each spot.
+
+    A finished product parks in its spot **until the run is over** (§J5), so where
+    it parks matters more than when it gets there -- and the laboratory's bays are
+    not alike in how badly they are wanted. Measured on the standard RNA-seq
+    laboratory at five jobs: the first two libraries parked in the only two tecan
+    bays, which every job's library preparation needs, while ten pcr bays stood
+    empty, and the third job had nowhere to work.
+
+    Each activity contributes one unit spread over the spots it could use, so a
+    step with ten bays to choose from presses on each of them a tenth as hard as
+    one with a single bay. Boundary nodes are left out: what is wanted here is the
+    demand from work that has to happen somewhere, and a resting place is not that.
+    """
+    wanted: dict[str, float] = {}
+    for act in instance.activities:
+        if act.boundary is not None:
+            continue
+        spots = {spot for mode in act.modes for spot in _spots_of(mode)}
+        if not spots:
+            continue
+        share = 1.0 / len(spots)
+        for spot in spots:
+            wanted[spot] = wanted.get(spot, 0.0) + share
+    return wanted
 
 
 def _is_output(instance: Instance, activity: int) -> bool:
@@ -590,6 +632,7 @@ def _pass(instance: Instance, rule, floors: dict[int, int]) -> Solution | None:
     two activities.
     """
     board = _Board()
+    pressure = _pressure(instance)
     leaving, arriving = _edges(instance)
     counts, orders = _waiting(instance)
     placed: dict[int, _Placement] = {}
@@ -607,7 +650,9 @@ def _pass(instance: Instance, rule, floors: dict[int, int]) -> Solution | None:
 
     ready = sorted((i for i, count in counts.items() if count == 0), reverse=True)
     while ready or resting:
-        moved = _send_what_can_go(instance, board, placed, moves, settled, resting, counts, ready)
+        moved = _send_what_can_go(
+            instance, board, placed, moves, settled, resting, counts, ready, pressure
+        )
         if not ready:
             if not moved:
                 return None  # nothing can move and nothing can run
@@ -721,6 +766,7 @@ def _send_what_can_go(
     resting: dict[int, int],
     counts: dict[int, int],
     ready: list[int],
+    pressure: dict[str, float],
 ) -> bool:
     """Place every departure that fits, and say whether any did.
 
@@ -750,6 +796,7 @@ def _send_what_can_go(
                 placed[source].mode_index,
                 moves,
                 settled,
+                pressure,
             ):
                 del resting[arc_index]
                 moved = True
