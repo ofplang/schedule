@@ -554,3 +554,69 @@ def test_scheduling_section_warns_but_still_parses(tmp_path):
     codes = [d.code for d in diags.items]
     assert "scheduling_policies_ignored" in codes
     assert all(d.severity != ERROR for d in diags.items if d.code == "scheduling_policies_ignored")
+
+
+# A unit-annotated numeric port (v0 §28). The reader needs no change for it: a
+# suffix sits only on `Int` or `Float` (§28.2), both Pure Data, so every verdict
+# it reaches is the one it would reach without the suffix. That is a property of
+# where units are allowed, not of how `_object_bearing` is written, so it is
+# pinned here rather than left to hold by accident.
+_UNIT_ANNOTATED = """\
+spec_version: "0.3"
+units:
+  s: {}
+  uL: {}
+types:
+  Sample: {domain: object}
+processes:
+  measure:
+    kind: atomic
+    inputs:
+      plate: {type: Sample, phase: data}
+      duration: {type: "Float[s]", phase: data}
+    outputs:
+      plate_out: {type: Sample, phase: data}
+      volumes: {type: "Array<Float[uL]>", phase: data}
+    objects: {transform: [inputs.plate, outputs.plate_out]}
+  main:
+    kind: composite
+    inputs:
+      sample: {type: Sample, phase: data}
+      t: {type: "Float[s]", phase: data}
+    outputs:
+      sample_out: {type: Sample, phase: data}
+    body:
+      nodes:
+        - id: M
+          process: measure
+          state: {plate: {from: inputs.sample}}
+          bind: {duration: {from: inputs.t}}
+      returns:
+        sample_out: {from: M.plate_out}
+entry: main
+"""
+
+
+def test_a_unit_annotated_port_is_pure_data(tmp_path):
+    doc = tmp_path / "units.yaml"
+    doc.write_text(_UNIT_ANNOTATED, encoding="utf-8")
+    wf, diags = parse_workflow(doc)
+    assert not _errors(diags)
+    assert wf is not None
+
+    # The Object-bearing boundary is the Sample alone: neither Float[s] nor
+    # Array<Float[uL]> is Object-bearing (§5.2), so the unit-annotated entry
+    # input is recorded as Pure Data.
+    assert wf.entry_inputs == {"sample": Endpoint(("M",), "plate")}
+    assert wf.data_entry_inputs == {"t": Endpoint(("M",), "duration")}
+
+
+def test_object_bearing_reads_a_unit_annotated_type_as_pure_data():
+    # Directly, since the verdict above rests on this one function.
+    from ofplang.schedule.scheduler.workflow import _object_bearing
+
+    domains = {"Sample": "object", "Reading": "data"}
+    for expr in ("Float[s]", "Int[count_]", "Array<Float[uL]>", "Float[mg/mL]", "Float[1]"):
+        assert not _object_bearing(expr, domains), expr
+    assert _object_bearing("Sample", domains)
+    assert _object_bearing("Array<Sample>", domains)
