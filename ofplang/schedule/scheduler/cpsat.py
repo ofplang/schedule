@@ -547,6 +547,16 @@ def solve(
     # loses: the joint objective is unchanged within noise and a makespan-only
     # solve comes out 5.4% worse. Left as it is deliberately, and said out loud
     # because a constraint that does nothing should not read as one that does.
+    #
+    # Removing it altogether was the next thing tried, and it is not safe. On
+    # rosters of jobs that make their own material the order is worse everywhere
+    # measured -- four times slower at twelve jobs, and at sixteen and above the
+    # difference between proving optimality in under a minute and not proving it
+    # at all -- but on the consumable instance this was written for it is exactly
+    # what the claim above says: at five and six jobs, optimal with it and
+    # unproved without. Those jobs compete for a stock rather than only for
+    # machines, and no discriminator between the two shapes is better than a
+    # guess, so it stays on everywhere (report §43).
     for group in _interchangeable(jobs, fixation, membership, stopped):
         starts_of = {
             job_id: [starts[i] for i, m in enumerate(membership) if m == job_id]
