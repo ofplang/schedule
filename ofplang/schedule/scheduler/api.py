@@ -33,6 +33,7 @@ from ofplang.schedule.scheduler.instance import (
     job_membership,
     merge_instances,
     prefix_instance,
+    report_crowded_outputs,
     report_unreachable,
 )
 from ofplang.schedule.scheduler.model import JobSpec, Workflow
@@ -41,6 +42,10 @@ from ofplang.schedule.scheduler.plan import render_plan
 from ofplang.schedule.scheduler.plancheck import check_plan_inventories
 from ofplang.schedule.scheduler.stats import SolveStats
 from ofplang.schedule.scheduler.status import ActivityFixation, ArcFixation, Fixation
+from ofplang.schedule.scheduler.symmetry import (
+    interchangeable_classes,
+    report_interchangeable,
+)
 from ofplang.schedule.scheduler.workflow import fingerprint, parse_workflow
 from ofplang.schedule.validation import errors
 from ofplang.schedule.validation.document import validate_document_node
@@ -901,11 +906,20 @@ def _unplannable(instance, specs: tuple[JobSpec, ...], solve_kwargs: dict) -> li
     kwargs = dict(solve_kwargs)
 
     culprits = []
+    settled = True
     for spec in specs:
         kwargs["fixation"] = _without(fixation, instance, spec.id, membership)
-        if solve(instance, jobs=unbounded, **kwargs).outcome in _SOLVED:
+        outcome = solve(instance, jobs=unbounded, **kwargs).outcome
+        if outcome in _SOLVED:
             culprits.append(spec.id)
+        elif outcome != "infeasible":
+            # This probe ran out of time, so it says nothing about the job it took
+            # out -- and "no single job accounts for this" would be a claim about
+            # every job, which one silent probe is enough to withdraw.
+            settled = False
     if not culprits:
+        if not settled:
+            return []
         return [
             Diagnostic(
                 errors.JOBS_NOT_PLANNABLE_TOGETHER,
@@ -1491,9 +1505,30 @@ def _run(
 
     reach = Diagnostics()
     report_unreachable(instance, set(fixation.arcs), reach)
+    # And whether the finished products have anywhere to sit. Beside reachability
+    # because it is the same kind of statement -- a counting argument about the
+    # instance, settled without solving -- and because the solve it saves is the
+    # expensive kind: measured, twelve minutes spent returning `unknown` on a plan
+    # that never had a schedule.
+    report_crowded_outputs(instance, reach)
     diagnostics += reach.items
     if _has_error(reach.items):
         return ScheduleReport(None, None, None, diagnostics)
+
+    # Which of this laboratory's resources this instance never tells apart (§10.4).
+    # After reachability, so the classes are read off the routes that actually
+    # survived, and before the solve, because they describe the model about to be
+    # handed over rather than the answer that comes back -- an instance the solver
+    # cannot crack is exactly the one where knowing this matters most.
+    #
+    # Computed once here and handed to the solve, which collapses the transporter
+    # classes it safely can. Every solve of this instance sees the same list, so a
+    # relaxation retry (`_solve_within_bounds`) or a per-job probe (`_unplannable`)
+    # cannot come out encoded differently from the solve they are explaining.
+    interchangeable = interchangeable_classes(instance, fixation)
+    symmetry = Diagnostics()
+    report_interchangeable(instance, fixation, symmetry, interchangeable)
+    diagnostics += symmetry.items
 
     # The levels move only when the caller asks (`carry_levels_to_now`), and then they
     # are stated as of the moment asked for rather than echoed. Every other plan echoes
@@ -1544,12 +1579,22 @@ def _run(
         "random_seed": random_seed,
         "objective": _objective_of(declared_objective, len(named)),
         "collect_solutions": collect_solutions,
+        "interchangeable": interchangeable,
     }
     solution, settled, relax_diags = _solve_within_bounds(instance, named, solve_kwargs)
     diagnostics += relax_diags
-    if solution.outcome not in ("optimal", "feasible"):
-        diagnostics.append(Diagnostic(errors.INFEASIBLE, "no feasible schedule found"))
-        diagnostics += _unplannable(instance, named, solve_kwargs)
+    if solution.outcome not in _SOLVED:
+        # Only a *proof* is reported as one. `infeasible` says the solver showed
+        # there is no schedule (SPEC §10.4), and running out of time shows nothing
+        # -- the outcome already says `unknown`, which is the whole of what is
+        # known. Saying more used to cost as well as mislead: the per-job probe ran
+        # on a timeout too, and each probe is another solve at the full budget, so
+        # a joint plan that timed out spent the budget once per job and then
+        # announced that its jobs could not be planned together. Measured at 6.2
+        # times the budget on five jobs, with neither claim established.
+        if solution.outcome == "infeasible":
+            diagnostics.append(Diagnostic(errors.INFEASIBLE, "no feasible schedule found"))
+            diagnostics += _unplannable(instance, named, solve_kwargs)
         return ScheduleReport(solution.outcome, None, None, diagnostics, solution.stats)
 
     # One job's provenance is the string it always was; a joint plan's is the list of

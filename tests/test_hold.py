@@ -116,6 +116,18 @@ def _history(plan: dict, now: int) -> dict:
     return {"time": {"unit": "second"}, "now": now, "activities": activities}
 
 
+def _one_running_moment(plan: dict) -> tuple[int, int]:
+    """A time at which exactly one chill is running and at least one has not
+    started, and that chill's end."""
+    chills = _chills(plan)
+    for moment in sorted({a["start"] for a in chills} | {a["end"] for a in chills}):
+        running = [a for a in chills if a["start"] <= moment < a["end"]]
+        later = [a for a in chills if a["start"] > moment]
+        if len(running) == 1 and later:
+            return moment, running[0]["end"]
+    raise AssertionError(f"no such moment in {[(a['start'], a['end']) for a in chills]}")
+
+
 def test_a_running_hold_does_not_block_its_device():
     """The echo is what makes this true (§6.3).
 
@@ -127,11 +139,13 @@ def test_a_running_hold_does_not_block_its_device():
     workflow, env = _storage()
     plan = schedule(workflow, env, random_seed=0).plan
 
-    running = [a for a in _chills(plan) if a["start"] <= 100 < a["end"]]
-    assert len(running) == 1, "the fixture expects exactly one chill running at 100"
-    blocked_until = running[0]["end"]
-
-    status = _history(plan, 100)
+    # A moment with exactly one chill running, and another still to come. Read off
+    # the plan rather than written down: the fridge has two slots, so two chills
+    # running would leave no slot for a pending one and the contrast below would
+    # be about slots instead of about the device. (It used to name 100, which
+    # stopped being such a moment when the schedule changed.)
+    now, blocked_until = _one_running_moment(plan)
+    status = _history(plan, now)
     replan = schedule(workflow, env, document_path=status, random_seed=0)
     assert replan.outcome == "optimal"
     pending = [a for a in _chills(replan.plan) if a.get("status") is None]

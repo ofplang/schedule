@@ -404,6 +404,90 @@ def merge_instances(instances: Sequence[Instance]) -> Instance:
     )
 
 
+# How many combinations of resting places `report_crowded_outputs` will try before
+# giving up. A plan with more finished products than this has other problems; the
+# cap is only here so that an unusually branchy laboratory ends in silence rather
+# than in a long wait, silence being the answer that claims nothing.
+_PACKING_LIMIT = 200_000
+
+
+def report_crowded_outputs(instance: Instance, diags: Diagnostics) -> None:
+    """Emit `final_outputs_crowded` when the finished products cannot be given
+    somewhere to sit.
+
+    A boundary `output` node holds the spots its mode binds **until the makespan**
+    (FORMULATION §J5): the finished product sits there and the run is over when the
+    last one does. Two of them therefore cannot share a spot -- both intervals end
+    at the same instant, so any positive length overlaps -- and a plan with more
+    finished products than places to put them has no schedule at all, whatever
+    else is true of it.
+
+    That is worth saying before solving rather than after. Measured on the RNA-seq
+    laboratory at five jobs, whose two bays cannot hold five libraries: the solver
+    spent twelve minutes and returned `unknown`, having proved nothing, where the
+    count takes no time at all.
+
+    **A necessary condition, not a sufficient one.** Silence here says the products
+    can be placed, not that the plan is schedulable -- the same laboratory at two
+    jobs passes this and still defeats the solver.
+
+    The search is over one mode per output node, since a mode binds every one of a
+    job's Object-bearing outputs at once and choosing it takes all of them. Modes
+    are read as the instance offers them, so a replan whose output has already
+    arrived somewhere is judged on the whole candidate set rather than on the one
+    spot it is pinned to -- which can only make this quieter, never louder.
+    """
+    demands: list[tuple[int, tuple[frozenset[str], ...]]] = []
+    for index, act in enumerate(instance.activities):
+        if act.boundary is None or act.boundary.kind != "output":
+            continue
+        places = []
+        for mode in act.modes:
+            spots = frozenset(mode.input_spots.values()) | frozenset(mode.output_spots.values())
+            if spots:
+                places.append(spots)
+        if places:
+            demands.append((index, tuple(dict.fromkeys(places))))
+    if len(demands) < 2:
+        return
+    # Fewest choices first: the node that can go almost nowhere is the one that
+    # settles the question, and trying it first is what keeps this instant.
+    demands.sort(key=lambda entry: (len(entry[1]), entry[0]))
+    if _can_place([places for _, places in demands]):
+        return
+    available = sorted({spot for _, places in demands for group in places for spot in group})
+    diags.error(
+        errors.FINAL_OUTPUTS_CROWDED,
+        f"{len(demands)} final outputs have to rest somewhere until the run is over, "
+        f"and no two of them can rest in the same place, but between them they name "
+        f"only {len(available)}: {', '.join(available)}. No schedule exists. Either "
+        f"bind the outputs to places of their own (interface.outputs, SPEC §6.8) or "
+        f"plan fewer jobs at once",
+    )
+
+
+def _can_place(choices: list[tuple[frozenset[str], ...]]) -> bool:
+    """Whether one group of spots can be picked per output so that no spot is
+    picked twice. True when the cap is reached without an answer, silence being
+    the claim-nothing outcome."""
+    budget = [_PACKING_LIMIT]
+
+    def walk(depth: int, taken: frozenset[str]) -> bool:
+        if depth == len(choices):
+            return True
+        for group in choices[depth]:
+            budget[0] -= 1
+            if budget[0] <= 0:
+                return True
+            if group & taken:
+                continue
+            if walk(depth + 1, taken | group):
+                return True
+        return False
+
+    return walk(0, frozenset())
+
+
 def report_unreachable(instance: Instance, fixed_arc_indices: set[int], diags: Diagnostics) -> None:
     """Emit `arc_unreachable` for every **pending** leg (an arc not in
     `fixed_arc_indices`) that no route can serve. Committed (fixed) legs are
@@ -864,32 +948,40 @@ def routes(env: Environment, from_spot: str, to_spot: str) -> list[tuple[str | N
     equally optimal schedules CP-SAT returns depends on how its variables were
     built, so reordering here changes plans that were not meant to change.
     """
+    # 🔴 A same-spot hand-off (§5.4) is a physical no-op, and **no transporter
+    # carries it** (§6.4). One route, carrying none, decided before the tables are
+    # consulted at all.
+    #
+    # Before, because `transport_duration` answers 0 for a same-spot pair *for every
+    # transporter alike* -- so letting the loop below see one would produce one
+    # arm-named route per arm, each of which then holds that arm for zero time. A
+    # zero-length interval is not free in a non-overlap: CP-SAT refuses a point
+    # strictly inside another interval, so a move that is physically nothing could
+    # not be placed while that arm was busy (measured; dev-notes
+    # report-model-size-and-presolve.md §17.5). Three things already say it should
+    # carry none -- `TransportOption.transporter`'s own contract, the plan renderer,
+    # which omits the field exactly here, and this scheduler's *committed* path,
+    # where `normalize._frozen_leg_option` reads that absent field back as None. So
+    # a no-op used to stop occupying an arm the moment it became history, which is
+    # the disagreement this removes (design.md D54).
+    #
+    # It also makes an in-place workflow schedulable in a laboratory that defines no
+    # transporters at all, which is what the fallback this replaced was for.
+    if from_spot == to_spot:
+        return [(None, 0)]
+
     found: list[tuple[str | None, int]] = []
     # A route the environment declares with no transporter (§5.4): the move needs
     # none at all -- a device shifting material between its own spots, a chute. It
     # occupies the source and destination devices like any other move (§4.5) and
     # simply enters no transporter's non-overlap set.
-    #
-    # Only for two *different* spots. A same-spot pair is left to the no-op fallback
-    # below, which is where it has always been handled; routing it through here
-    # instead would put a second, identical route in front of the ones an
-    # environment that declares a same-spot entry already produces, and that order
-    # has to stay exactly as it was.
-    if from_spot != to_spot:
-        duration = env.transport_duration(None, from_spot, to_spot)
-        if duration is not None:
-            found.append((None, duration))
+    duration = env.transport_duration(None, from_spot, to_spot)
+    if duration is not None:
+        found.append((None, duration))
     for transporter in env.transporters:
         duration = env.transport_duration(transporter, from_spot, to_spot)
         if duration is not None:
             found.append((transporter, duration))
-    # A same-spot hand-off (§5.4) is a physical no-op that no transporter carries
-    # (§6.4). Ensure it is always schedulable -- even in an environment that defines
-    # no transporters (a purely in-place workflow) -- by synthesizing a
-    # transporter-less zero-duration route, matching the plan output which omits the
-    # transporter for a same-spot move.
-    if from_spot == to_spot and not found:
-        found.append((None, 0))
     return found
 
 

@@ -9,27 +9,41 @@ Occupancy bookkeeping mirrors FORMULATION §6/§7: a processing activity holds i
 mode's spots and devices over its run interval; a transport holds the source spot
 over [e_src, b], the destination spot over [a, s_dst], and the source device,
 destination device, and transporter over its body interval [a, b] -- except a
-non-accessing processing mode (§4.4.2), which holds its spots and no device. NoOverlap is
-applied per spot, per device, and per transporter.
+non-accessing processing mode (§4.4.2), which holds its spots and no device.
+NoOverlap is applied per spot, per device, and per transporter -- except over a
+class of spots or transporters an instance never tells apart, which share one
+`AddCumulative` of the class's size instead, and are handed out individually after
+the solve (FORMULATION Part III; `symmetry`, `spotpool`).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 from typing import Any
 
 from ortools.sat.python import cp_model
 
 from ofplang.schedule.core import objective as objective_stages
 from ofplang.schedule.core.identifiers import parse_qualified_resource, parse_qualified_spot
+from ofplang.schedule.scheduler import greedy, spotpool
 from ofplang.schedule.scheduler.instance import (
-    BoundaryInfo,
+    ActivityInstance,
+    ArcInstance,
     Instance,
-    RelayInfo,
     TransportOption,
     job_membership,
 )
-from ofplang.schedule.scheduler.model import Arc, JobSpec, Mode, NodePath
+from ofplang.schedule.scheduler.model import JobSpec, Mode
+
+# The answer's shape lives in `result`, so that `greedy` can produce the same
+# thing without importing this module. Re-exported because callers have always
+# read these off `cpsat`.
+from ofplang.schedule.scheduler.result import (  # noqa: E402
+    ProcessingResult,
+    RefillResult,
+    Solution,
+    TransportResult,
+)
 from ofplang.schedule.scheduler.stats import (
     ModelStats,
     PhaseStats,
@@ -37,75 +51,14 @@ from ofplang.schedule.scheduler.stats import (
     SolveStats,
 )
 from ofplang.schedule.scheduler.status import Fixation
+from ofplang.schedule.scheduler.symmetry import (
+    InterchangeableClass,
+    aggregatable_spots,
+    aggregatable_transporters,
+    interchangeable_classes,
+)
 
-
-@dataclass(frozen=True)
-class ProcessingResult:
-    activity: int
-    node: NodePath
-    process: str
-    mode: Mode
-    start: int
-    end: int
-    # On a replan, the reported status of a fixed activity; None when pending.
-    status: str | None = None
-    # Set (opaquely, by the solver) when this activity is a relay junction; drives
-    # rendering (`kind: relay`). None for a normal processing activity.
-    relay: RelayInfo | None = None
-    # Set when this activity is a synthetic boundary node (§6.8); rendering skips it.
-    boundary: BoundaryInfo | None = None
-
-
-@dataclass(frozen=True)
-class TransportResult:
-    arc: Arc
-    option: TransportOption
-    start: int
-    end: int
-    status: str | None = None
-    # A leg's chain position (§6.6); None for a single-leg transport.
-    seq: int | None = None
-
-
-@dataclass(frozen=True)
-class RefillResult:
-    """A refill in the plan (§6.9). `amounts` is what it adds, keyed by bare
-    resource name -- `device` already says whose stock it is."""
-
-    id: str
-    device: str
-    replenisher: str
-    amounts: dict[str, int]
-    start: int
-    end: int
-    status: str | None = None
-
-
-@dataclass(frozen=True)
-class Solution:
-    outcome: str  # optimal | feasible | infeasible | unknown
-    makespan: int | None
-    processing: tuple[ProcessingResult, ...]
-    transport: tuple[TransportResult, ...]
-    replenishment: tuple[RefillResult, ...] = ()
-    # The objective actually minimised, and what each of its stages reached. These
-    # are the *effective* stages (`core.objective.effective`): a stage this
-    # instance cannot tell two schedules apart by is dropped, so a plan from an
-    # environment without resources reports the bare makespan it always did.
-    # Defaulted so the infeasible return below stays a four-argument call.
-    objective_kind: tuple[str, ...] = (objective_stages.MAKESPAN,)
-    objective_values: tuple[int, ...] = ()
-    # What the solve cost and how it got there (stats.py). Set on every path that
-    # reached the solver, including the infeasible one -- how long it takes to
-    # prove an instance unschedulable is as much a measurement as how long it takes
-    # to schedule one. None only where no solve ran.
-    stats: SolveStats | None = None
-    # What each job of a joint plan (§6.11) finished at, by id. This is where a job's
-    # promised bound B_j comes from -- a bound is the completion the solve achieved,
-    # not a value derived some other way (design.md D38) -- so the caller needs it per
-    # job rather than folded into `objective_values`. Empty for a single workflow.
-    job_completions: dict[str, int] = field(default_factory=dict)
-
+__all__ = ["ProcessingResult", "RefillResult", "Solution", "TransportResult", "solve"]
 
 _STATUS = {
     cp_model.OPTIMAL: "optimal",
@@ -124,6 +77,7 @@ def solve(
     objective: tuple[str, ...] | None = None,
     jobs: tuple[JobSpec, ...] = (),
     collect_solutions: bool = False,
+    interchangeable: tuple[InterchangeableClass, ...] | None = None,
 ) -> Solution:
     """Build and solve the model. With a `fixation` (a replan), completed/running
     activities are pinned to their reported times, mode, and route, pending ones
@@ -154,6 +108,14 @@ def solve(
     that reproducibility only holds when the solve runs to completion (a solve
     truncated by `max_time_seconds` still depends on wall-clock timing).
 
+    `interchangeable` is this instance's interchangeable resource classes (§10.4),
+    which the caller has usually already computed to report them. Passing them in
+    only saves recomputing; omitting it changes nothing about the answer. What the
+    solve does with them is collapse the *transporter* classes it safely can into
+    one capacity resource each (`aggregatable_transporters`) -- exactly the same
+    schedules, over a much smaller model -- and which arm makes each move is then
+    decided after the solve.
+
     `collect_solutions` records each improving solution as the search finds it, into
     `Solution.stats.phases[-1].history`. Off by default because a solution callback
     is not free -- it runs inside the search and can perturb the very timings it is
@@ -162,6 +124,14 @@ def solve(
     model = cp_model.CpModel()
     now = fixation.now if fixation is not None else 0
     horizon = _horizon(instance, fixation, running_task_margin, jobs)
+
+    # Which transporters this solve treats as one machine with room for several
+    # moves at once (§10.4). Empty for every environment whose arms are told apart
+    # by anything at all, and then the model below is byte-for-byte what it was.
+    if interchangeable is None:
+        interchangeable = interchangeable_classes(instance, fixation)
+    pools = aggregatable_transporters(instance, interchangeable)
+    spot_pools = aggregatable_spots(instance, interchangeable)
 
     # Which job each activity belongs to (§6.11), and what each job asks of the model.
     # With no roster this is one implicit job named `""`, so the per-job machinery
@@ -220,9 +190,22 @@ def solve(
     spot_iv: dict[str, list] = {}
     device_iv: dict[str, list] = {}
     transporter_iv: dict[str, list] = {}
+    # One list per collapsed class, keyed by its representative: these get a
+    # cumulative of the class's size instead of one non-overlap per arm.
+    pool_iv: dict[str, list] = {}
 
     def add(mapping: dict[str, list], key: str, interval) -> None:
         mapping.setdefault(key, []).append(interval)
+
+    def hold_spot(spot: str, interval) -> None:
+        """Put an interval into the resource that spot belongs to: its own
+        non-overlap, or its class's capacity resource where one was collapsed.
+        Which bay it ends up being is decided after the solve (`spotpool`)."""
+        pool = spot_pools.get(spot)
+        if pool is None:
+            add(spot_iv, spot, interval)
+        else:
+            add(pool_iv, pool[0], interval)
 
     # Makespan variable, created up front so the output boundary node's interval
     # can end exactly at it (§8 / FORMULATION §3-bis).
@@ -230,6 +213,10 @@ def solve(
 
     # --- processing activities (including the synthetic boundary nodes) ---
     starts, ends, mode_lits = [], [], []
+    # Which mode carries each mode's literal, per activity: the identity unless a
+    # spot class was collapsed. The arcs read it, so that two routes differing only
+    # in the bay they name become one route.
+    mode_carrier: list[list[int]] = []
     # ends that define the makespan (the output node's own end IS c_max, so it is excluded)
     make_ends: list = []
     for i, act in enumerate(instance.activities):
@@ -237,10 +224,18 @@ def solve(
         e = model.NewIntVar(0, horizon, f"e{i}")
         fx = fixation.activities.get(i) if fixation is not None else None
         boundary = act.boundary
-        lits = []
+        carrier = _mode_groups(act, fx is not None, spot_pools)
+        mode_carrier.append(carrier)
+        lits: list = [None] * len(act.modes)
+        chosen: list = []
         for m, mode in enumerate(act.modes):
+            if carrier[m] != m:
+                # Said already, by the mode that carries this group.
+                lits[m] = lits[carrier[m]]
+                continue
             present = model.NewBoolVar(f"x{i}_{m}")
-            lits.append(present)
+            lits[m] = present
+            chosen.append(present)
             # The output boundary node holds its spots until the makespan, so its
             # size is free (end pinned to c_max below). For a pending activity the
             # optional interval ties e = s + duration when this mode is chosen; for
@@ -263,13 +258,13 @@ def solve(
             if fx is not None and fx.status == "cancelled":
                 continue
             for spot in set(mode.input_spots.values()) | set(mode.output_spots.values()):
-                add(spot_iv, spot, iv)
+                hold_spot(spot, iv)
             # A non-accessing mode holds no device (§4.4.2): its spots are bound
             # above like any other mode's, but nothing here enters a device's
             # NoOverlap, so the machine stays free while the material rests on it.
             for device in mode.occupied_devices:
                 add(device_iv, device, iv)
-        model.AddExactlyOne(lits)
+        model.AddExactlyOne(chosen)
         if boundary is not None:
             # Boundary nodes are re-created every solve and are not fixation-managed
             # (§9): the input node sits at time 0 (a given origin, exempt from the
@@ -347,6 +342,11 @@ def solve(
 
     # --- transport activities (one per arc) ---
     arc_starts, arc_ends, arc_opt_lits = [], [], []
+    # The routes each arc's selection is actually over. The same as `arc.options`
+    # unless a transporter class was collapsed, in which case the arms of one class
+    # contribute one route between them -- which is the whole of the model
+    # reduction. Kept per arc because the answer has to be read back through it.
+    arc_encoded: list[tuple[TransportOption, ...]] = []
     for r, arc in enumerate(instance.arcs):
         a = model.NewIntVar(0, horizon, f"a{r}")
         b = model.NewIntVar(0, horizon, f"b{r}")
@@ -354,8 +354,10 @@ def solve(
         s_dst = starts[arc.dst_activity]
         fr = fixation.arcs.get(r) if fixation is not None else None
 
+        options = _encoded_options(arc, fr, pools, spot_pools, mode_carrier)
+        arc_encoded.append(options)
         lits = []
-        for k, opt in enumerate(arc.options):
+        for k, opt in enumerate(options):
             present = model.NewBoolVar(f"q{r}_{k}")
             lits.append(present)
             # Route selection must agree with the endpoint modes (§4).
@@ -384,19 +386,23 @@ def solve(
             if dst_device != src_device:
                 add(device_iv, dst_device, body)
             # A same-spot no-op route carries no transporter (opt.transporter is
-            # None), so it occupies no transporter resource.
+            # None), so it occupies no transporter resource. A route standing for a
+            # collapsed class occupies the class rather than the arm it happens to
+            # name: which arm that is has not been decided yet.
             if opt.transporter is not None:
-                add(transporter_iv, opt.transporter, body)
+                pool = pools.get(opt.transporter)
+                if pool is None:
+                    add(transporter_iv, opt.transporter, body)
+                else:
+                    add(pool_iv, pool[0], body)
             # Source spot held [e_src, b]; destination spot held [a, s_dst].
             src_size = model.NewIntVar(0, horizon, f"ss{r}_{k}")
-            add(
-                spot_iv,
+            hold_spot(
                 opt.from_spot,
                 model.NewOptionalIntervalVar(e_src, src_size, b, present, f"si{r}_{k}"),
             )
             dst_size = model.NewIntVar(0, horizon, f"ds{r}_{k}")
-            add(
-                spot_iv,
+            hold_spot(
                 opt.to_spot,
                 model.NewOptionalIntervalVar(a, dst_size, s_dst, present, f"di{r}_{k}"),
             )
@@ -452,6 +458,14 @@ def solve(
         model.AddNoOverlap(intervals)
     for intervals in transporter_iv.values():
         model.AddNoOverlap(intervals)
+    # A collapsed class is one machine with room for as many moves at once as it
+    # has arms. Exact rather than a relaxation: at most that many of the chosen
+    # move intervals ever overlap, and interval graphs are perfect, so the arms can
+    # always be handed out afterwards (`_assign_pooled_transporters`). The guards
+    # in `aggregatable_transporters` are what make the two encodings agree.
+    for representative, intervals in pool_iv.items():
+        entry = pools.get(representative) or spot_pools[representative]
+        model.AddCumulative(intervals, [1] * len(intervals), entry[1])
 
     # --- objective ---
     # c_max is the max over real activity ends and boundary-output deliveries
@@ -518,6 +532,31 @@ def solve(
     # It is only sound where the jobs really are interchangeable, so `_interchangeable`
     # is strict about it -- an order imposed on jobs that differ would prune schedules
     # that are perfectly legitimate.
+    # 🔴 **Vacuous wherever a job has a boundary input node**, which is every
+    # laboratory in the case studies. `job_start` is the earliest start among the
+    # job's activities, an input node is one of them, and it is pinned at the job's
+    # release -- so every member of the group gets the same number and the order
+    # below reads `0 <= 0 <= 0`. The claim above holds for instances whose jobs
+    # create their own material, which is where it was measured.
+    #
+    # Repairing it was tried and is not worth having (report §42). Excluding
+    # boundary nodes makes the order bite, and then it rejects the constructed
+    # schedule -- whose jobs start in whatever order the pass produced -- so the
+    # hint is thrown away and five jobs go from an answer to none at all.
+    # Canonicalising into the schedule's own order instead keeps both, and still
+    # loses: the joint objective is unchanged within noise and a makespan-only
+    # solve comes out 5.4% worse. Left as it is deliberately, and said out loud
+    # because a constraint that does nothing should not read as one that does.
+    #
+    # Removing it altogether was the next thing tried, and it is not safe. On
+    # rosters of jobs that make their own material the order is worse everywhere
+    # measured -- four times slower at twelve jobs, and at sixteen and above the
+    # difference between proving optimality in under a minute and not proving it
+    # at all -- but on the consumable instance this was written for it is exactly
+    # what the claim above says: at five and six jobs, optimal with it and
+    # unproved without. Those jobs compete for a stock rather than only for
+    # machines, and no discriminator between the two shapes is better than a
+    # guess, so it stays on everywhere (report §43).
     for group in _interchangeable(jobs, fixation, membership, stopped):
         starts_of = {
             job_id: [starts[i] for i, m in enumerate(membership) if m == job_id]
@@ -567,6 +606,29 @@ def solve(
         expression = expression + weight * terms[stage]
     model.Minimize(expression)
 
+    # --- a constructed schedule as a starting point (greedy.py) ---
+    # Offered, never imposed. CP-SAT is free to ignore a hint, so an instance the
+    # constructive pass gets wrong is still solved correctly, and one it gets
+    # right can be proved optimal without searching for it at all. That asymmetry
+    # is why this is a hint and not a first phase.
+    #
+    # Only the times are offered. The choices -- which mode, which route -- are
+    # presolved away before the hint is read, so hinting them conveys nothing
+    # (measured: hinting the choice literals alone leaves the presolved model with
+    # none of them hinted, while hinting the times alone closes the widest
+    # synthetic instance at optimal with zero branches; report §29.6).
+    constructed = greedy.construct(
+        instance, fixation=fixation, jobs=jobs, objective=objective
+    )
+    if constructed is not None:
+        for placement in constructed.processing:
+            model.AddHint(starts[placement.activity], placement.start)
+            model.AddHint(ends[placement.activity], placement.end)
+        # `transport` comes back in arc order, which is the order these are in.
+        for r, move in enumerate(constructed.transport):
+            model.AddHint(arc_starts[r], move.start)
+            model.AddHint(arc_ends[r], move.end)
+
     solver = cp_model.CpSolver()
     if max_time_seconds is not None:
         solver.parameters.max_time_in_seconds = max_time_seconds
@@ -580,7 +642,22 @@ def solve(
     status = solver.Solve(model, recorder)
     outcome = _STATUS.get(status, "unknown")
     stats = _solve_stats(
-        model, solver, outcome, instance, horizon, stages, weights, recorder
+        model,
+        solver,
+        outcome,
+        instance,
+        horizon,
+        stages,
+        weights,
+        recorder,
+        sum(len(options) for options in arc_encoded),
+        # One mode per group: the modes a collapsed class made indistinguishable
+        # share a literal, and only the one that carries the group is in the model.
+        sum(
+            sum(1 for m, carries in enumerate(carrier) if carries == m)
+            for carrier in mode_carrier
+        ),
+        None if constructed is None else constructed.makespan,
     )
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -605,13 +682,20 @@ def solve(
     transport = tuple(
         TransportResult(
             arc=arc.arc,
-            option=arc.options[_selected(solver, arc_opt_lits[r])],
+            option=arc_encoded[r][_selected(solver, arc_opt_lits[r])],
             start=solver.Value(arc_starts[r]),
             end=solver.Value(arc_ends[r]),
             status=arc_fix[r].status if r in arc_fix else None,
             seq=arc.seq,
         )
         for r, arc in enumerate(instance.arcs)
+    )
+    # Which machine each thing actually gets, now that the times are known: the arm
+    # for each move of a collapsed transporter class, and the bay for each stay of
+    # an Object on a collapsed spot class.
+    transport = _assign_pooled_transporters(transport, pools)
+    processing, transport = _assign_pooled_spots(
+        instance, fixation, processing, transport, spot_pools
     )
     replenishment = _refill_results(
         solver, instance, fixation, refills, processing, running_task_margin
@@ -679,6 +763,9 @@ def _solve_stats(
     stages: tuple[str, ...],
     weights: tuple[int, ...],
     recorder: _SolutionRecorder | None,
+    encoded_options: int,
+    encoded_modes: int,
+    hint_makespan: int | None,
 ) -> SolveStats:
     """Assemble the record of what this solve cost (stats.py).
 
@@ -721,12 +808,15 @@ def _solve_stats(
             activities=len(instance.activities),
             arcs=len(instance.arcs),
             transport_options=sum(len(arc.options) for arc in instance.arcs),
+            encoded_transport_options=encoded_options,
             modes=sum(len(act.modes) for act in instance.activities),
+            encoded_modes=encoded_modes,
             replenishments=len(instance.replenishments),
             horizon=horizon,
         ),
         objective_kind=stages,
         phases=(phase,),
+        hint_makespan=hint_makespan,
     )
 
 
@@ -1197,6 +1287,288 @@ def _resting(logical, seq, job_id, arrived: dict) -> bool:
         return False
     delivered = arrived.get((job_id, logical))
     return delivered is not None and (seq or 0) > delivered
+
+
+def _pooled_mode_key(mode: Mode, spot_pools: dict[str, tuple[str, int]]) -> tuple | None:
+    """Everything a mode does, with the bays of a collapsed class read as the class.
+
+    `None` where the mode names no pooled bay: then it is never grouped with
+    another, so an instance with nothing collapsed builds exactly the model it
+    always did -- two modes that happen to say the same thing stay two modes.
+    """
+    spots = set(mode.input_spots.values()) | set(mode.output_spots.values())
+    if not spots.intersection(spot_pools):
+        return None
+
+    def canonical(spot: str) -> str:
+        pool = spot_pools.get(spot)
+        return pool[0] if pool is not None else spot
+
+    return (
+        mode.duration,
+        tuple(mode.devices),
+        mode.device_access,
+        tuple(sorted((port, canonical(s)) for port, s in mode.input_spots.items())),
+        tuple(sorted((port, canonical(s)) for port, s in mode.output_spots.items())),
+        tuple(sorted(mode.consumption.items())),
+    )
+
+
+def _mode_groups(
+    act: ActivityInstance, fixed: bool, spot_pools: dict[str, tuple[str, int]]
+) -> list[int]:
+    """For each mode, the mode that carries it in the model.
+
+    Modes that differ only in which bay of a collapsed class they name say the
+    same thing about the same resource, so one of them carries the choice and the
+    others share its literal -- which is what takes the model from W modes per
+    activity to one. **Sharing rather than renumbering** is deliberate: five places
+    index `mode_lits` by the mode's own index (the arc agreements, the refills, the
+    stock draws, the pinned mode of a fixed activity, and the answer read back), and
+    all of them keep working untouched.
+
+    A fixed activity is never grouped: its mode is pinned by index (§9), and a
+    committed choice has nothing left to collapse.
+    """
+    carrier: list[int] = []
+    seen: dict[tuple, int] = {}
+    for m, mode in enumerate(act.modes):
+        key = None if fixed else _pooled_mode_key(mode, spot_pools)
+        if key is None:
+            carrier.append(m)
+            continue
+        carrier.append(seen.setdefault(key, m))
+    return carrier
+
+
+def _encoded_options(
+    arc: ArcInstance,
+    fr,
+    pools: dict[str, tuple[str, int]],
+    spot_pools: dict[str, tuple[str, int]],
+    mode_carrier: list[list[int]],
+) -> tuple[TransportOption, ...]:
+    """The routes this arc's selection is encoded over.
+
+    Every route it has, unless a transporter class was collapsed: then the arms of
+    one class contribute **one** route between them, since they differ in nothing
+    the model can still see. That is the reduction -- on the case-study RNA-seq
+    laboratory it takes an arc from 268 routes to 4.
+
+    A **fixed** arc keeps all of them. Its route is pinned by index
+    (`fr.option_index` names one of `arc.options`), so the two lists have to stay
+    the same list; and there is nothing to gain, a committed move having no choice
+    left to collapse.
+    """
+    if fr is not None:
+        return tuple(arc.options)
+
+    def bay(spot: str) -> str:
+        pool = spot_pools.get(spot)
+        return pool[0] if pool is not None else spot
+
+    def arm(name: str | None) -> str | None:
+        pool = pools.get(name) if name is not None else None
+        return pool[0] if pool is not None else name
+
+    src_carrier = mode_carrier[arc.src_activity]
+    dst_carrier = mode_carrier[arc.dst_activity]
+    kept: list[TransportOption] = []
+    seen: set[tuple] = set()
+    for option in arc.options:
+        key = (
+            src_carrier[option.src_mode_index],
+            dst_carrier[option.dst_mode_index],
+            arm(option.transporter),
+            bay(option.from_spot),
+            bay(option.to_spot),
+            option.duration,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(option)
+    return tuple(kept)
+
+
+def _assign_pooled_spots(
+    instance: Instance,
+    fixation: Fixation | None,
+    processing: tuple[ProcessingResult, ...],
+    transport: tuple[TransportResult, ...],
+    spot_pools: dict[str, tuple[str, int]],
+) -> tuple[tuple[ProcessingResult, ...], tuple[TransportResult, ...]]:
+    """Name the bay each stay of an Object gets, for every collapsed spot class
+    (§10.4).
+
+    The solve decided when everything happens and that no instant asks for more
+    bays than a class has; `spotpool` works out which occupancies make up one stay
+    and hands the bays out. This reports it -- by finding the **original** mode and
+    route that name the assigned bays, rather than editing the canonical one's
+    spots.
+
+    🔴 That difference matters. A plan writes `mode: <id>`, so a mode whose id said
+    one thing and whose spots said another would be a document contradicting
+    itself. The mode exists because the class is verified: relabelling its members
+    maps the activity's mode set onto itself, and a class the activity touches
+    twice is refused (`aggregatable_spots` G2), so the substitution is unambiguous.
+
+    🔴 A route is then found by the **modes it names**, not by its spots. The bays
+    are handed out per stay, so different activities can get different bays -- the
+    assignment is not one relabelling of the whole instance, and asking for "the
+    route with these spots and the old mode indices" asks for something that need
+    not exist. Asking for "the route between these two activities' new modes" asks
+    for something that always does: `instance.transport_options` enumerates every
+    mode pair against every route between the spots they bind, and interchangeable
+    members have the same routes by construction.
+
+    Cancelled work is left out on both sides. It never ran, so it holds no spot
+    (§6.2) and `solve` keeps it out of the resource; counting it here would invent
+    a stay the model never had.
+    """
+    if not spot_pools:
+        return processing, transport
+
+    act_fix = fixation.activities if fixation is not None else {}
+    arc_fix = fixation.arcs if fixation is not None else {}
+
+    def mode_of(i: int) -> Mode | None:
+        if i in act_fix and act_fix[i].status == "cancelled":
+            return None
+        return modes_now.get(i)
+
+    def option_of(r: int) -> TransportOption | None:
+        if r in arc_fix and arc_fix[r].status == "cancelled":
+            return None
+        return options_now.get(r)
+
+    modes_now = {p.activity: p.mode for p in processing}
+    options_now = {r: t.option for r, t in enumerate(transport)}
+    times_of = {p.activity: (p.start, p.end) for p in processing}
+    arc_times = {r: (t.start, t.end) for r, t in enumerate(transport)}
+
+    by_class: dict[str, list[str]] = {}
+    for member, (representative, _capacity) in spot_pools.items():
+        by_class.setdefault(representative, []).append(member)
+
+    # spot -> bay, per activity. One activity may hold spots of several classes.
+    act_bay: dict[int, dict[str, str]] = {}
+    for representative in sorted(by_class):
+        members = tuple(sorted(by_class[representative]))
+        items = spotpool.occupancies(
+            instance, frozenset(members), mode_of, option_of, times_of, arc_times
+        )
+        chains = spotpool.build_chains(instance, items)
+        assignment = spotpool.assign(chains, members)
+        clashes = spotpool.overlapping(chains, assignment)
+        if clashes:  # pragma: no cover - the capacity resource prevents it
+            raise spotpool.NotColourable(
+                f"two stays share a bay of {representative}: {clashes[0]}"
+            )
+        for position, bay in assignment.items():
+            for item in chains[position].items:
+                if item.kind == "activity":
+                    act_bay.setdefault(item.index, {})[item.spot] = bay
+
+    # Each activity's own mode, re-read as the one that binds its assigned bays.
+    new_index: dict[int, int] = {}
+    for i, bays in act_bay.items():
+        new_index[i] = _mode_binding(instance, i, modes_now[i], bays)
+
+    moved_processing = tuple(
+        replace(result, mode=instance.activities[result.activity].modes[new_index[result.activity]])
+        if result.activity in new_index
+        else result
+        for result in processing
+    )
+    moved_transport = tuple(
+        replace(result, option=_route_between(instance, r, result.option, new_index))
+        if (
+            instance.arcs[r].src_activity in new_index
+            or instance.arcs[r].dst_activity in new_index
+        )
+        else result
+        for r, result in enumerate(transport)
+    )
+    return moved_processing, moved_transport
+
+
+def _mode_binding(instance: Instance, i: int, chosen: Mode, bays: dict[str, str]) -> int:
+    """The index of the activity's own mode that binds these bays."""
+    wanted_in = {port: bays.get(spot, spot) for port, spot in chosen.input_spots.items()}
+    wanted_out = {port: bays.get(spot, spot) for port, spot in chosen.output_spots.items()}
+    for m, mode in enumerate(instance.activities[i].modes):
+        if mode.input_spots == wanted_in and mode.output_spots == wanted_out:
+            return m
+    # Unreachable: the class is verified, so the relabelled mode is one of them.
+    raise AssertionError(f"activity {i} has no mode binding {wanted_in} / {wanted_out}")
+
+
+def _route_between(
+    instance: Instance, r: int, chosen: TransportOption, new_index: dict[int, int]
+) -> TransportOption:
+    """The arc's own route between the two activities' re-read modes."""
+    arc = instance.arcs[r]
+    src = new_index.get(arc.src_activity, chosen.src_mode_index)
+    dst = new_index.get(arc.dst_activity, chosen.dst_mode_index)
+    for candidate in arc.options:
+        if (
+            candidate.src_mode_index == src
+            and candidate.dst_mode_index == dst
+            and candidate.transporter == chosen.transporter
+            and candidate.duration == chosen.duration
+        ):
+            return candidate
+    # Unreachable: interchangeable members have the same routes, so the pair of
+    # re-read modes is served exactly as the pair the solve chose was.
+    raise AssertionError(f"arc {r} has no route for modes {src} -> {dst}")
+
+
+def _assign_pooled_transporters(
+    transport: tuple[TransportResult, ...], pools: dict[str, tuple[str, int]]
+) -> tuple[TransportResult, ...]:
+    """Name the arm that makes each move of a collapsed class (§10.4).
+
+    The solve decided *when* each move happens and that no more of them overlap
+    than the class has arms; this hands out the arms. Earliest start first, to the
+    lowest-named arm that is free -- the textbook colouring of an interval graph,
+    which cannot get stuck: the chromatic number of an interval graph is its
+    largest overlap, and the cumulative bounded that by the number of arms.
+
+    The route a move reports then differs from the one the model carried in exactly
+    one field, the transporter, which is the field the collapsed model stopped
+    distinguishing. Everything else -- times, spots, duration -- is the solver's own
+    answer.
+    """
+    out = list(transport)
+    by_pool: dict[str, list[int]] = {}
+    for i, move in enumerate(transport):
+        arm = move.option.transporter
+        if arm is None or arm not in pools:
+            continue
+        by_pool.setdefault(pools[arm][0], []).append(i)
+    if not by_pool:
+        return transport
+    for representative, indices in by_pool.items():
+        arms = sorted(
+            arm for arm, (rep, _) in pools.items() if rep == representative
+        )
+        # When each arm last put something down. `-1` for an arm that has not moved
+        # yet, which no start can precede.
+        free_at: dict[str, int] = dict.fromkeys(arms, -1)
+        for i in sorted(indices, key=lambda i: (transport[i].start, transport[i].end)):
+            move = transport[i]
+            arm = next((a for a in arms if free_at[a] <= move.start), None)
+            # Unreachable: the cumulative held, so fewer moves overlap here than
+            # there are arms. Left as a check rather than a silent fallback,
+            # because handing out a plan with two moves on one arm would be worse
+            # than failing.
+            assert arm is not None, (
+                f"no arm free for the move at {move.start} on pool {representative}"
+            )
+            free_at[arm] = move.end
+            out[i] = replace(move, option=replace(move.option, transporter=arm))
+    return tuple(out)
 
 
 def _selected(solver: cp_model.CpSolver, lits) -> int:

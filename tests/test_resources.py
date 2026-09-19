@@ -367,8 +367,20 @@ def test_switching_off_stops_checking_what_it_stopped_applying():
         assert report.plan is not None, [d.code for d in report.diagnostics]
 
 
+def _ignored_codes(report):
+    """The `resources_ignored` diagnostics of a report, and only those.
+
+    These two tests are about whether switching the resource model off is
+    announced, so they read that code rather than the whole list: this
+    environment's `bench` has two interchangeable slots, which the scheduler
+    reports on its own (`interchangeable_resources`, §10.4) and which has nothing
+    to do with resources being on or off.
+    """
+    return [d.code for d in report.diagnostics if d.code == "resources_ignored"]
+
+
 def test_switching_off_says_so():
-    assert [d.code for d in _off().diagnostics] == ["resources_ignored"]
+    assert _ignored_codes(_off()) == ["resources_ignored"]
 
 
 def test_switching_off_a_stock_nobody_draws_on_says_nothing():
@@ -376,7 +388,7 @@ def test_switching_off_a_stock_nobody_draws_on_says_nothing():
     # environments that merely describe what a device holds.
     env = _env()
     del _assay_mode(env)["consumption"]
-    assert [d.code for d in _off(env=env, document=_document()).diagnostics] == []
+    assert _ignored_codes(_off(env=env, document=_document())) == []
 
 
 def test_a_plan_made_with_resources_off_is_a_valid_document():

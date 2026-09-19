@@ -103,6 +103,9 @@ PURE_DATA_PORT_MAPPED = "pure_data_port_mapped"
 # A mode does not map every Object-bearing port of its process (§9.3 coverage).
 MODE_PORTS_INCOMPLETE = "mode_ports_incomplete"
 ARC_UNREACHABLE = "arc_unreachable"
+# More finished products than places for them to sit in until the run is over. A
+# counting argument, so it is settled before any solve rather than left to one.
+FINAL_OUTPUTS_CROWDED = "final_outputs_crowded"
 INFEASIBLE = "infeasible"
 
 # Consumable resources (§4.7, §6.10, §9.3). The model is in effect when some mode
@@ -149,6 +152,14 @@ SCHEDULING_POLICIES_IGNORED = "scheduling_policies_ignored"
 # have been in effect -- switching off a stock nothing draws on changes nothing and
 # is not worth saying.
 RESOURCES_IGNORED = "resources_ignored"
+# Warning (not an error): this instance offers several interchangeable ways of using
+# one resource -- spots of a device, devices of a pool, transporters that can make
+# the same moves -- so its model carries modes and routes that only choose between
+# them, and every such choice leads to the same schedule. Nothing is wrong with the
+# laboratory or the document; the model is simply larger than the question needs,
+# and model size is what bounds solve time. Reported so that the cost is visible
+# where it is being paid, and nothing else is done about it (§10.4).
+INTERCHANGEABLE_RESOURCES = "interchangeable_resources"
 
 # The environment declares `objective`, which belongs to the execution document
 # (§6.1): how a run is to be optimised is a property of that run, not of the lab.
@@ -381,6 +392,7 @@ ERROR_CODES = frozenset(
         PURE_DATA_PORT_MAPPED,
         MODE_PORTS_INCOMPLETE,
         ARC_UNREACHABLE,
+        FINAL_OUTPUTS_CROWDED,
         INFEASIBLE,
         OBJECTIVE_IN_ENVIRONMENT,
         MISSING_INVENTORIES,

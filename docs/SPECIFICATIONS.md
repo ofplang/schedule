@@ -508,6 +508,14 @@ Semantics:
   required move must be performable by at least one transporter, or by a
   transporter-less route.
 - Same-spot moves (`from == to`) are treated as duration `0` and may be omitted.
+  **No transporter performs one**, whatever the table says: a hand-off within one
+  spot is a physical no-op, so it is served by exactly one route, which carries no
+  transporter and enters no transporter's exclusion (§4.6) — the same route an
+  environment that declares no transporters at all gets. It still occupies the
+  device its spot belongs to, like any other move (§4.5), and the plan omits its
+  `transporter` field accordingly (§6.4). A consequence worth knowing: a same-spot
+  entry with a non-zero `duration` cannot be expressed — it reads as `0` either
+  way.
 
 ### 5.5 `processes`
 
@@ -1478,6 +1486,15 @@ rest be planned — or that no single one accounts for it
 (`jobs_not_plannable_together`, §10.4). It **reports and does nothing else**: dropping
 a job would be quietly discarding work somebody asked for.
 
+**Only on a proof.** All of this follows the solver *proving* there is no schedule. A
+solve that ran out of time has proved nothing, so none of it is said and none of it is
+looked for: no `infeasible`, no taking jobs out one at a time. The outcome is `unknown`,
+which is the whole of what is known. Taking each job out costs another solve at the full
+budget apiece, so a plan that merely ran late used to spend the budget once per job and
+then announce that its jobs could not be planned together — neither of which the solver
+had shown. And one probe that runs out of time withdraws the claim about all of them:
+"no single job accounts for this" is a statement about every job in the roster.
+
 #### When a job leaves
 
 The roster is not a ledger of everything ever run. It is the set of jobs **something
@@ -2172,6 +2189,8 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `inventory_moment_in_future` | `inventories.at` is later than `now` (§6.10): the history can only have happened before the present |
 | `inventory_moment_retreats` | the levels were asked to be restated as of a moment earlier than the one they already state (§6.10): the history before it is what the document was entitled to drop |
 | `resources_ignored` | the resource model was disabled (§4.7.3) where it would otherwise have been in effect, so nothing was applied. Not raised for an environment that merely declares a stock nothing draws on — switching that off changes nothing (*warning*) |
+| `interchangeable_resources` | **warning**: this instance offers several interchangeable ways of using one resource — spots of a device, devices of a pool, transporters that can make the same moves — so it carries modes and routes that only choose between them, and every such choice leads to the same schedule. Nothing is wrong with the laboratory or the document: the model is simply larger than the question needs, and model size is what bounds solve time. One diagnostic per class, naming its members and what treating them as one would take off the model. Two things it does **not** report, both because nothing is being paid: a class no mode or route chooses between, and a class the scheduler reduces away (FORMULATION, Part III — which resources are reduced, and why doing so cannot change the schedule). The claim is about **this instance**, not the environment: only the processes the workflow instantiated and the routes its arcs kept are compared, and a resource the document has pinned something to (reported history, a boundary binding §6.8, an `occupied` hold §6.12) is never claimed — so a class shrinks as a run accumulates history. Nothing about a plan changes either way: it names one concrete spot, device and transporter per activity as always (§6.3, §6.4) |
+| `final_outputs_crowded` | **error**: more final outputs have to rest somewhere until the run is over than there are places they can rest in. A boundary `output` node holds the spots its mode binds until the makespan (§6.8, FORMULATION §J5), so no two finished products can share a place, and a plan with more products than places has no schedule whatever else is true of it. Checked by trying the combinations rather than by counting them, so a case where the places exist but cannot all be used at once is caught too. **A necessary condition, not a sufficient one**: silence says the products can be placed, not that the plan is schedulable. Reported before the solve and the solve is not run, which is the point — measured on the RNA-seq laboratory at five jobs against two bays, the solver spent twelve minutes and returned `unknown`, having proved nothing. Usually accompanied by `interface_output_unbound` (§10.3), which names the other way out: bind each output to a place of its own |
 | `infeasible` | the solver proved the instance has no feasible schedule |
 
 `unknown_device` and `unknown_resource` (§10.2) are reused here for an

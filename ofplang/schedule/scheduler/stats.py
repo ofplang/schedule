@@ -114,10 +114,28 @@ class ModelStats:
     constraints: int
     activities: int
     arcs: int
+    # What the *instance* offers, summed over its arcs and activities -- what the
+    # laboratory can do, before the model decides how to say it.
     transport_options: int
     modes: int
     replenishments: int
     horizon: int
+    # What the *model* was given. Lower than the two above exactly where a class of
+    # interchangeable resources was collapsed (SPEC §10.4, FORMULATION Part III):
+    # the members of one class then contribute one route, or one mode, between them,
+    # and which member each thing gets is decided after the solve.
+    #
+    # Fields of their own rather than a narrower reading of `transport_options` and
+    # `modes`, so that a measurement taken before they existed still means what it
+    # said -- and so that each pair shows how much the collapse took off. Both
+    # default to 0, which no model has, for records that predate them.
+    #
+    # 🔴 Both are needed, because the two collapses move different halves: pooling
+    # transporters takes routes off and no modes, while pooling spots takes mostly
+    # modes (the 64-job benchmark instance: 8,384 modes down to 320). Recording
+    # only the routes would have made the spot collapse look like it did nothing.
+    encoded_transport_options: int = 0
+    encoded_modes: int = 0
 
 
 @dataclass(frozen=True)
@@ -134,6 +152,13 @@ class SolveStats:
     # the order every `objective_values` tuple here follows.
     objective_kind: tuple[str, ...]
     phases: tuple[PhaseStats, ...] = field(default_factory=tuple)
+    # The makespan of the schedule the constructive pass handed the solver as a
+    # hint (`scheduler.greedy`), or None where it declined the instance. Both
+    # halves of that are worth reading: whether a hint was offered at all, and how
+    # far off it was, since the hint is where a solve that returns something
+    # immediately gets the something from. A timing without it cannot say whether
+    # the search did the work or the hint did.
+    hint_makespan: int | None = None
 
     @property
     def wall_time(self) -> float:
