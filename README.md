@@ -220,6 +220,42 @@ activity, as always. `stats.model` carries both sides of the count — the modes
 routes the laboratory offers, and the `encoded_` ones the model was given — so the
 difference is visible.
 
+## The first schedule is built, not searched for
+
+Before the model reaches CP-SAT the scheduler **constructs a complete schedule by
+hand** — list scheduling, forward in time, each activity placed at the first moment
+its material, its machine and its bay are all free — and hands it to the solver as a
+starting point. The solver may ignore it and may improve on it. Nothing about a plan
+says whether it was used.
+
+This is here because of the reduction above. Collapsing a class of interchangeable
+resources sharpens what the solver can *prove* about an instance without making any
+one schedule easier to *find*: on the two widest benchmark environments the reduced
+model proved the optimum in a tenth of a second and then spent a full minute without
+producing a single schedule worth that much. A model can carry a good bound and no
+witness, and a bound with no witness is not an answer. A constructed schedule is the
+witness.
+
+What it is worth, on the RNA-seq case study's standard laboratory:
+
+| | before | now |
+|---|---|---|
+| one job | optimal in 2.1 s | optimal in 0.6 s |
+| two jobs | optimal in 71.4 s | optimal in 2.3 s |
+| five jobs | nothing, after twelve minutes | a schedule at once, which two further minutes of search did not better |
+
+The construction is **not general**, and does not pretend to be: it declines an
+instance that refills a stock, draws on one, relays an Object between spots, starts
+with material already held, replans from a reported history, or promises a job a
+completion time — and the solve then proceeds exactly as it did before. Where it
+runs, `stats.hint_makespan` is the makespan it built, and `None` where it declined,
+so what the solver started from is visible.
+
+It is a *valid* schedule, not a *good* one, and neither is promised. On the widest
+benchmark instances it is the optimum. On the five-job laboratory above it is what
+comes back — 1.05× the shortest makespan anything has found, and within 1.84× of
+what counting the work through the bottleneck says is possible.
+
 Each input is either a path or an already-loaded document (a mapping), so an
 embedder that holds them in memory — a rolling-horizon runner rendering a fresh
 status every replan — passes them straight in, with no temporary files and nothing
