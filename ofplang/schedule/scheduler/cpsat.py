@@ -532,6 +532,21 @@ def solve(
     # It is only sound where the jobs really are interchangeable, so `_interchangeable`
     # is strict about it -- an order imposed on jobs that differ would prune schedules
     # that are perfectly legitimate.
+    # 🔴 **Vacuous wherever a job has a boundary input node**, which is every
+    # laboratory in the case studies. `job_start` is the earliest start among the
+    # job's activities, an input node is one of them, and it is pinned at the job's
+    # release -- so every member of the group gets the same number and the order
+    # below reads `0 <= 0 <= 0`. The claim above holds for instances whose jobs
+    # create their own material, which is where it was measured.
+    #
+    # Repairing it was tried and is not worth having (report §42). Excluding
+    # boundary nodes makes the order bite, and then it rejects the constructed
+    # schedule -- whose jobs start in whatever order the pass produced -- so the
+    # hint is thrown away and five jobs go from an answer to none at all.
+    # Canonicalising into the schedule's own order instead keeps both, and still
+    # loses: the joint objective is unchanged within noise and a makespan-only
+    # solve comes out 5.4% worse. Left as it is deliberately, and said out loud
+    # because a constraint that does nothing should not read as one that does.
     for group in _interchangeable(jobs, fixation, membership, stopped):
         starts_of = {
             job_id: [starts[i] for i, m in enumerate(membership) if m == job_id]
