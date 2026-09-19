@@ -121,20 +121,6 @@ activities:
       port: a4_in_motoman
 - kind: transport
   start: 22
-  end: 22
-  from_spot: reformatter.rf_link
-  to_spot: reformatter.rf_link
-  arc:
-    from:
-      node:
-      - Reformatter12
-      port: rf12_out_rf20
-    to:
-      node:
-      - Reformatter20
-      port: rf20_in_rf12
-- kind: transport
-  start: 22
   end: 24
   from_spot: motoman.out_rf20
   to_spot: reformatter.rf20_in_motoman
@@ -192,6 +178,20 @@ activities:
       node:
       - Reformatter20
       port: rf20_in_a3_24
+- kind: transport
+  start: 36
+  end: 36
+  from_spot: reformatter.rf_link
+  to_spot: reformatter.rf_link
+  arc:
+    from:
+      node:
+      - Reformatter12
+      port: rf12_out_rf20
+    to:
+      node:
+      - Reformatter20
+      port: rf20_in_rf12
 - kind: processing
   start: 36
   end: 56
@@ -208,20 +208,6 @@ activities:
   output_spots:
     rf20_out_rf3: reformatter.rf_link
     rf20_out_a3_19: reformatter.rf20_out_a3_19
-- kind: transport
-  start: 56
-  end: 56
-  from_spot: reformatter.rf_link
-  to_spot: reformatter.rf_link
-  arc:
-    from:
-      node:
-      - Reformatter20
-      port: rf20_out_rf3
-    to:
-      node:
-      - Reformatter3
-      port: rf3_in_rf20
 - kind: transport
   start: 56
   end: 61
@@ -280,6 +266,20 @@ activities:
       node:
       - Reformatter3
       port: rf3_in_a3_19
+- kind: transport
+  start: 85
+  end: 85
+  from_spot: reformatter.rf_link
+  to_spot: reformatter.rf_link
+  arc:
+    from:
+      node:
+      - Reformatter20
+      port: rf20_out_rf3
+    to:
+      node:
+      - Reformatter3
+      port: rf3_in_rf20
 - kind: processing
   start: 85
   end: 88

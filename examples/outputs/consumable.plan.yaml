@@ -17,15 +17,15 @@ activities:
   start: 0
   end: 3
   process: make_plate
-  mode: slot_b
+  mode: slot_a
   node:
   - MakeB
   devices:
   - bench
   output_spots:
-    plate: bench.slot_b
+    plate: bench.slot_a
 - kind: replenishment
-  id: replenishment_0
+  id: replenishment_1
   start: 0
   end: 4
   device: reader
@@ -35,7 +35,7 @@ activities:
 - kind: transport
   start: 4
   end: 6
-  from_spot: bench.slot_b
+  from_spot: bench.slot_a
   to_spot: reader.stage
   transporter: arm
   arc:
@@ -51,13 +51,13 @@ activities:
   start: 6
   end: 9
   process: make_plate
-  mode: slot_b
+  mode: slot_a
   node:
   - MakeA
   devices:
   - bench
   output_spots:
-    plate: bench.slot_b
+    plate: bench.slot_a
 - kind: processing
   start: 6
   end: 16
@@ -102,7 +102,7 @@ activities:
 - kind: transport
   start: 18
   end: 20
-  from_spot: bench.slot_b
+  from_spot: bench.slot_a
   to_spot: reader.stage
   transporter: arm
   arc:

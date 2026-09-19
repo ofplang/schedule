@@ -24,31 +24,31 @@ objective:
   - 33
   - 1
 activities:
-- kind: processing
-  job: job1
-  start: 0
-  end: 3
-  process: make_plate
-  mode: slot_b
-  node:
-  - Make
-  devices:
-  - bench
-  output_spots:
-    plate: bench.slot_b
 - kind: replenishment
-  id: replenishment_0
+  id: replenishment_1
   start: 0
   end: 4
   device: reader
   replenisher: dispenser
   amounts:
     reagent: 4
+- kind: processing
+  job: job1
+  start: 1
+  end: 4
+  process: make_plate
+  mode: slot_a
+  node:
+  - Make
+  devices:
+  - bench
+  output_spots:
+    plate: bench.slot_a
 - kind: transport
   job: job1
   start: 4
   end: 6
-  from_spot: bench.slot_b
+  from_spot: bench.slot_a
   to_spot: reader.stage
   transporter: arm
   arc:
@@ -65,13 +65,13 @@ activities:
   start: 6
   end: 9
   process: make_plate
-  mode: slot_b
+  mode: slot_a
   node:
   - Make
   devices:
   - bench
   output_spots:
-    plate: bench.slot_b
+    plate: bench.slot_a
 - kind: processing
   job: job1
   start: 6
@@ -120,7 +120,7 @@ activities:
   job: job2
   start: 18
   end: 20
-  from_spot: bench.slot_b
+  from_spot: bench.slot_a
   to_spot: reader.stage
   transporter: arm
   arc:

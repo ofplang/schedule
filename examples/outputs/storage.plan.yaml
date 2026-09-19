@@ -11,7 +11,7 @@ activities:
   process: prep
   mode: bench_1
   node:
-  - PrepC
+  - PrepA
   devices:
   - prep
   output_spots:
@@ -25,40 +25,15 @@ activities:
   arc:
     from:
       node:
-      - PrepC
+      - PrepA
       port: plate
     to:
       node:
-      - ChillC
+      - ChillA
       port: plate
 - kind: processing
   start: 30
   end: 50
-  process: prep
-  mode: bench_2
-  node:
-  - PrepA
-  devices:
-  - prep
-  output_spots:
-    plate: prep.bench_2
-- kind: processing
-  start: 30
-  end: 210
-  process: chill
-  mode: slot_1
-  node:
-  - ChillC
-  devices:
-  - fridge
-  device_access: false
-  input_spots:
-    plate: fridge.slot_1
-  output_spots:
-    out: fridge.slot_1
-- kind: processing
-  start: 160
-  end: 180
   process: prep
   mode: bench_1
   node:
@@ -67,9 +42,23 @@ activities:
   - prep
   output_spots:
     plate: prep.bench_1
+- kind: processing
+  start: 30
+  end: 210
+  process: chill
+  mode: slot_1
+  node:
+  - ChillA
+  devices:
+  - fridge
+  device_access: false
+  input_spots:
+    plate: fridge.slot_1
+  output_spots:
+    out: fridge.slot_1
 - kind: transport
-  start: 180
-  end: 190
+  start: 50
+  end: 60
   from_spot: prep.bench_1
   to_spot: fridge.slot_2
   transporter: arm
@@ -83,8 +72,19 @@ activities:
       - ChillB
       port: plate
 - kind: processing
-  start: 190
-  end: 370
+  start: 60
+  end: 80
+  process: prep
+  mode: bench_1
+  node:
+  - PrepC
+  devices:
+  - prep
+  output_spots:
+    plate: prep.bench_1
+- kind: processing
+  start: 60
+  end: 240
   process: chill
   mode: slot_2
   node:
@@ -105,26 +105,26 @@ activities:
   arc:
     from:
       node:
-      - ChillC
+      - ChillA
       port: out
     to:
       node:
-      - ReadC
+      - ReadA
       port: plate
 - kind: transport
   start: 220
   end: 230
-  from_spot: prep.bench_2
+  from_spot: prep.bench_1
   to_spot: fridge.slot_1
   transporter: arm
   arc:
     from:
       node:
-      - PrepA
+      - PrepC
       port: plate
     to:
       node:
-      - ChillA
+      - ChillC
       port: plate
 - kind: processing
   start: 220
@@ -132,7 +132,7 @@ activities:
   process: measure
   mode: '0'
   node:
-  - ReadC
+  - ReadA
   devices:
   - reader
   input_spots:
@@ -143,7 +143,7 @@ activities:
   process: chill
   mode: slot_1
   node:
-  - ChillA
+  - ChillC
   devices:
   - fridge
   device_access: false
@@ -152,8 +152,8 @@ activities:
   output_spots:
     out: fridge.slot_1
 - kind: transport
-  start: 370
-  end: 380
+  start: 250
+  end: 260
   from_spot: fridge.slot_2
   to_spot: reader.stage
   transporter: arm
@@ -167,8 +167,8 @@ activities:
       - ReadB
       port: plate
 - kind: processing
-  start: 380
-  end: 410
+  start: 260
+  end: 290
   process: measure
   mode: '0'
   node:
@@ -186,11 +186,11 @@ activities:
   arc:
     from:
       node:
-      - ChillA
+      - ChillC
       port: out
     to:
       node:
-      - ReadA
+      - ReadC
       port: plate
 - kind: processing
   start: 420
@@ -198,7 +198,7 @@ activities:
   process: measure
   mode: '0'
   node:
-  - ReadA
+  - ReadC
   devices:
   - reader
   input_spots:
