@@ -164,11 +164,19 @@ Under v0's single-workflow rule a `failed` activity ends everything. Here it sto
 `job2` alone: its unfinished work comes back `cancelled` at a zero-length interval, so
 it holds no machine, and the other two are replanned around it.
 
-**Delete the `occupied` section and see what happens.** The plan comes back at makespan
-**38** instead of **57** — because it bakes `job3`'s plate on `tray_1`, where `job2`'s
-plate is still sitting. The failed bake's interval has *ended*, so nothing else in the
-document says that tray is taken. The nineteen seconds are what the truth costs, and
-the shorter plan is the one that cannot be run.
+**There is no `occupied` section to delete, and that is the point.** The hold on
+`oven.tray_1` is *derived* from `job2`'s history rather than declared: the failed
+bake's interval has ended, so nothing in the document states that the tray is taken,
+and the scheduler works it out (`derived_holds`, SPEC §6.12). Writing it down as well
+would be the same claim twice and come back `occupied_already_derived` — the document
+says so itself, above.
+
+Measured, this example prices at **57** either way: drop `job2`'s activities and it is
+still 57, because with the history `job2` is stopped and only two plates need baking on
+the one free tray, while without it three plates share two trays — two waves of twenty
+seconds in both readings. The hold is what makes the *plan runnable*, not what makes it
+longer, and this example is where to look at how one is derived rather than what one
+costs.
 
 - `outputs/stopped_job.plan.yaml` (makespan 57) and `outputs/stopped_job.device.svg`.
 
