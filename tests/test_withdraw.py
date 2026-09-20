@@ -366,7 +366,11 @@ def test_an_unbound_final_output_stays_where_the_schedule_left_it():
         withdraw=["job1"], random_seed=0,
     )
     assert not blocked.ok
-    assert "infeasible" in _codes(blocked)
+    # Named rather than merely refused. Both holds outlive the run -- the frozen
+    # spot to the horizon (§6.12) and job3's output to the makespan (§6.8) -- so
+    # the clash needs no solving to see, and `mobility` says so before the solve
+    # instead of leaving the caller the solver's bare `infeasible`.
+    assert "objects_deadlocked" in _codes(blocked)
     # 🔴 The report survives the failure. A frozen spot can be *why* nothing can be
     # planned, and that is the case the caller most needs the account for.
     assert any(d.code == "job_withdrawn" for d in blocked.diagnostics)
@@ -378,7 +382,7 @@ def test_an_unbound_final_output_stays_where_the_schedule_left_it():
         _jobs(workflow, "job1", "job2", "job3"), env, document_path=contested, random_seed=0
     )
     assert not kept.ok
-    assert "infeasible" in _codes(kept)
+    assert "objects_deadlocked" in _codes(kept)
 
 
 def test_a_bound_final_output_is_taken_at_its_word():

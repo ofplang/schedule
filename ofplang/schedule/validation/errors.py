@@ -106,6 +106,11 @@ ARC_UNREACHABLE = "arc_unreachable"
 # More finished products than places for them to sit in until the run is over. A
 # counting argument, so it is settled before any solve rather than left to one.
 FINAL_OUTPUTS_CROWDED = "final_outputs_crowded"
+# The Objects cannot all be got to the end: every order of the work reaches a
+# state where each remaining move is into a place something else is standing in.
+# A blocking deadlock, settled before any solve for the same reason as the count
+# above -- the solver can only spend its budget and return `unknown`.
+OBJECTS_DEADLOCKED = "objects_deadlocked"
 INFEASIBLE = "infeasible"
 
 # Consumable resources (§4.7, §6.10, §9.3). The model is in effect when some mode

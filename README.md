@@ -220,6 +220,31 @@ activity, as always. `stats.model` carries both sides of the count — the modes
 routes the laboratory offers, and the `encoded_` ones the model was given — so the
 difference is visible.
 
+## Some plans are impossible, and that is said before the search
+
+Material is always somewhere. It rests in the bay it was made in until a move
+takes it away, a move needs its destination empty before it sets off, and two
+things never share a bay. A laboratory with few enough bays can therefore reach a
+state where every remaining move is into a bay something else is standing in, and
+then **no schedule exists** — not a slow one, not a bad one, none.
+
+The solver cannot tell you that. It searches a bounded model and runs out of
+budget, so what comes back is `unknown`, which is a fact about the budget rather
+than about your laboratory. So the question is settled first, by walking the work
+with the clock taken away: if there is no order that gets every Object to the end
+even when nothing takes any time, there is none when things do. The plan is
+refused as `objects_deadlocked`, naming the bays that were full, and the solve is
+not run.
+
+On the RNA-seq case study's minimal laboratory at two jobs — one Tecan bay, one
+PCR bay, and a protocol that alternates between them thirteen times — the solver
+spent two minutes proving nothing. The walk settles it in about ten milliseconds.
+
+**Silence is not a promise.** It says the Objects can be got to the end, not that
+a schedule exists: nothing in the walk is weighed against a duration, a machine, a
+transporter or a promised completion. Silence is also the answer when the walk is
+too large to finish, so a plan is never refused on a partial search.
+
 ## The first schedule is built, not searched for
 
 Before the model reaches CP-SAT the scheduler **constructs a complete schedule by

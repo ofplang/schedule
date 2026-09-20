@@ -412,6 +412,21 @@ counting argument, settled before the model is built rather than by it
 (`final_outputs_crowded`, SPEC §10.4) -- the alternative being to hand the solver
 an instance nobody can satisfy and wait.
 
+**And a resting place is not the only way to run out of room.** The same occupancy
+rules make a plan impossible whenever the Objects cannot all be got to the end at
+all: material is always in some spot, a move needs its destination empty from the
+moment it sets off, and there is no swap, so a laboratory with few enough places
+can reach a state in which every remaining move is into a place something else is
+standing in. That too is settled before the model is built (`objects_deadlocked`,
+SPEC §10.4), by walking the placements and moves with time erased -- a relaxation,
+since dropping the clock, the devices, the transporters and the durations only ever
+takes constraints away, so a walk that never reaches the end proves no schedule
+does either. **The converse does not hold**: a walk that reaches the end says the
+Objects can be moved, not that the model is feasible. `final_outputs_crowded` is
+the special case of this where the places that never free up are the finished
+products' alone; it is kept because it is cheaper and names the remedy more
+precisely.
+
 ### 4. Transport route selection
 
 Exactly one feasible route (source mode, destination mode, transporter) is chosen

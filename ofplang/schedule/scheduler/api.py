@@ -36,6 +36,7 @@ from ofplang.schedule.scheduler.instance import (
     report_crowded_outputs,
     report_unreachable,
 )
+from ofplang.schedule.scheduler.mobility import report_deadlocked_objects
 from ofplang.schedule.scheduler.model import JobSpec, Workflow
 from ofplang.schedule.scheduler.normalize import normalize
 from ofplang.schedule.scheduler.plan import render_plan
@@ -1568,6 +1569,19 @@ def _run(
                 severity=WARNING,
             )
         )
+
+    # Whether the Objects can be got to the end at all (`mobility`). The same kind
+    # of statement as the two checks above -- true of the instance whatever the
+    # durations are, and one the solver cannot make, since it can only spend its
+    # budget and return `unknown` -- but made **here**, after the withdrawal note,
+    # and that placement is deliberate: a frozen spot can be precisely why nothing
+    # can be planned, so a refusal that returned before the note would take the
+    # account of the withdrawal with it in the one case it is needed.
+    mobility = Diagnostics()
+    report_deadlocked_objects(instance, mobility)
+    diagnostics += mobility.items
+    if _has_error(mobility.items):
+        return ScheduleReport(None, None, None, diagnostics)
 
     # 4. Solve, then 5. render the plan (only when feasible). One pass unless a
     # promised bound can no longer be kept (`_solve_within_bounds`).
