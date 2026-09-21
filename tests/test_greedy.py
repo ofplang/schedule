@@ -86,8 +86,17 @@ def _intervals(instance: Instance, solution: Solution):
     return claims
 
 
-def _violations(instance: Instance, solution: Solution) -> list[str]:
-    """Everything wrong with the schedule, named. Empty means it is one."""
+def _violations(
+    instance: Instance, solution: Solution, fixation: Fixation | None = None
+) -> list[str]:
+    """Everything wrong with the schedule, named. Empty means it is one.
+
+    `fixation` is what a replan reported as already done. It is needed because
+    **a fixed activity's length is not its mode's duration**: the model gives its
+    interval a free size (`cpsat`, the `psz` variable) so that something which
+    overran holds its resources for as long as it really took. Every other rule
+    applies to it exactly as it does to pending work.
+    """
     wrong: list[str] = []
     by_activity = {p.activity: p for p in solution.processing}
     if len(by_activity) != len(instance.activities):
@@ -106,7 +115,8 @@ def _violations(instance: Instance, solution: Solution) -> list[str]:
         # A boundary node's length is not its mode's duration: an input node takes
         # no time and an output node runs to the makespan (§Activities, §8).
         kind = None if act.boundary is None else act.boundary.kind
-        if kind is None:
+        reported = (fixation.activities if fixation is not None else {}).get(placement.activity)
+        if kind is None and reported is None:
             if placement.end != placement.start + placement.mode.duration:
                 wrong.append(f"{placement.node}: end is not start plus the mode's duration")
         elif kind == "input":
@@ -148,7 +158,11 @@ def _violations(instance: Instance, solution: Solution) -> list[str]:
             wrong.append(f"arc{index}: route's source mode is not the source's chosen mode")
         if instance.activities[arc.dst_activity].modes[option.dst_mode_index] != target.mode:
             wrong.append(f"arc{index}: route's destination mode is not the destination's")
-        if move.end != move.start + option.duration:
+        # A fixed move's length is free for the same reason a fixed activity's is
+        # (`cpsat`, the `tbsz` variable): a move that overran held its arm and
+        # both machines for as long as it really took.
+        told = (fixation.arcs if fixation is not None else {}).get(index)
+        if told is None and move.end != move.start + option.duration:
             wrong.append(f"arc{index}: end is not start plus the route's duration")
         if move.start < source.end:
             wrong.append(f"arc{index}: sets off before the source activity ends")
@@ -624,10 +638,14 @@ def test_an_occupied_spot_is_declined():
     assert construct(instance) is None
 
 
-def test_a_replan_is_declined():
+def test_cancelled_work_is_declined():
+    # Work a stopped job abandoned is pinned to the instant that job stopped,
+    # and that instant is derived from every *other* activity of the job
+    # (`cpsat.stopped_at`). Nothing in the corpus has any, so the rule is not
+    # re-derived here on no evidence.
     instance = _in_scope()
-    fixation = Fixation(now=5, activities={0: ActivityFixation("completed", 0, 1, 0)}, arcs={})
-    assert _refuse(instance, fixation, ()) == "fixation"
+    fixation = Fixation(now=5, activities={0: ActivityFixation("cancelled", 0, 0, 0)}, arcs={})
+    assert _refuse(instance, fixation, ()) == "cancelled"
     assert construct(instance, fixation=fixation) is None
 
 
@@ -657,7 +675,7 @@ def test_every_listed_refusal_has_a_test_above():
         "running refill",
         "relay",
         "held",
-        "fixation",
+        "cancelled",
         "bound",
     }
     assert set(REFUSALS) == covered
@@ -777,3 +795,102 @@ def test_a_stock_is_ignored_when_the_document_states_no_level():
     built = construct(instance, fixation=_stocked({}))
     assert built is not None
     assert _violations(instance, built) == []
+
+
+# ---------------------------------------------------------------------------
+# Replanning.
+#
+# What already ran is history: its mode, its route and its times are given, and
+# the pass starts from them rather than choosing them. Everything still to do
+# waits until `now` -- except the entry material, which is a fact about the
+# world and is pinned at its job's release however late `now` is.
+# ---------------------------------------------------------------------------
+
+
+def _two_steps() -> Instance:
+    """`first` on one machine, then `second` on another, with a move between."""
+    activities = (
+        ActivityInstance(("first",), "work", (Mode("m", ("a",), 4, {}, {"o": "a.bay"}),)),
+        ActivityInstance(("second",), "work", (Mode("m", ("b",), 6, {"i": "b.bay"}, {}),)),
+    )
+    arcs = (
+        ArcInstance(
+            Arc(Endpoint(("first",), "o"), Endpoint(("second",), "i")),
+            0,
+            1,
+            (TransportOption(0, 0, "arm", "a.bay", "b.bay", 1),),
+        ),
+    )
+    return Instance(_ENV, "second", activities, arcs, ())
+
+
+def test_what_already_ran_keeps_the_times_it_reported():
+    instance = _two_steps()
+    fixation = Fixation(
+        now=20,
+        activities={0: ActivityFixation("completed", 3, 7, 0)},
+        arcs={},
+    )
+    built = construct(instance, fixation=fixation)
+    assert built is not None
+    assert _violations(instance, built, fixation) == []
+    done = next(p for p in built.processing if p.activity == 0)
+    assert (done.start, done.end) == (3, 7)
+
+
+def test_what_is_left_waits_until_now():
+    instance = _two_steps()
+    fixation = Fixation(
+        now=20, activities={0: ActivityFixation("completed", 3, 7, 0)}, arcs={}
+    )
+    built = construct(instance, fixation=fixation)
+    assert built is not None
+    assert _violations(instance, built, fixation) == []
+    # The move and the activity that receives it are both still to do, so
+    # neither may set off before `now` even though the material was ready at 7.
+    assert built.transport[0].start >= 20
+    assert next(p for p in built.processing if p.activity == 1).start >= 20
+
+
+def test_a_running_activity_holds_its_machine_until_now_plus_the_margin():
+    # 🔴 An overrun must not be fixed to a finish in the past (FORMULATION §9).
+    # The reported end is 10 and `now` is 20, so it is still going at 20 and
+    # holds its machine to 20 + margin -- and what follows waits for that, not
+    # for the 10 it claimed.
+    instance = _two_steps()
+    fixation = Fixation(
+        now=20, activities={0: ActivityFixation("running", 3, 10, 0)}, arcs={}
+    )
+    built = construct(instance, fixation=fixation, running_task_margin=5)
+    assert built is not None
+    assert _violations(instance, built, fixation) == []
+    running = next(p for p in built.processing if p.activity == 0)
+    assert (running.start, running.end) == (3, 25)
+    assert built.transport[0].start >= 25
+
+
+def test_a_replan_that_reports_a_mode_the_activity_lacks_is_refused():
+    instance = _two_steps()
+    fixation = Fixation(
+        now=5, activities={0: ActivityFixation("completed", 0, 4, 7)}, arcs={}
+    )
+    assert construct(instance, fixation=fixation) is None
+
+
+def test_a_history_that_contradicts_itself_about_a_machine_is_refused():
+    # Two completed activities on one machine at the same time is not something
+    # to arrange around; it is a report that cannot be true.
+    activities = (
+        ActivityInstance(("one",), "work", (Mode("m", ("a",), 4, {}, {"o": "a.bay1"}),)),
+        ActivityInstance(("two",), "work", (Mode("m", ("a",), 4, {}, {"o": "a.bay2"}),)),
+    )
+    instance = Instance(_ENV, "second", activities, (), ())
+    fixation = Fixation(
+        now=20,
+        activities={
+            0: ActivityFixation("completed", 0, 10, 0),
+            1: ActivityFixation("completed", 5, 15, 0),
+        },
+        arcs={},
+    )
+    assert construct(instance, fixation=fixation) is None

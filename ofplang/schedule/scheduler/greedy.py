@@ -58,7 +58,7 @@ REFUSALS = {
     "running refill": "a refill already under way is history this does not carry",
     "relay": "a transport junction is a chain whose legs share one arc",
     "held": "an occupied spot is held to the horizon, which is not a duration",
-    "fixation": "a replan has activities already placed, which is a different problem",
+    "cancelled": "work a stopped job abandoned is placed at an instant this does not derive",
     "bound": "a promised completion has to be measured the way the model measures it",
 }
 
@@ -200,6 +200,10 @@ def _refuse(instance: Instance, fixation: Fixation | None, jobs: tuple) -> str |
     at its end, and neither changes which spot anything occupies, so the pass runs
     as it always did and the levels are settled afterwards (`_stock_plan`).
 
+    A replan is in scope too: what has run is put on the board before the pass
+    starts, at the times and in the modes reported, and everything still to do is
+    held at `now` (`_history`).
+
     A joint plan is in scope while no job carries a promised completion. The
     release is easy -- it is a floor on when a job's work may start, and a forward
     pass has a floor already -- but the promise is a cap on $C_j$, and $C_j$ is
@@ -217,14 +221,76 @@ def _refuse(instance: Instance, fixation: Fixation | None, jobs: tuple) -> str |
         # yet carry (`cpsat._add_resources`). Nothing in the corpus has one, so
         # rather than carry history this has never seen, it is declined.
         return "running refill"
-    if fixation is not None and (fixation.activities or fixation.arcs):
-        return "fixation"
+    if fixation is not None and (
+        any(fx.status == "cancelled" for fx in fixation.activities.values())
+        or any(fr.status == "cancelled" for fr in fixation.arcs.values())
+    ):
+        # Cancelled work is pinned to the instant its job stopped, which is
+        # derived from every *other* activity of that job (`cpsat.stopped_at`).
+        # Nothing in the corpus has any, so rather than re-derive a rule this has
+        # never been measured against, it is declined.
+        return "cancelled"
     for act in instance.activities:
         if act.relay is not None:
             return "relay"
         if act.boundary is not None and act.boundary.kind == "held":
             return "held"
     return None
+
+
+@dataclass(frozen=True)
+class _History:
+    """What a replan reports as already done, with its times resolved.
+
+    Keyed the way the pass is keyed -- activity index and arc index -- and
+    carrying the mode and route the report named, because a replan does not get
+    to choose them again (SPEC §9.3).
+    """
+
+    # activity -> (mode index, start, end)
+    activities: dict[int, tuple[int, int, int]]
+    # arc -> (option index, start, end)
+    arcs: dict[int, tuple[int, int, int]]
+
+
+def _history(
+    instance: Instance, fixation: Fixation | None, margin: int
+) -> _History | None:
+    """Read the fixation into resolved times, or None if it names something this
+    cannot place.
+
+    **A running activity's end is clamped up to `now + margin`** (FORMULATION §9):
+    an overrun must not be fixed to a finish in the past, and the resources it
+    holds have to be held for as long as it is really going to take. A completed
+    one keeps the end it reported.
+    """
+    if fixation is None:
+        return _History({}, {})
+    now = fixation.now
+    activities: dict[int, tuple[int, int, int]] = {}
+    for index, fx in fixation.activities.items():
+        if index >= len(instance.activities):
+            return None  # the fixation does not match this instance
+        if fx.mode_index >= len(instance.activities[index].modes):
+            return None
+        activities[index] = (fx.mode_index, fx.start, _fixed_end(fx, now, margin))
+    arcs: dict[int, tuple[int, int, int]] = {}
+    for index, fr in fixation.arcs.items():
+        if index >= len(instance.arcs):
+            return None
+        if fr.option_index >= len(instance.arcs[index].options):
+            return None
+        arcs[index] = (fr.option_index, fr.start, _fixed_end(fr, now, margin))
+    return _History(activities, arcs)
+
+
+def _fixed_end(fix, now: int, margin: int) -> int:
+    """The pinned end of something already under way. Mirrors `cpsat._fixed_end`;
+    the two have to agree, or the plan a replan returns disagrees with the model
+    that would have checked it."""
+    if fix.status == "running":
+        return max(fix.end, now + margin)
+    return fix.end
 
 
 def _floors(instance: Instance, jobs: tuple[JobSpec, ...]) -> dict[int, int]:
@@ -615,6 +681,7 @@ def construct(
     fixation: Fixation | None = None,
     jobs: tuple[JobSpec, ...] = (),
     objective: tuple[str, ...] | None = None,
+    running_task_margin: int = 0,
 ) -> Solution | None:
     """The best schedule a few forward passes find, or `None` when the instance
     is out of scope (`REFUSALS`) or no pass came out. The signature is
@@ -623,13 +690,30 @@ def construct(
     if _refuse(instance, fixation, jobs) is not None:
         return None
     floors = _floors(instance, jobs)
+    # Nothing pending may start before `now` (FORMULATION §9). A fixed activity is
+    # history and is *not* held back: a release or a `now` that contradicted what
+    # already ran would make the past infeasible rather than say anything about
+    # what is left.
+    now = fixation.now if fixation is not None else 0
+    history = _history(instance, fixation, running_task_margin)
+    if history is None:
+        return None
+    for index, act in enumerate(instance.activities):
+        if index in history.activities:
+            continue
+        if act.boundary is not None and act.boundary.kind == "input":
+            # Entry material is a fact about the world, pinned at its job's
+            # release. `now` says nothing about it -- and holding it back would
+            # contradict the move that has already carried it away.
+            continue
+        floors[index] = max(floors.get(index, 0), now)
     levels = dict(fixation.levels) if fixation is not None else {}
     # Reserved machine time for refills the stocks turned out to need. Empty on
     # the first round, and grown by a window each time a schedule came out whose
     # stocks could not be made to last (`_reservation_for`).
     reserved: tuple[tuple[str, int, int], ...] = ()
     for _round in range(_REFILL_ROUNDS):
-        best = _build(instance, fixation, jobs, floors, reserved)
+        best = _build(instance, jobs, floors, reserved, history, now)
         if best is None or not levels:
             return best
         stocked, wanted = _stock_plan(instance, fixation, best)
@@ -646,15 +730,16 @@ def construct(
 
 def _build(
     instance: Instance,
-    fixation: Fixation | None,
     jobs: tuple[JobSpec, ...],
     floors: dict[int, int],
     reserved: tuple[tuple[str, int, int], ...],
+    history: _History,
+    now: int,
 ) -> Solution | None:
     """The best schedule the passes find, ignoring the stocks entirely."""
     best: Solution | None = None
     for rule in _RULES:
-        found = _pass(instance, rule, floors, reserved)
+        found = _pass(instance, rule, floors, reserved, history, now)
         if found is None:
             continue
         if best is None or (found.makespan or 0) < (best.makespan or 0):
@@ -664,9 +749,8 @@ def _build(
         # schedules the rules above find when they find one, so it is a last
         # resort and not a fourth opinion -- and leaving it out of the ordinary
         # path is also what keeps every instance that already works unchanged.
-        best = _pass(instance, _JobByJob(instance, jobs), floors, reserved)
-    if best is None:
-        # 🔴 **The end of the line, and the only part of this that backtracks.**
+        best = _pass(instance, _JobByJob(instance, jobs), floors, reserved, history, now)
+    # 🔴 **The end of the line, and the only part of this that backtracks.**
         # A forward pass fails on a shape no ordering of the ready set can undo:
         # the contended spots fill, every Object's next spot is the one another
         # Object is standing in, and nothing can move (measured on
@@ -681,6 +765,14 @@ def _build(
         # It runs only here, so every instance that already worked is untouched,
         # and the walk's cost is paid only by instances that would otherwise
         # have got nothing at all.
+    #
+    # ⚠ It is narrower than the passes above it, deliberately. The walk has no
+    # clock, so it cannot honour times that are already settled; replaying its
+    # order over a board that is part history would put the history somewhere it
+    # did not happen. A replan that defeats the forward passes therefore gets
+    # nothing -- which is what it got before replanning was in scope at all, so
+    # nothing regresses.
+    if best is None and not history.activities and not history.arcs:
         order = mobility.find_order(instance)
         if order is not None:
             best = _replay(instance, order, floors)
@@ -1129,6 +1221,8 @@ def _pass(
     rule,
     floors: dict[int, int],
     reserved: tuple[tuple[str, int, int], ...] = (),
+    history: _History | None = None,
+    now: int = 0,
 ) -> Solution | None:
     """One forward pass under one priority rule.
 
@@ -1148,6 +1242,7 @@ def _pass(
     # stocks need and the pass has to leave room for (`construct`).
     for device, held_from, held_to in reserved:
         board.device(device).take(held_from, held_to)
+    past = history or _History({}, {})
     pressure = _pressure(instance)
     leaving, arriving = _edges(instance)
     counts, orders = _waiting(instance)
@@ -1164,7 +1259,18 @@ def _pass(
     # that is not known until everything else is placed.
     outputs: list[int] = []
 
-    ready = sorted((i for i, count in counts.items() if count == 0), reverse=True)
+    # What already ran goes on the board before anything is chosen, at the times
+    # and in the modes reported. Everything after this point is the ordinary
+    # forward pass, arranging what is left around it.
+    if not _lay_out_history(
+        instance, past, now, board, placed, moves, settled, resting, counts, orders, floor,
+        leaving, outputs,
+    ):
+        return None
+
+    ready = sorted(
+        (i for i, count in counts.items() if count == 0 and i not in placed), reverse=True
+    )
     while ready or resting:
         moved = _send_what_can_go(
             instance, board, placed, moves, settled, resting, counts, ready, pressure
@@ -1271,6 +1377,116 @@ def _pass(
     if any(line.pending is not None for line in board.spots.values()):
         return None  # material left resting with nothing to take it away
     return _assemble(instance, placed, moves, makespan)
+
+
+def _place_entry(
+    instance: Instance,
+    board: _Board,
+    index: int,
+    floor: dict[int, int],
+    placed: dict[int, _Placement],
+    settled: dict[int, int],
+) -> _Placement | None:
+    """Put an entry boundary node down, for a history that has already moved its
+    material away.
+
+    A fixation never mentions one: it is not work, so there is nothing to report
+    about it, and yet the move that collected its material is reported. So when a
+    fixed move names a source nothing has placed, the source is the entry -- and
+    anything else is a report this cannot make sense of.
+    """
+    act = instance.activities[index]
+    if act.boundary is None or act.boundary.kind != "input":
+        return None
+    at = floor.get(index, 0)
+    for spot in _spots_of(act.modes[0]):
+        if not board.spot(spot).free(at, 0):
+            return None
+        board.spot(spot).take(at, at)
+    placed[index] = _Placement(index, 0, at, at)
+    settled[index] = 0
+    return placed[index]
+
+
+def _lay_out_history(
+    instance: Instance,
+    past: _History,
+    now: int,
+    board: _Board,
+    placed: dict[int, _Placement],
+    moves: dict[int, _Move],
+    settled: dict[int, int],
+    resting: dict[int, int],
+    counts: dict[int, int],
+    orders: dict[int, list[int]],
+    floor: dict[int, int],
+    leaving: dict[int, list[int]],
+    outputs: list[int],
+) -> bool:
+    """Put the reported history on the board, or say it cannot be put there.
+
+    Activities first, then the moves, because a move's source spot is held from
+    the moment its source activity finished -- which has to be known before the
+    hold can be taken.
+    """
+    for index, (mode_index, start, end) in sorted(past.activities.items()):
+        act = instance.activities[index]
+        mode = act.modes[mode_index]
+        for spot in _spots_of(mode):
+            if not board.spot(spot).free(start, end - start):
+                return False  # the report contradicts itself about a spot
+            board.spot(spot).take(start, end)
+        if mode.device_access:
+            for device in mode.devices:
+                if not board.device(device).free(start, end - start):
+                    return False
+                board.device(device).take(start, end)
+        placed[index] = _Placement(index, mode_index, start, end)
+        settled[index] = mode_index
+        if act.boundary is not None and act.boundary.kind == "output":
+            outputs.append(index)
+        for target in orders[index]:
+            floor[target] = max(floor[target], end)
+            counts[target] -= 1
+
+    for index, (option_index, start, end) in sorted(past.arcs.items()):
+        arc = instance.arcs[index]
+        option = arc.options[option_index]
+        source = placed.get(arc.src_activity)
+        if source is None:
+            source = _place_entry(instance, board, arc.src_activity, floor, placed, settled)
+        if source is None:
+            return False  # a move that ran before the work that produced it
+        if option.from_spot != option.to_spot:
+            if option.transporter is not None:
+                board.transporter(option.transporter).take(start, end)
+            for device in _devices_of(option):
+                board.device(device).take(start, end)
+        # The source spot was the material's from when it was made until the move
+        # completed; the destination is its from the moment the move set off, and
+        # stays so until whatever receives it starts (FORMULATION §7).
+        board.spot(option.from_spot).take(source.end, end)
+        arrival = placed.get(arc.dst_activity)
+        if arrival is None:
+            board.spot(option.to_spot).hold(start)
+        else:
+            board.spot(option.to_spot).take(start, arrival.start)
+        moves[index] = _Move(index, option_index, option, start, end)
+        settled[arc.dst_activity] = option.dst_mode_index
+        counts[arc.dst_activity] -= 1
+
+    # Whatever the history left resting with no move yet reported waits where it
+    # was made, and its departure cannot set off before `now`.
+    for index, placement in placed.items():
+        for arc_index in leaving[index]:
+            if arc_index in moves:
+                continue
+            resting[arc_index] = max(placement.end, now)
+            for option in instance.arcs[arc_index].options:
+                if option.src_mode_index == placement.mode_index:
+                    board.spot(option.from_spot).hold(placement.end)
+                    break
+    return True
 
 
 def _send_what_can_go(

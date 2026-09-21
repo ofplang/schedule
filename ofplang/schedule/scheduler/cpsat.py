@@ -618,7 +618,11 @@ def solve(
     # none of them hinted, while hinting the times alone closes the widest
     # synthetic instance at optimal with zero branches; report §29.6).
     constructed = greedy.construct(
-        instance, fixation=fixation, jobs=jobs, objective=objective
+        instance,
+        fixation=fixation,
+        jobs=jobs,
+        objective=objective,
+        running_task_margin=running_task_margin,
     )
     if constructed is not None:
         for placement in constructed.processing:
