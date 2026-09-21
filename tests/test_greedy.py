@@ -30,9 +30,16 @@ from ofplang.schedule.scheduler.instance import (
     TransportOption,
     build_instance,
 )
-from ofplang.schedule.scheduler.model import Arc, Endpoint, Environment, JobSpec, Mode
+from ofplang.schedule.scheduler.model import (
+    Arc,
+    Device,
+    Endpoint,
+    Environment,
+    JobSpec,
+    Mode,
+)
 from ofplang.schedule.scheduler.result import Solution
-from ofplang.schedule.scheduler.status import ActivityFixation, Fixation
+from ofplang.schedule.scheduler.status import ActivityFixation, Fixation, RefillFixation
 from ofplang.schedule.scheduler.workflow import parse_workflow
 from tests.schedutil import self_contained_examples
 
@@ -211,16 +218,17 @@ def test_a_reformatter_chain_is_scheduled():
 
 
 @pytest.mark.parametrize("name", ["consumable", "storage"])
-def test_the_shapes_outside_the_scope_are_refused_rather_than_guessed(name):
-    # `consumable` draws stock and needs refills; `storage` is in scope, so this
-    # asserts the refusal is about the stock and not about the example.
+def test_a_stock_no_document_puts_a_number_to_constrains_nothing(name):
+    # Both of these build. `consumable` draws on a stock, but an instance with no
+    # execution document states no `inventories.levels`, and the model builds no
+    # reservoir without them (`cpsat._add_resources` returns at once) -- so there
+    # is nothing here for the greedy to respect either. Inventing a constraint the
+    # model does not have would be the error.
     instance = _instance(name)
     solution = construct(instance)
-    if name == "consumable":
-        assert solution is None
-    else:
-        assert solution is not None
-        assert _violations(instance, solution) == []
+    assert solution is not None
+    assert _violations(instance, solution) == []
+    assert solution.replenishment == ()
 
 
 def test_a_held_spot_is_refused_where_an_output_node_is_not():
@@ -576,26 +584,25 @@ def test_the_smallest_instance_is_in_scope():
     assert _violations(instance, built) == []
 
 
-def test_a_refill_is_declined():
-    instance = replace(
-        _in_scope(),
-        replenishments=(
-            RefillCandidate("r0", "lab", 0, (RefillOption("hand", 1),), ("lab.stock",)),
-        ),
+def test_a_running_refill_is_declined():
+    # A refill already under way is a fixed future increase the levels at `now`
+    # do not yet carry. Nothing in the corpus has one, so rather than carry
+    # history this has never seen, it is declined.
+    instance = _in_scope()
+    fixation = Fixation(
+        now=5,
+        activities={},
+        arcs={},
+        levels={("lab", "stock"): 1},
+        replenishments={
+            "r0": RefillFixation(
+                status="running", start=0, end=9,
+                device="lab", replenisher="hand", amounts={"stock": 4},
+            )
+        },
     )
-    assert _refuse(instance, None, ()) == "replenishment"
-    assert construct(instance) is None
-
-
-def test_a_stock_draw_is_declined():
-    base = _in_scope()
-    drawing = replace(
-        base.activities[0],
-        modes=(Mode("m", ("lab",), 1, {}, {"o": "lab.a"}, consumption={"lab.stock": 1}),),
-    )
-    instance = replace(base, activities=(drawing,))
-    assert _refuse(instance, None, ()) == "consumption"
-    assert construct(instance) is None
+    assert _refuse(instance, fixation, ()) == "running refill"
+    assert construct(instance, fixation=fixation) is None
 
 
 def test_a_transport_junction_is_declined():
@@ -647,11 +654,126 @@ def test_every_listed_refusal_has_a_test_above():
     # The list and the tests drift apart silently otherwise: a seventh shape
     # added to `REFUSALS` with no test would look exactly like six with six.
     covered = {
-        "replenishment",
-        "consumption",
+        "running refill",
         "relay",
         "held",
         "fixation",
         "bound",
     }
     assert set(REFUSALS) == covered
+
+# ---------------------------------------------------------------------------
+# Stocks.
+#
+# A draw is taken in full at an activity's **start**, a refill lands at its
+# **end** and fills to capacity, and the level is held within `[0, capacity]` at
+# every event (FORMULATION §11). Where a document states no levels there is no
+# reservoir at all and nothing to respect.
+# ---------------------------------------------------------------------------
+
+
+def _drawing(draws: int, amount: int, duration: int = 2) -> Instance:
+    """`draws` activities in a row on one machine, each taking `amount` from its
+    stock. Each has a spot of its own, so nothing here is about spots."""
+    activities = tuple(
+        ActivityInstance(
+            (f"take{k}",),
+            "work",
+            (
+                Mode(
+                    "m",
+                    ("lab",),
+                    duration,
+                    {},
+                    {"o": f"lab.bay{k}"},
+                    consumption={"lab.tips": amount},
+                ),
+            ),
+        )
+        for k in range(draws)
+    )
+    return Instance(_ENV, "second", activities, (), ())
+
+
+def _stocked(levels: dict[tuple[str, str], int]) -> Fixation:
+    return Fixation(now=0, activities={}, arcs={}, levels=levels)
+
+
+def _lab_with_tips(instance: Instance, capacity: int, refills: int = 0) -> Instance:
+    """The same instance in a laboratory whose `lab` holds `capacity` tips, with
+    `refills` ways to top it up.
+
+    The environment matters here where it does not elsewhere in this file: the
+    capacity a refill fills to is read off the device (`greedy._capacity`).
+    """
+    bays = frozenset(
+        spot.split(".")[1]
+        for act in instance.activities
+        for mode in act.modes
+        for spot in (*mode.input_spots.values(), *mode.output_spots.values())
+    )
+    devices = {
+        "lab": Device("lab", bays, {"tips": capacity}),
+        "hand": Device("hand", frozenset()),
+    }
+    return replace(
+        instance,
+        env=Environment("second", devices, (), {}, {}),
+        replenishments=tuple(
+            RefillCandidate(f"r{k}", "lab", 0, (RefillOption("hand", 1),), ("tips",))
+            for k in range(refills)
+        ),
+    )
+
+
+def test_draws_that_fit_need_no_refill():
+    instance = _lab_with_tips(_drawing(draws=3, amount=2), capacity=10)
+    built = construct(instance, fixation=_stocked({("lab", "tips"): 6}))
+    assert built is not None
+    assert _violations(instance, built) == []
+    assert built.replenishment == ()
+
+
+def test_draws_that_do_not_fit_and_cannot_be_topped_up_come_back_empty():
+    # 🔴 A stock nothing can refill only ever falls, so this is not a matter of
+    # ordering -- the reagent runs out whatever anybody does, and a plan whose
+    # reagent runs out is not a plan.
+    instance = _lab_with_tips(_drawing(draws=4, amount=3), capacity=10)
+    assert construct(instance, fixation=_stocked({("lab", "tips"): 6})) is None
+
+
+def test_a_refill_is_placed_where_the_level_would_break():
+    instance = _lab_with_tips(_drawing(draws=4, amount=3), capacity=12, refills=1)
+    built = construct(instance, fixation=_stocked({("lab", "tips"): 6}))
+    assert built is not None
+    assert _violations(instance, built) == []
+    assert len(built.replenishment) == 1
+    refill = built.replenishment[0]
+    assert refill.device == "lab"
+    assert refill.amounts == {"tips": 12}
+
+
+def test_the_refill_lands_before_the_draw_that_needed_it():
+    # 🔴 The property two wrong versions got wrong. A refill fills to capacity, so
+    # one placed too early is spent on the draws in between and leaves the draw it
+    # was placed for exactly as short as it was.
+    instance = _lab_with_tips(_drawing(draws=4, amount=3), capacity=12, refills=1)
+    built = construct(instance, fixation=_stocked({("lab", "tips"): 6}))
+    assert built is not None
+    level, landed = 6, [r.end for r in built.replenishment]
+    for placement in sorted(built.processing, key=lambda p: p.start):
+        amount = placement.mode.consumption.get("lab.tips", 0)
+        while landed and landed[0] <= placement.start:
+            level = 12
+            landed.pop(0)
+        assert level >= amount, f"the level went short at {placement.start}"
+        level -= amount
+
+
+def test_a_stock_is_ignored_when_the_document_states_no_level():
+    # The same instance that fails above, with the levels left unstated: no
+    # reservoir is built, so it schedules.
+    instance = _lab_with_tips(_drawing(draws=4, amount=3), capacity=10)
+    built = construct(instance, fixation=_stocked({}))
+    assert built is not None
+    assert _violations(instance, built) == []

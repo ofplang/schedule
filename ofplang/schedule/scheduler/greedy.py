@@ -35,20 +35,27 @@ thing that searches, and this has to be fast enough to be free.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from ofplang.schedule.core import objective as objective_stages
-from ofplang.schedule.core.identifiers import parse_qualified_spot
+from ofplang.schedule.core.identifiers import (
+    parse_qualified_resource,
+    parse_qualified_spot,
+)
 from ofplang.schedule.scheduler import mobility
 from ofplang.schedule.scheduler.instance import Instance, TransportOption, job_membership
 from ofplang.schedule.scheduler.model import JobSpec, Mode
-from ofplang.schedule.scheduler.result import ProcessingResult, Solution, TransportResult
+from ofplang.schedule.scheduler.result import (
+    ProcessingResult,
+    RefillResult,
+    Solution,
+    TransportResult,
+)
 from ofplang.schedule.scheduler.status import Fixation
 
 # Shapes `construct` declines, and why each needs more than list scheduling.
 REFUSALS = {
-    "replenishment": "a refill is scheduled work whose need depends on the draws",
-    "consumption": "a stock draw makes an activity's admissibility depend on the order",
+    "running refill": "a refill already under way is history this does not carry",
     "relay": "a transport junction is a chain whose legs share one arc",
     "held": "an occupied spot is held to the horizon, which is not a duration",
     "fixation": "a replan has activities already placed, which is a different problem",
@@ -59,6 +66,12 @@ REFUSALS = {
 # moves strictly forward, so the loop ends on its own; the cap is here so that a
 # shape nobody anticipated ends in `None` rather than in a long wait.
 _PUSHES = 64
+
+# How many times the whole construction is retried with one more refill's
+# machine time held back. Each round reshapes the schedule, which moves its own
+# draws, so there is no argument that this settles -- the cap is what makes it
+# terminate. Measured on the benchmark's stock rows, one round is enough.
+_REFILL_ROUNDS = 4
 
 
 @dataclass
@@ -178,6 +191,10 @@ def _spots_of(mode: Mode) -> tuple[str, ...]:
 def _refuse(instance: Instance, fixation: Fixation | None, jobs: tuple) -> str | None:
     """The first shape this cannot handle, or None when the instance is in scope.
 
+    Stocks are in scope: a draw is taken at an activity's start and a refill lands
+    at its end, and neither changes which spot anything occupies, so the pass runs
+    as it always did and the levels are settled afterwards (`_stock_plan`).
+
     A joint plan is in scope while no job carries a promised completion. The
     release is easy -- it is a floor on when a job's work may start, and a forward
     pass has a floor already -- but the promise is a cap on $C_j$, and $C_j$ is
@@ -188,21 +205,20 @@ def _refuse(instance: Instance, fixation: Fixation | None, jobs: tuple) -> str |
     it is declined, and a fresh one -- which is every roster the case-study
     laboratories submit -- is not.
     """
-    if instance.replenishments:
-        return "replenishment"
     if any(spec.bound is not None for spec in jobs):
         return "bound"
-    if fixation is not None and (
-        fixation.activities or fixation.arcs or fixation.replenishments or fixation.levels
-    ):
+    if fixation is not None and fixation.replenishments:
+        # A refill already running is a fixed future increase the levels do not
+        # yet carry (`cpsat._add_resources`). Nothing in the corpus has one, so
+        # rather than carry history this has never seen, it is declined.
+        return "running refill"
+    if fixation is not None and (fixation.activities or fixation.arcs):
         return "fixation"
     for act in instance.activities:
         if act.relay is not None:
             return "relay"
         if act.boundary is not None and act.boundary.kind == "held":
             return "held"
-        if any(mode.consumption for mode in act.modes):
-            return "consumption"
     return None
 
 
@@ -602,9 +618,36 @@ def construct(
     if _refuse(instance, fixation, jobs) is not None:
         return None
     floors = _floors(instance, jobs)
+    levels = dict(fixation.levels) if fixation is not None else {}
+    # Reserved machine time for refills the stocks turned out to need. Empty on
+    # the first round, and grown by a window each time a schedule came out whose
+    # stocks could not be made to last (`_reservation_for`).
+    reserved: tuple[tuple[str, int, int], ...] = ()
+    for _round in range(_REFILL_ROUNDS):
+        best = _build(instance, fixation, jobs, floors, reserved)
+        if best is None or not levels:
+            return best
+        stocked = _with_stocks(instance, fixation, best)
+        if stocked is not None:
+            return stocked
+        window = _reservation_for(instance, fixation, best)
+        if window is None or window in reserved:
+            return None
+        reserved = (*reserved, window)
+    return None
+
+
+def _build(
+    instance: Instance,
+    fixation: Fixation | None,
+    jobs: tuple[JobSpec, ...],
+    floors: dict[int, int],
+    reserved: tuple[tuple[str, int, int], ...],
+) -> Solution | None:
+    """The best schedule the passes find, ignoring the stocks entirely."""
     best: Solution | None = None
     for rule in _RULES:
-        found = _pass(instance, rule, floors)
+        found = _pass(instance, rule, floors, reserved)
         if found is None:
             continue
         if best is None or (found.makespan or 0) < (best.makespan or 0):
@@ -614,7 +657,7 @@ def construct(
         # schedules the rules above find when they find one, so it is a last
         # resort and not a fourth opinion -- and leaving it out of the ordinary
         # path is also what keeps every instance that already works unchanged.
-        best = _pass(instance, _JobByJob(instance, jobs), floors)
+        best = _pass(instance, _JobByJob(instance, jobs), floors, reserved)
     if best is None:
         # 🔴 **The end of the line, and the only part of this that backtracks.**
         # A forward pass fails on a shape no ordering of the ready set can undo:
@@ -635,6 +678,260 @@ def construct(
         if order is not None:
             best = _replay(instance, order, floors)
     return best
+
+
+def _reservation_for(
+    instance: Instance, fixation: Fixation | None, solution: Solution
+) -> tuple[str, int, int] | None:
+    """Machine time to keep clear on the next round, for a refill this schedule
+    left no room for.
+
+    The window ends exactly at the draw that came up short, because that is the
+    latest a refill can be and still be of any use to it, and it is taken on the
+    machine holding the stock. Returning None means no refill could serve that
+    stock at all, and another round would only produce the same schedule.
+    """
+    levels = dict(fixation.levels) if fixation is not None else {}
+    draws = _draws(instance, solution)
+    for stock in sorted(set(draws) | set(levels)):
+        shortfall = _first_shortfall(
+            levels.get(stock, 0), _capacity(instance, *stock), draws.get(stock, []), []
+        )
+        if shortfall is None:
+            continue
+        visits = [
+            option.duration
+            for candidate in instance.replenishments
+            if candidate.device == stock[0] and stock[1] in candidate.resources
+            for option in candidate.options
+        ]
+        if not visits:
+            continue  # nothing refills this stock; the next round cannot help
+        when = shortfall[0]
+        longest = max(visits)
+        if when < longest:
+            continue  # the shortfall comes before any refill could have landed
+        return stock[0], when - longest, when
+    return None
+
+
+def _with_stocks(
+    instance: Instance, fixation: Fixation | None, solution: Solution
+) -> Solution | None:
+    """The same schedule with its refills placed, or `None` if the stocks cannot
+    be made to last.
+
+    **A document that states no levels gets no reservoir at all** -- the model
+    builds none (`cpsat._add_resources` returns at once), so neither does this.
+    That is not a shortcut: an environment may declare stocks that no document
+    ever puts a number to, and constraining them would be inventing a constraint
+    the model does not have.
+    """
+    levels = dict(fixation.levels) if fixation is not None else {}
+    if not levels:
+        return solution
+    draws = _draws(instance, solution)
+    if not draws:
+        return solution
+    placed = _refills_for(instance, solution, levels, draws)
+    if placed is None:
+        return None
+    if not placed:
+        return solution
+    return replace(solution, replenishment=tuple(placed))
+
+
+def _draws(instance: Instance, solution: Solution) -> dict[tuple[str, str], list[tuple[int, int]]]:
+    """Every draw the schedule makes, as stock -> [(when, how much)].
+
+    Taken at the **start**, in full (§4.7). Boundary nodes and relays consume
+    nothing, so they simply contribute none.
+    """
+    found: dict[tuple[str, str], list[tuple[int, int]]] = {}
+    for placement in solution.processing:
+        for qualified, amount in placement.mode.consumption.items():
+            parsed = parse_qualified_resource(qualified)
+            if parsed is None:  # pragma: no cover - the environment validator refuses it
+                continue
+            found.setdefault(parsed, []).append((placement.start, amount))
+    for events in found.values():
+        events.sort()
+    return found
+
+
+def _refills_for(
+    instance: Instance,
+    solution: Solution,
+    levels: dict[tuple[str, str], int],
+    draws: dict[tuple[str, str], list[tuple[int, int]]],
+) -> list[RefillResult] | None:
+    """Which refills to run, and when, or None when no arrangement of them works.
+
+    Taken stock by stock. The trajectory is read; where it first falls below zero
+    a refill is placed to have landed by then; the trajectory is read again. A
+    stock nothing can refill only ever falls, so there the first shortfall is the
+    answer -- the schedule is not offered, because a plan whose reagent runs out
+    is not a plan.
+
+    **Refills fill to capacity** (SPEC 4.7.1), so one is placed only where a draw
+    would actually break, and never two where one will do.
+    """
+    board = _machine_use(instance, solution)
+    placed: list[RefillResult] = []
+    sequence = 0
+    for stock in sorted(set(draws) | set(levels)):
+        device, resource = stock
+        opening = levels.get(stock, 0)
+        capacity = _capacity(instance, device, resource)
+        events = draws.get(stock, [])
+        candidates = [
+            candidate
+            for candidate in instance.replenishments
+            if candidate.device == device and resource in candidate.resources
+        ]
+        mine: list[int] = []  # when this stock's refills land
+        # One refill per draw is the most that can ever help: a draw that is still
+        # short after its own top-up is short of a full stock.
+        for _ in range(len(events) + 1):
+            shortfall = _first_shortfall(opening, capacity, events, mine)
+            if shortfall is None:
+                break
+            if not candidates or capacity < shortfall[1]:
+                return None
+            refill = _place_refill(instance, board, candidates, shortfall[0], sequence)
+            if refill is None:
+                return None
+            placed.append(refill)
+            mine.append(refill.end)
+            sequence += 1
+        else:
+            return None
+    return placed
+
+
+def _first_shortfall(
+    opening: int, capacity: int, draws: list[tuple[int, int]], refills: list[int]
+) -> tuple[int, int] | None:
+    """When the level first goes below zero, and by how much it was short.
+
+    Read as the model reads it: a draw takes its amount at the activity's
+    **start**, a refill lands at its **end** and fills to capacity, and a refill
+    landing at the same instant as a draw has landed first (the model splits the
+    two into separate events and puts the increase before the decrease, SPEC 4.7).
+    """
+    level = opening
+    landings = sorted(refills)
+    position = 0
+    for when, amount in draws:
+        while position < len(landings) and landings[position] <= when:
+            level = capacity
+            position += 1
+        if level < amount:
+            return when, amount
+        level -= amount
+    return None
+
+
+def _machine_use(instance: Instance, solution: Solution) -> _Board:
+    """The machines the schedule already occupies, so a refill can be fitted
+    around them. Only devices matter here: a refill visits two machines and takes
+    no spot (§4.7.1)."""
+    board = _Board()
+    for placement in solution.processing:
+        for device in placement.mode.occupied_devices:
+            board.device(device).take(placement.start, placement.end)
+    for move in solution.transport:
+        if move.option.from_spot == move.option.to_spot:
+            continue
+        if move.option.transporter is not None:
+            board.transporter(move.option.transporter).take(move.start, move.end)
+        for device in _devices_of(move.option):
+            board.device(device).take(move.start, move.end)
+    return board
+
+
+def _place_refill(
+    instance: Instance,
+    board: _Board,
+    candidates,
+    before: int,
+    sequence: int,
+) -> RefillResult | None:
+    """Fit one refill in so that it has landed by `before`, or say there is
+    nowhere for it.
+
+    A refill holds the device it fills **and** the replenisher it uses for its
+    whole visit (SPEC 4.7.1), and the schedule has already booked both -- so the
+    visit goes in the earliest window wide enough for it, and if even the
+    earliest lands too late there is nowhere to put it.
+
+    🔴 **The latest landing wins, not the earliest.** A refill fills to capacity,
+    so one that lands early is spent on the draws in between and leaves the draw
+    it was placed for exactly as short as it was. The longer visit breaks a tie,
+    and then the replenisher's name, so two runs over one instance place the same
+    refills.
+    """
+    best: tuple[tuple[int, int, str], RefillResult] | None = None
+    for candidate in candidates:
+        for option in candidate.options:
+            start = _machine_window(board, candidate.device, option, before)
+            if start is None:
+                continue
+            end = start + option.duration
+            rank = (-end, -option.duration, option.replenisher)
+            if best is not None and rank >= best[0]:
+                continue
+            best = (
+                rank,
+                RefillResult(
+                    id=f"{candidate.id}#{sequence}",
+                    device=candidate.device,
+                    replenisher=option.replenisher,
+                    amounts={
+                        resource: _capacity(instance, candidate.device, resource)
+                        for resource in candidate.resources
+                    },
+                    start=start,
+                    end=end,
+                ),
+            )
+    if best is None:
+        return None
+    refill = best[1]
+    board.device(refill.device).take(refill.start, refill.end)
+    if refill.replenisher != refill.device:
+        board.device(refill.replenisher).take(refill.start, refill.end)
+    return refill
+
+
+def _machine_window(board: _Board, device: str, option, before: int) -> int | None:
+    """The **latest** moment a refill can set off and still have landed by
+    `before`, with both of the machines it needs free throughout.
+
+    An optimal start is always either the beginning of the run or the moment
+    something else on one of the two machines finishes, so those are the only
+    candidates worth trying -- there is no gain in a start that could have been
+    later.
+    """
+    filled = board.device(device)
+    helper = board.device(option.replenisher)
+    moments = {0}
+    for line in (filled, helper):
+        if line.pending is not None:
+            return None  # a machine held open-endedly has no window to offer
+        moments.update(end for _, end in line.busy)
+    best: int | None = None
+    for start in sorted(moments):
+        if start + option.duration > before:
+            continue
+        if filled.free(start, option.duration) and helper.free(start, option.duration):
+            best = start if best is None else max(best, start)
+    return best
+
+
+def _capacity(instance: Instance, device: str, resource: str) -> int:
+    entry = instance.env.devices.get(device)
+    return (entry.resources.get(resource, 0) if entry is not None else 0) or 0
 
 
 def _replay(instance: Instance, order, floors: dict[int, int]) -> Solution | None:
@@ -807,7 +1104,12 @@ def _replay_move(
     return True
 
 
-def _pass(instance: Instance, rule, floors: dict[int, int]) -> Solution | None:
+def _pass(
+    instance: Instance,
+    rule,
+    floors: dict[int, int],
+    reserved: tuple[tuple[str, int, int], ...] = (),
+) -> Solution | None:
     """One forward pass under one priority rule.
 
     **A departure is attempted, not imposed.** The spot an activity ran in is
@@ -822,6 +1124,10 @@ def _pass(instance: Instance, rule, floors: dict[int, int]) -> Solution | None:
     two activities.
     """
     board = _Board()
+    # Machine time spoken for before any of this instance's work: a refill the
+    # stocks need and the pass has to leave room for (`construct`).
+    for device, held_from, held_to in reserved:
+        board.device(device).take(held_from, held_to)
     pressure = _pressure(instance)
     leaving, arriving = _edges(instance)
     counts, orders = _waiting(instance)
