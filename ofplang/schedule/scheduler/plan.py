@@ -16,9 +16,9 @@ from typing import Any
 import yaml
 
 from ofplang.schedule.core import objective as objective_stages
-from ofplang.schedule.scheduler.cpsat import Solution
 from ofplang.schedule.scheduler.instance import Instance
 from ofplang.schedule.scheduler.model import JobSpec
+from ofplang.schedule.scheduler.result import Solution
 
 
 def render_plan(

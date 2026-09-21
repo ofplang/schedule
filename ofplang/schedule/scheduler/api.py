@@ -26,7 +26,6 @@ from ofplang.schedule.core import objective as objective_stages
 from ofplang.schedule.core import yamlnode
 from ofplang.schedule.core.diagnostics import ERROR, WARNING, Diagnostic, Diagnostics
 from ofplang.schedule.core.yamlnode import YMap
-from ofplang.schedule.scheduler.cpsat import Solution, solve
 from ofplang.schedule.scheduler.envload import load_environment
 from ofplang.schedule.scheduler.instance import (
     build_instance,
@@ -41,6 +40,7 @@ from ofplang.schedule.scheduler.model import JobSpec, Workflow
 from ofplang.schedule.scheduler.normalize import normalize
 from ofplang.schedule.scheduler.plan import render_plan
 from ofplang.schedule.scheduler.plancheck import check_plan_inventories
+from ofplang.schedule.scheduler.result import Solution
 from ofplang.schedule.scheduler.stats import SolveStats
 from ofplang.schedule.scheduler.status import ActivityFixation, ArcFixation, Fixation
 from ofplang.schedule.scheduler.symmetry import (
@@ -910,7 +910,7 @@ def _unplannable(instance, specs: tuple[JobSpec, ...], solve_kwargs: dict) -> li
     settled = True
     for spec in specs:
         kwargs["fixation"] = _without(fixation, instance, spec.id, membership)
-        outcome = solve(instance, jobs=unbounded, **kwargs).outcome
+        outcome = _solver()(instance, jobs=unbounded, **kwargs).outcome
         if outcome in _SOLVED:
             culprits.append(spec.id)
         elif outcome != "infeasible":
@@ -980,7 +980,7 @@ def _solve_within_bounds(
     the tie-break. That is a choice among equals, not a violation of anything.)
     """
     def attempt(trial: tuple[JobSpec, ...]) -> Solution:
-        return solve(instance, jobs=trial, **solve_kwargs)
+        return _solver()(instance, jobs=trial, **solve_kwargs)
 
     solution = attempt(specs)
     if solution.outcome in _SOLVED:
@@ -1056,6 +1056,20 @@ class JobInput:
     id: str
     workflow: object
     source: str | None = None
+
+
+def _solver():
+    """The CP-SAT entry point, imported on use rather than on import.
+
+    ortools costs about 0.8 s and 33 MB to load, and a caller that only ever
+    wants the constructed schedule (`greedy`, which knows nothing of CP-SAT)
+    should not pay it. Nothing else in this package reaches for `cpsat`, so
+    this is the whole of the boundary -- and `tests/test_lazy_solver.py` fails
+    if a module-level import puts it back.
+    """
+    from ofplang.schedule.scheduler.cpsat import solve
+
+    return solve
 
 
 def schedule(

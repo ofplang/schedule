@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-import ofplang.schedule.scheduler.api as api_mod
+import ofplang.schedule.scheduler.cpsat as cpsat_mod
 from ofplang.schedule import JobInput, schedule, schedule_jobs
 from ofplang.schedule.scheduler.result import Solution
 
@@ -27,7 +27,12 @@ EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
 @pytest.fixture
 def answers(monkeypatch):
-    """Make every solve return `outcome`, and count the calls."""
+    """Make every solve return `outcome`, and count the calls.
+
+    Stubbed on `cpsat` rather than on `api`: the solver is imported when it is
+    used, not when the package is loaded (`api._solver`), so `api` has no name
+    to replace.
+    """
 
     def install(outcome: str) -> list[int]:
         calls = [0]
@@ -36,7 +41,7 @@ def answers(monkeypatch):
             calls[0] += 1
             return Solution(outcome, None, (), (), stats=None)
 
-        monkeypatch.setattr(api_mod, "solve", stub)
+        monkeypatch.setattr(cpsat_mod, "solve", stub)
         return calls
 
     return install
@@ -103,7 +108,7 @@ def test_one_silent_probe_withdraws_the_claim_about_every_job(monkeypatch):
     def stub(instance, **kwargs):
         return Solution(next(outcomes, "infeasible"), None, (), (), stats=None)
 
-    monkeypatch.setattr(api_mod, "solve", stub)
+    monkeypatch.setattr(cpsat_mod, "solve", stub)
     jobs = [JobInput(id=f"job{k}", workflow=_workflow("simple")) for k in range(1, 4)]
     report = schedule_jobs(jobs, _environment("simple"), max_time_seconds=1)
     assert "infeasible" in _codes(report)
