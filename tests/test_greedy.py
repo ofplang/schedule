@@ -16,20 +16,25 @@ from pathlib import Path
 
 import pytest
 
-from ofplang.schedule.scheduler import greedy
+from ofplang.schedule.scheduler import greedy, mobility
 from ofplang.schedule.scheduler.envload import load_environment
-from ofplang.schedule.scheduler.greedy import construct
+from ofplang.schedule.scheduler.greedy import REFUSALS, _refuse, construct
 from ofplang.schedule.scheduler.instance import (
     ActivityInstance,
     ArcInstance,
     BoundaryInfo,
     Instance,
+    RefillCandidate,
+    RefillOption,
+    RelayInfo,
     TransportOption,
     build_instance,
 )
-from ofplang.schedule.scheduler.model import Arc, Endpoint, Environment, Mode
+from ofplang.schedule.scheduler.model import Arc, Endpoint, Environment, JobSpec, Mode
 from ofplang.schedule.scheduler.result import Solution
+from ofplang.schedule.scheduler.status import ActivityFixation, Fixation
 from ofplang.schedule.scheduler.workflow import parse_workflow
+from tests.schedutil import self_contained_examples
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 _ENV = Environment("second", {}, (), {}, {})
@@ -230,7 +235,9 @@ def test_a_held_spot_is_refused_where_an_output_node_is_not():
             *instance.activities[:-1],
         ),
     )
-    assert construct(instance) is not None
+    plain = construct(instance)
+    assert plain is not None
+    assert _violations(instance, plain) == []
     assert construct(held) is None
 
 
@@ -238,6 +245,7 @@ def test_the_same_instance_gives_the_same_schedule_twice():
     instance = _instance("reformatter")
     first, second = construct(instance), construct(instance)
     assert first is not None and second is not None
+    assert _violations(instance, first) == []
     assert first.makespan == second.makespan
     assert [(p.activity, p.mode.id, p.start) for p in first.processing] == [
         (p.activity, p.mode.id, p.start) for p in second.processing
@@ -250,6 +258,7 @@ def test_the_outcome_is_feasible_and_never_claims_optimality():
     instance = _instance("simple")
     solution = construct(instance)
     assert solution is not None
+    assert _violations(instance, solution) == []
     assert solution.outcome == "feasible"
     assert solution.objective_values == (solution.makespan,)
 
@@ -408,6 +417,7 @@ def test_the_replayed_schedule_is_the_same_one_twice():
     first = construct(instance)
     second = construct(instance)
     assert first is not None and second is not None
+    assert _violations(instance, first) == []
     assert first.processing == second.processing
     assert first.transport == second.transport
 
@@ -486,3 +496,162 @@ def test_an_instance_with_no_way_through_still_comes_out_empty():
             )
         )
     assert construct(Instance(_ENV, "second", tuple(activities), tuple(arcs), ())) is None
+
+
+# ---------------------------------------------------------------------------
+# The promise, swept over the worked examples.
+#
+# What the greedy is for: a plan CP-SAT cannot answer should still get *an*
+# answer, however poor. So these sweep for coverage and for correctness, and
+# say nothing about speed or about makespan -- being slower than the solver on
+# a plan the solver can crack is not a defect here.
+# ---------------------------------------------------------------------------
+
+_EXAMPLES = self_contained_examples()
+
+
+@pytest.mark.parametrize("name", _EXAMPLES)
+def test_every_example_is_either_refused_by_name_or_comes_back_a_schedule(name):
+    """No third outcome. Standing still without a reason is the failure mode
+    this whole slice exists to remove, so it is asserted away here rather than
+    noticed later on a benchmark."""
+    instance = _instance(name)
+    solution = construct(instance)
+    reason = _refuse(instance, None, ())
+    if reason is not None:
+        assert reason in REFUSALS
+        assert solution is None, f"{name} was refused as {reason} and still built something"
+        return
+    assert solution is not None, f"{name} is in scope and came back with nothing"
+    assert _violations(instance, solution) == []
+
+
+@pytest.mark.parametrize("name", _EXAMPLES)
+def test_a_way_through_and_in_scope_means_an_answer_comes_back(name):
+    """The coverage promise, stated as a test.
+
+    `mobility.find_order` is the arbiter of whether a way through exists at all.
+    Where it finds one and the shape is in scope, the greedy has no excuse: the
+    last resort replays that very order (report section 50). This is what
+    "returns something" means, and it is the only guarantee claimed.
+    """
+    instance = _instance(name)
+    if _refuse(instance, None, ()) is not None:
+        pytest.skip("out of scope, which is a different statement")
+    if mobility.find_order(instance) is None:
+        pytest.skip("no way through, or the walk was stopped -- neither is a promise")
+    assert construct(instance) is not None
+
+
+# ---------------------------------------------------------------------------
+# Every refusal, by name.
+#
+# `REFUSALS` lists six shapes the construction declines, and until now only one
+# of them was asserted anywhere. The point is not that these shapes are hard --
+# it is that a refusal quietly disappearing is invisible while the construction
+# is only a hint, and becomes a wrong plan the moment it is returned as one.
+# `bound` is the sharp case: a promise this stops declining is a promise it
+# starts breaking.
+# ---------------------------------------------------------------------------
+
+
+def _in_scope() -> Instance:
+    """The smallest instance the construction accepts: one activity, one spot."""
+    return Instance(
+        _ENV,
+        "second",
+        (ActivityInstance(("only",), "work", (Mode("m", ("lab",), 1, {}, {"o": "lab.a"}),)),),
+        (),
+        (),
+    )
+
+
+def test_the_smallest_instance_is_in_scope():
+    # The control. Each refusal below adds exactly one thing to this, so if this
+    # were already refused the tests below would prove nothing.
+    instance = _in_scope()
+    assert _refuse(instance, None, ()) is None
+    built = construct(instance)
+    assert built is not None
+    assert _violations(instance, built) == []
+
+
+def test_a_refill_is_declined():
+    instance = replace(
+        _in_scope(),
+        replenishments=(
+            RefillCandidate("r0", "lab", 0, (RefillOption("hand", 1),), ("lab.stock",)),
+        ),
+    )
+    assert _refuse(instance, None, ()) == "replenishment"
+    assert construct(instance) is None
+
+
+def test_a_stock_draw_is_declined():
+    base = _in_scope()
+    drawing = replace(
+        base.activities[0],
+        modes=(Mode("m", ("lab",), 1, {}, {"o": "lab.a"}, consumption={"lab.stock": 1}),),
+    )
+    instance = replace(base, activities=(drawing,))
+    assert _refuse(instance, None, ()) == "consumption"
+    assert construct(instance) is None
+
+
+def test_a_transport_junction_is_declined():
+    base = _in_scope()
+    junction = replace(
+        base.activities[0],
+        relay=RelayInfo(Arc(Endpoint(("a",), "o"), Endpoint(("b",), "i")), 0),
+    )
+    instance = replace(base, activities=(junction,))
+    assert _refuse(instance, None, ()) == "relay"
+    assert construct(instance) is None
+
+
+def test_an_occupied_spot_is_declined():
+    base = _in_scope()
+    occupied = replace(base.activities[0], boundary=BoundaryInfo(kind="held", since=0))
+    instance = replace(base, activities=(occupied,))
+    assert _refuse(instance, None, ()) == "held"
+    assert construct(instance) is None
+
+
+def test_a_replan_is_declined():
+    instance = _in_scope()
+    fixation = Fixation(now=5, activities={0: ActivityFixation("completed", 0, 1, 0)}, arcs={})
+    assert _refuse(instance, fixation, ()) == "fixation"
+    assert construct(instance, fixation=fixation) is None
+
+
+def test_a_promised_completion_is_declined():
+    # 🔴 The one that matters most. C_j is measured over a job's own work --
+    # not its boundary nodes, and not the parts of a move that are the material
+    # resting rather than travelling -- so checking a promise here would mean
+    # checking it against a number the model does not use.
+    instance = _in_scope()
+    promised = (JobSpec(id="job1", release=0, bound=100),)
+    assert _refuse(instance, None, promised) == "bound"
+    assert construct(instance, jobs=promised) is None
+
+
+def test_a_fresh_roster_is_not_declined():
+    # The other side of the promise test: a job without one is ordinary work.
+    instance = _in_scope()
+    fresh = (JobSpec(id="job1", release=0),)
+    assert _refuse(instance, None, fresh) is None
+    assert construct(instance, jobs=fresh) is not None
+
+
+def test_every_listed_refusal_has_a_test_above():
+    # The list and the tests drift apart silently otherwise: a seventh shape
+    # added to `REFUSALS` with no test would look exactly like six with six.
+    covered = {
+        "replenishment",
+        "consumption",
+        "relay",
+        "held",
+        "fixation",
+        "bound",
+    }
+    assert set(REFUSALS) == covered

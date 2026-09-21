@@ -14,6 +14,46 @@ EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 SIMPLE_WF = EXAMPLES / "simple.workflow.yaml"  # SampleSource(source) -> SampleTarget(target)
 
 
+def example_instance(name: str):
+    """The instance one worked example builds, or an assertion if it does not."""
+    from ofplang.schedule.scheduler.envload import load_environment
+    from ofplang.schedule.scheduler.instance import build_instance
+    from ofplang.schedule.scheduler.workflow import parse_workflow
+
+    workflow, _ = parse_workflow(EXAMPLES / f"{name}.workflow.yaml")
+    environment, _ = load_environment(EXAMPLES / f"{name}.env.yaml")
+    instance, diags = build_instance(workflow, environment)
+    assert instance is not None, [d.code for d in diags.items]
+    return instance
+
+
+def self_contained_examples() -> list[str]:
+    """The worked examples that need nothing but a workflow and an environment.
+
+    Discovered rather than listed, so an example added to `examples/` is swept
+    by the suites that use this without anybody remembering to add it. One that
+    needs an execution document (`interface_load` binds an entry input) has no
+    instance without one and is left out here; the suites that care about
+    documents build their own.
+    """
+    from ofplang.schedule.scheduler.envload import load_environment
+    from ofplang.schedule.scheduler.instance import build_instance
+    from ofplang.schedule.scheduler.workflow import parse_workflow
+
+    found = []
+    for path in sorted(EXAMPLES.glob("*.workflow.yaml")):
+        name = path.name[: -len(".workflow.yaml")]
+        environment = EXAMPLES / f"{name}.env.yaml"
+        if not environment.exists():
+            continue
+        workflow, _ = parse_workflow(path)
+        loaded, _ = load_environment(environment)
+        instance, _diags = build_instance(workflow, loaded)
+        if instance is not None:
+            found.append(name)
+    return found
+
+
 def write(directory, name: str, text: str) -> Path:
     p = Path(directory) / name
     p.write_text(text, encoding="utf-8")

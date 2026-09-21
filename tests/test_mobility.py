@@ -16,6 +16,7 @@ import pytest
 from ofplang.schedule.core.diagnostics import Diagnostics
 from ofplang.schedule.scheduler import mobility
 from ofplang.schedule.scheduler.cpsat import solve
+from ofplang.schedule.scheduler.greedy import construct
 from ofplang.schedule.scheduler.instance import (
     ActivityInstance,
     ArcInstance,
@@ -24,6 +25,7 @@ from ofplang.schedule.scheduler.instance import (
     TransportOption,
 )
 from ofplang.schedule.scheduler.model import Arc, Endpoint, Environment, Mode
+from tests.schedutil import example_instance, self_contained_examples
 
 _ENV = Environment("second", {}, (), {}, {})
 
@@ -356,3 +358,25 @@ def test_an_unreachable_arc_is_left_to_the_check_that_names_it():
 
 def test_an_instance_with_nothing_in_it_says_nothing():
     assert _codes(Instance(_ENV, "second", (), (), ())) == []
+
+
+# ---------------------------------------------------------------------------
+# 🔴 The failure that matters: refusing a plan that can in fact be run.
+#
+# Everything above is a fixture somebody thought of. This sweeps the worked
+# examples instead, and the assertion is not about any one of them -- it is
+# that a real instance which something can schedule is never refused here.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", self_contained_examples())
+def test_no_example_that_can_be_scheduled_is_ever_refused(name):
+    instance = example_instance(name)
+    scheduled = construct(instance) is not None
+    if not scheduled:
+        # The greedy declines a shape outside its scope, which says nothing
+        # about whether the instance is schedulable -- so ask the solver.
+        scheduled = solve(instance, max_time_seconds=30).outcome in ("optimal", "feasible")
+    if not scheduled:
+        pytest.skip("nothing could schedule it, so silence is not what is being tested")
+    assert _codes(instance) == [], f"{name} can be scheduled and was refused anyway"
