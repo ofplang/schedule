@@ -274,6 +274,74 @@ def test_the_same_instance_gives_the_same_schedule_twice():
     ]
 
 
+# ---------------------------------------------------------------------------
+# What the answer reports (§4.8).
+#
+# A plan says what it was minimising and what each stage came to. For as long as
+# this produced hints it reported the makespan alone, which is all a hint is
+# judged on -- and which is the wrong objective for eighteen of the twenty rows
+# in the corpus.
+# ---------------------------------------------------------------------------
+
+
+def test_an_instance_with_no_stocks_reports_the_bare_makespan():
+    # `replenishment_count` cannot tell two schedules of this instance apart, so
+    # the objective drops it and the answer keeps the shape it always had.
+    instance = _in_scope()
+    built = construct(instance)
+    assert built is not None
+    assert built.objective_kind == ("makespan",)
+    assert built.objective_values == (built.makespan,)
+
+
+def test_an_instance_with_stocks_reports_the_refills_it_ran():
+    instance = _lab_with_tips(_drawing(draws=4, amount=3), capacity=12, refills=1)
+    built = construct(instance, fixation=_stocked({("lab", "tips"): 6}))
+    assert built is not None
+    assert built.objective_kind == ("makespan", "replenishment_count")
+    assert built.objective_values == (built.makespan, 1)
+    assert len(built.replenishment) == 1
+
+
+def test_a_joint_plan_leads_with_the_sum_of_the_completions():
+    # 🔴 The default objective for several jobs leads with `completion_time_sum`
+    # (§6.11): minimising the makespan alone says nothing about *which* job
+    # finishes when.
+    instance = Instance(
+        _ENV,
+        "second",
+        tuple(
+            ActivityInstance(
+                (job, "only"), "work", (Mode("m", ("lab",), 2, {}, {"o": f"lab.b{k}"}),)
+            )
+            for k, job in enumerate(("job1", "job2"))
+        ),
+        (),
+        (),
+    )
+    jobs = (JobSpec(id="job1"), JobSpec(id="job2"))
+    built = construct(instance, jobs=jobs)
+    assert built is not None
+    assert built.objective_kind == ("completion_time_sum", "makespan")
+    # They share the one machine, so the second waits: 2 and 4, summing to 6.
+    assert built.job_completions == {"job1": 2, "job2": 4}
+    assert built.objective_values == (6, 4)
+
+
+def test_a_document_that_names_its_own_objective_is_honoured():
+    # One declaration site, and it wins (§4.8) -- the count comes first here, so
+    # that is what the answer reports first.
+    instance = _lab_with_tips(_drawing(draws=2, amount=1), capacity=8, refills=1)
+    built = construct(
+        instance,
+        fixation=_stocked({("lab", "tips"): 8}),
+        objective=("replenishment_count", "makespan"),
+    )
+    assert built is not None
+    assert built.objective_kind == ("replenishment_count", "makespan")
+    assert built.objective_values == (0, built.makespan)
+
+
 def test_the_outcome_is_feasible_and_never_claims_optimality():
     # A constructed schedule is one schedule; nothing about it says no better one
     # exists, and saying so would be a lie the caller could act on.

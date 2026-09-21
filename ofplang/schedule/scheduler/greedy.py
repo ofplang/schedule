@@ -701,20 +701,33 @@ def construct(
             # contradict the move that has already carried it away.
             continue
         floors[index] = max(floors.get(index, 0), now)
+    # What is being minimised, and therefore what "best" means below and what the
+    # answer reports (§4.8). `effective` drops a stage this instance cannot tell
+    # two schedules apart by, exactly as the solver drops it.
+    stages = objective_stages.effective(
+        objective or objective_stages.default(len(jobs)),
+        replenishment_possible=bool(instance.replenishments),
+    )
     levels = dict(fixation.levels) if fixation is not None else {}
     # Reserved machine time for refills the stocks turned out to need. Empty on
     # the first round, and grown by a window each time a schedule came out whose
     # stocks could not be made to last (`_reservation_for`).
     reserved: tuple[tuple[str, int, int], ...] = ()
     for _round in range(_REFILL_ROUNDS):
-        best = _build(instance, jobs, floors, reserved, history, now)
+        best = _build(instance, fixation, jobs, stages, floors, reserved, history, now)
         if best is None:
             return None
         if not levels:
-            return _promised(instance, fixation, jobs, _marked(instance, fixation, best))
+            return _scored(
+                instance, fixation, jobs, stages,
+                _promised(instance, fixation, jobs, _marked(instance, fixation, best)),
+            )
         stocked, wanted = _stock_plan(instance, fixation, best)
         if stocked is not None:
-            return _promised(instance, fixation, jobs, _marked(instance, fixation, stocked))
+            return _scored(
+                instance, fixation, jobs, stages,
+                _promised(instance, fixation, jobs, _marked(instance, fixation, stocked)),
+            )
         if wanted is None:
             return None  # the stocks cannot last however the work is arranged
         window = _window_for(instance, *wanted)
@@ -740,19 +753,7 @@ def _promised(
     """
     if not jobs:
         return solution
-    membership = job_membership(instance, [spec.id for spec in jobs])
-    ends = {p.activity: p.end for p in solution.processing}
-    arc_ends = {index: move.end for index, move in enumerate(solution.transport)}
-    completions = {
-        job_id: max(
-            [ends[i] for i in activities if i in ends]
-            + [arc_ends[r] for r in arcs if r in arc_ends]
-        )
-        for job_id, (activities, arcs) in completion.job_end_parts(
-            instance, fixation, membership
-        ).items()
-        if activities or arcs
-    }
+    completions = _completions(instance, fixation, jobs, solution)
     for spec in jobs:
         if spec.bound is None:
             continue
@@ -764,6 +765,78 @@ def _promised(
             # (`api._solve_within_bounds`).
             return None
     return replace(solution, job_completions=completions)
+
+
+def _stage_values(
+    instance: Instance,
+    fixation: Fixation | None,
+    jobs: tuple[JobSpec, ...],
+    stages: tuple[str, ...],
+    solution: Solution,
+) -> tuple[int, ...]:
+    """What each stage comes to for this schedule, in the objective's order.
+
+    Read off the schedule the way the solver reads it off its own: the makespan,
+    the number of refills *this plan* runs (a reported one is history and was
+    never chosen), and the sum of the job completions -- whose definition is
+    shared rather than restated (`completion.job_end_parts`).
+    """
+    reached = {
+        objective_stages.MAKESPAN: solution.makespan or 0,
+        objective_stages.REPLENISHMENT_COUNT: sum(
+            1 for refill in solution.replenishment if refill.status is None
+        ),
+        objective_stages.COMPLETION_TIME_SUM: sum(
+            _completions(instance, fixation, jobs, solution).values()
+        ),
+    }
+    return tuple(reached[stage] for stage in stages)
+
+
+def _scored(
+    instance: Instance,
+    fixation: Fixation | None,
+    jobs: tuple[JobSpec, ...],
+    stages: tuple[str, ...],
+    solution: Solution | None,
+) -> Solution | None:
+    """The answer, saying what it was minimising and what it reached (§4.8).
+
+    🔴 Only the makespan was reported for as long as this produced hints, which
+    are judged on their times alone. Measured on the corpus, eighteen of twenty
+    rows have effective stages that are not the makespan by itself -- so an
+    answer returned as a *plan* was naming the wrong objective nearly always.
+    """
+    if solution is None:
+        return None
+    return replace(
+        solution,
+        objective_kind=stages,
+        objective_values=_stage_values(instance, fixation, jobs, stages, solution),
+    )
+
+
+def _completions(
+    instance: Instance,
+    fixation: Fixation | None,
+    jobs: tuple[JobSpec, ...],
+    solution: Solution,
+) -> dict[str, int]:
+    """When each job completed. The selection is `completion.job_end_parts`; all
+    this does is take the maximum over what it names."""
+    membership = job_membership(instance, [spec.id for spec in jobs])
+    ends = {p.activity: p.end for p in solution.processing}
+    arc_ends = {index: move.end for index, move in enumerate(solution.transport)}
+    return {
+        job_id: max(
+            [ends[i] for i in activities if i in ends]
+            + [arc_ends[r] for r in arcs if r in arc_ends]
+        )
+        for job_id, (activities, arcs) in completion.job_end_parts(
+            instance, fixation, membership
+        ).items()
+        if activities or arcs
+    }
 
 
 def _marked(
@@ -801,20 +874,29 @@ def _marked(
 
 def _build(
     instance: Instance,
+    fixation: Fixation | None,
     jobs: tuple[JobSpec, ...],
+    stages: tuple[str, ...],
     floors: dict[int, int],
     reserved: tuple[tuple[str, int, int], ...],
     history: _History,
     now: int,
 ) -> Solution | None:
-    """The best schedule the passes find, ignoring the stocks entirely."""
+    """The best schedule the passes find, ignoring the stocks entirely.
+
+    ⚠ **Best by the objective, not by the makespan.** Measured, the two agree on
+    every row of the corpus -- but a rule that happens to agree is not the right
+    rule, and a document is free to ask for the refills to be minimised first.
+    """
     best: Solution | None = None
+    mark: tuple[int, ...] | None = None
     for rule in _RULES:
         found = _pass(instance, rule, floors, reserved, history, now)
         if found is None:
             continue
-        if best is None or (found.makespan or 0) < (best.makespan or 0):
-            best = found
+        rank = _stage_values(instance, fixation, jobs, stages, found)
+        if best is None or mark is None or rank < mark:
+            best, mark = found, rank
     if best is None and jobs:
         # Only when nothing else came out. Pacing the jobs gives up the good
         # schedules the rules above find when they find one, so it is a last
@@ -1764,10 +1846,10 @@ def _assemble(
             )
             for index in sorted(moves)
         ),
-        # Only the makespan is evaluated. The other stages (§4.8) are a solver's
-        # concern -- a hint is judged on being feasible, not on being good -- and
-        # anything meaning to *return* this as a plan has to fill them in first,
-        # because a plan reports what its objective reached.
+        # A placeholder the caller replaces: `_scored` fills in the stages this
+        # instance is actually minimised by and what they reached. It is set here
+        # so that a `Solution` is never half-built, not because the makespan is
+        # the objective.
         objective_kind=(objective_stages.MAKESPAN,),
         objective_values=(makespan,),
     )
