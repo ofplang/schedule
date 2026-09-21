@@ -45,6 +45,7 @@ those are exactly the ones whose state space is small.
 
 from __future__ import annotations
 
+from array import array
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -85,6 +86,8 @@ class _Shape:
     outgoing: tuple[tuple[int, ...], ...]
     # Precedence sources, by the activity that waits on them.
     predecessors: tuple[tuple[int, ...], ...]
+    # Bytes per choice in a state key; see `_read`.
+    width: int
     # Whether the activity holds the spots of its mode for the rest of the run: an
     # `output` node parks a finished product there and a `held` node is material
     # left behind, and both are pinned to the end (FORMULATION §J5, SPEC §6.12).
@@ -107,7 +110,7 @@ def report_deadlocked_objects(instance: Instance, diags: Diagnostics) -> None:
     shape = _read(instance)
     if shape is None:
         return
-    outcome, deepest = _walk(instance, shape)
+    outcome, deepest, _order = _walk(instance, shape)
     if outcome != "exhausted":
         return
     diags.error(errors.OBJECTS_DEADLOCKED, _explain(instance, shape, deepest))
@@ -119,16 +122,24 @@ def _read(instance: Instance) -> _Shape | None:
     count = len(instance.activities)
     if not count:
         return None
-    # States are keyed by one byte per activity and per arc, which is what keeps
-    # the seen-set small enough to hold fifty thousand of them. A laboratory
-    # offering 255 ways to do one thing would overflow that and two different
-    # states could then share a key -- the walk would skip one and could call an
-    # instance exhausted that is not. Nothing here is worth that risk, so such an
-    # instance is not walked at all.
-    if any(len(act.modes) >= 255 for act in instance.activities):
+    # States are keyed by a fixed number of bytes per activity and per arc, which
+    # is what keeps the seen-set small enough to hold fifty thousand of them. A
+    # choice that does not fit the width would make two different states share a
+    # key -- the walk would skip one and could then call an instance exhausted
+    # that is not -- so the width is chosen to fit, and an instance that would
+    # need more than two bytes is not walked at all rather than risked.
+    #
+    # One byte was the first try and it was too narrow: the benchmark's arm-pool
+    # rows reach 3,456 routes for a single arc, so three real instances were
+    # being declined without anybody noticing.
+    widest = max(
+        (len(act.modes) for act in instance.activities),
+        default=0,
+    )
+    widest = max(widest, max((len(arc.options) for arc in instance.arcs), default=0))
+    if widest >= 65535:
         return None
-    if any(len(arc.options) >= 255 for arc in instance.arcs):
-        return None
+    width = 1 if widest < 255 else 2
     incoming: list[list[int]] = [[] for _ in range(count)]
     outgoing: list[list[int]] = [[] for _ in range(count)]
     for index, arc in enumerate(instance.arcs):
@@ -174,6 +185,7 @@ def _read(instance: Instance) -> _Shape | None:
         outgoing=tuple(tuple(items) for items in outgoing),
         predecessors=tuple(tuple(items) for items in predecessors),
         keeps=tuple(keeps),
+        width=width,
     )
 
 
@@ -200,7 +212,36 @@ class _Board:
         return sorted(spot for spot, held in self.owners.items() if held)
 
 
-def _walk(instance: Instance, shape: _Shape) -> tuple[str, tuple[int, list[str]]]:
+def find_order(instance: Instance) -> tuple[_Step, ...] | None:
+    """An order of placements and moves that gets every Object to the end, or
+    None when the walk finds none or is stopped before it can.
+
+    This is the same walk `report_deadlocked_objects` makes, read for its
+    *witness* rather than for its verdict. Each step names an activity and the
+    mode it runs in, or an arc and the route it takes, and the order respects
+    what a spot can hold -- so laying times over it in this order, each thing as
+    early as the resources allow, turns it into a schedule. That is what
+    `greedy` does with it when every one of its own passes has come out empty.
+
+    ⚠ **The order is a way through, not a good way through.** The walk follows
+    one Object to its end before starting the next, because that is what makes
+    it cheap; nothing in it is weighed against a duration.
+    """
+    if any(not arc.options for arc in instance.arcs):
+        return None
+    shape = _read(instance)
+    if shape is None:
+        return None
+    outcome, _deepest, order = _walk(instance, shape)
+    return order if outcome == "found" else None
+
+
+# The verdict, the furthest the walk got (for the message), and the order it
+# found (empty unless the verdict is "found").
+_Walked = tuple[str, tuple[int, list[str]], tuple[_Step, ...]]
+
+
+def _walk(instance: Instance, shape: _Shape) -> _Walked:
     """Depth-first over placements and moves, with time erased.
 
     Returns `"found"` when the Objects can all be got to the end, `"exhausted"`
@@ -218,6 +259,7 @@ def _walk(instance: Instance, shape: _Shape) -> tuple[str, tuple[int, list[str]]
     board = _Board()
 
     seen: set[bytes] = set()
+    narrow = shape.width == 1
     budget = _EXPANSIONS
     deepest: tuple[int, list[str]] = (0, [])
 
@@ -230,21 +272,25 @@ def _walk(instance: Instance, shape: _Shape) -> tuple[str, tuple[int, list[str]]
 
     while True:
         if placed == activities and all(chosen >= 0 for chosen in route):
-            return "found", deepest
+            return "found", deepest, tuple(applied)
         if placed > deepest[0]:
             deepest = (placed, board.occupied())
 
         step = next(choices, None)
         if step is not None:
             _apply(instance, shape, step, mode, route, board)
-            key = bytes(chosen + 1 for chosen in (*mode, *route))
+            # Packed inline rather than through a helper: this runs once per
+            # state, and a call per state was measurably half the walk's time
+            # on the widest environment.
+            packed = (chosen + 1 for chosen in (*mode, *route))
+            key = bytes(packed) if narrow else array("H", packed).tobytes()
             if key in seen:
                 _undo(instance, shape, step, mode, route, board)
                 continue
             seen.add(key)
             budget -= 1
             if budget <= 0:
-                return "capped", deepest
+                return "capped", deepest, ()
             placed += step[0] == "place"
             stack.append(choices)
             applied.append(step)
@@ -252,7 +298,7 @@ def _walk(instance: Instance, shape: _Shape) -> tuple[str, tuple[int, list[str]]
             continue
 
         if not stack:
-            return "exhausted", deepest
+            return "exhausted", deepest, ()
         undone = applied.pop()
         placed -= undone[0] == "place"
         _undo(instance, shape, undone, mode, route, board)

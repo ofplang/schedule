@@ -269,6 +269,14 @@ What it is worth, on the RNA-seq case study's standard laboratory:
 | two jobs | optimal in 71.4 s | optimal in 2.3 s |
 | five jobs | nothing, after twelve minutes | a schedule at once, which two further minutes of search did not better |
 
+A forward pass is not always enough. Where the laboratory is narrow the pass can
+fill every contended bay and stop — each Object's next bay holding another Object's
+material — and no order of the work undoes a state already arrived at. For that
+case, and only when every pass has come out empty, the same walk that decides whether
+a plan is possible at all is asked for the order it found, and times are laid over
+it. On the benchmark's hardest grid that is the difference between a minute of search
+returning nothing and a schedule every time.
+
 The construction is **not general**, and does not pretend to be: it declines an
 instance that refills a stock, draws on one, relays an Object between spots, starts
 with material already held, replans from a reported history, or promises a job a

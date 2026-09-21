@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from ofplang.schedule.scheduler import greedy
 from ofplang.schedule.scheduler.envload import load_environment
 from ofplang.schedule.scheduler.greedy import construct
 from ofplang.schedule.scheduler.instance import (
@@ -292,3 +293,196 @@ def test_a_finished_product_parks_where_it_is_least_wanted():
     assert _violations(instance, solution) == []
     resting = solution.processing[2].mode.input_spots["i"]
     assert resting == "shelf.bay"
+
+
+# ---------------------------------------------------------------------------
+# The last resort: a ring the forward passes cannot get round.
+#
+# Stage spots in a cycle, one place each, and more Objects than the cycle can
+# hold. Every forward pass fills the ring and stops -- no ordering of the ready
+# set undoes that, which is what the benchmark's `s1_b6r4_pool1` showed
+# (report section 49.3). The walk in `mobility` backtracks, so it finds an
+# order, and `construct` lays times over it.
+# ---------------------------------------------------------------------------
+
+
+# Stage durations, from the plate-batch family: uneven, because even ones let
+# the passes fall into step and the standstill is about them not doing that.
+_STAGE_DURATIONS = (1, 3, 1, 10, 1)
+
+
+def _batch(objects: int, stages: int, laps: int) -> Instance:
+    """`objects` Objects going `laps` times round `stages` single-place stages.
+
+    The fork and the join are the point. One activity binds every loading spot
+    at once and hands out an Object per spot, and one takes them all back --
+    which is `plate_batch`'s shape, and the reason the forward passes lose: from
+    the first instant every Object is resting somewhere and wanting to be pushed
+    into the ring, so the ring fills and no ordering of the ready set unfills it.
+    A ring without the fork does *not* defeat them (measured).
+    """
+    spots = [f"st{k}.core" for k in range(stages)]
+    homes = [f"loader.s{b}" for b in range(objects)]
+    activities = [
+        ActivityInstance(
+            ("source",),
+            "source",
+            (Mode("m", ("loader",), 1, {}, {f"p{b}": homes[b] for b in range(objects)}),),
+        )
+    ]
+    arcs: list[ArcInstance] = []
+    tails: list[tuple[int, str]] = []
+    for b in range(objects):
+        route = [spots[k % stages] for k in range(stages * laps)]
+        first = len(activities)
+        for step, spot in enumerate(route):
+            activities.append(
+                ActivityInstance(
+                    (f"b{b}s{step}",),
+                    "stage",
+                    (
+                        Mode(
+                            "m",
+                            (spot.split(".")[0],),
+                            _STAGE_DURATIONS[step % len(_STAGE_DURATIONS)],
+                            {"i": spot},
+                            {"o": spot},
+                        ),
+                    ),
+                )
+            )
+        hops = [homes[b], *route]
+        for step in range(len(hops) - 1):
+            source = 0 if step == 0 else first + step - 1
+            arcs.append(
+                ArcInstance(
+                    Arc(Endpoint(("source",), f"p{b}"), Endpoint((f"b{b}s{step}",), "i")),
+                    source,
+                    first + step,
+                    (TransportOption(0, 0, "arm", hops[step], hops[step + 1], 1),),
+                )
+            )
+        tails.append((first + len(route) - 1, route[-1]))
+    sink = len(activities)
+    activities.append(
+        ActivityInstance(
+            ("sink",),
+            "sink",
+            (Mode("m", ("loader",), 1, {f"p{b}": homes[b] for b in range(objects)}, {}),),
+        )
+    )
+    for b, (tail, spot) in enumerate(tails):
+        arcs.append(
+            ArcInstance(
+                Arc(Endpoint((f"b{b}",), "o"), Endpoint(("sink",), f"p{b}")),
+                tail,
+                sink,
+                (TransportOption(0, 0, "arm", spot, homes[b], 1),),
+            )
+        )
+    return Instance(_ENV, "second", tuple(activities), tuple(arcs), ())
+
+
+def test_a_ring_the_forward_passes_cannot_get_round_is_still_scheduled():
+    # 🔴 The case the last resort exists for. The ring fills, every Object's
+    # next spot holds another Object's material, and no priority rule undoes a
+    # state already arrived at.
+    instance = _batch(objects=3, stages=3, laps=2)
+    built = construct(instance)
+    assert built is not None
+    assert _violations(instance, built) == []
+
+
+def test_without_the_walk_that_ring_comes_out_empty(monkeypatch):
+    # The control for the test above: it is the walk that rescues this, and not
+    # something else that happened to change.
+    instance = _batch(objects=3, stages=3, laps=2)
+    monkeypatch.setattr(greedy.mobility, "find_order", lambda _instance: None)
+    assert construct(instance) is None
+
+
+def test_the_replayed_schedule_is_the_same_one_twice():
+    # The walk is deterministic and so is the timing laid over it, which is what
+    # lets a plan be compared against the one before it.
+    instance = _batch(objects=4, stages=3, laps=2)
+    first = construct(instance)
+    second = construct(instance)
+    assert first is not None and second is not None
+    assert first.processing == second.processing
+    assert first.transport == second.transport
+
+
+@pytest.mark.parametrize(
+    "objects,stages,laps", [(3, 3, 2), (4, 3, 4), (5, 4, 4), (6, 4, 4)]
+)
+def test_every_size_of_that_ring_comes_back_a_schedule(objects, stages, laps):
+    # The checker is the point, not the makespan: a replayed order is a schedule
+    # only if it survives being read back against the constraints themselves.
+    instance = _batch(objects, stages, laps)
+    built = construct(instance)
+    assert built is not None
+    assert _violations(instance, built) == []
+
+
+def test_an_instance_with_no_way_through_still_comes_out_empty():
+    # A ring is one thing; a trap is another. Two Objects alternating between
+    # two places cannot both finish however anybody orders it, and the walk
+    # proves that rather than papering over it -- so the greedy returns nothing,
+    # which is the honest answer and the one `mobility` refuses the plan on.
+    bays = ("lab.a", "lab.b")
+    activities: list[ActivityInstance] = []
+    arcs: list[ArcInstance] = []
+    for job in range(2):
+        first = len(activities)
+        entry = f"gate.s{job}"
+        activities.append(
+            ActivityInstance(
+                (), "", (Mode("in", (), 0, {}, {"o": entry}),), boundary=BoundaryInfo(kind="input")
+            )
+        )
+        for step in range(5):
+            spot = bays[step % 2]
+            activities.append(
+                ActivityInstance(
+                    (f"j{job}s{step}",),
+                    "work",
+                    (Mode("m", (spot.split(".")[0],), 1, {"i": spot}, {"o": spot}),),
+                )
+            )
+        activities.append(
+            ActivityInstance(
+                (),
+                "",
+                tuple(Mode(bay, (), 0, {"i": bay}, {}) for bay in bays),
+                boundary=BoundaryInfo(kind="output"),
+            )
+        )
+        arcs.append(
+            ArcInstance(
+                Arc(Endpoint((), "in"), Endpoint((f"j{job}s0",), "i")),
+                first,
+                first + 1,
+                (TransportOption(0, 0, "arm", entry, bays[0], 1),),
+            )
+        )
+        for step in range(4):
+            arcs.append(
+                ArcInstance(
+                    Arc(Endpoint((f"j{job}s{step}",), "o"), Endpoint((f"j{job}s{step + 1}",), "i")),
+                    first + 1 + step,
+                    first + 2 + step,
+                    (TransportOption(0, 0, "arm", bays[step % 2], bays[(step + 1) % 2], 1),),
+                )
+            )
+        last = first + 5
+        arcs.append(
+            ArcInstance(
+                Arc(Endpoint((f"j{job}s4",), "o"), Endpoint((), "out")),
+                last,
+                last + 1,
+                tuple(
+                    TransportOption(0, k, "arm", bays[0], bay, 1) for k, bay in enumerate(bays)
+                ),
+            )
+        )
+    assert construct(Instance(_ENV, "second", tuple(activities), tuple(arcs), ())) is None

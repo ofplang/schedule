@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 
 from ofplang.schedule.core import objective as objective_stages
 from ofplang.schedule.core.identifiers import parse_qualified_spot
+from ofplang.schedule.scheduler import mobility
 from ofplang.schedule.scheduler.instance import Instance, TransportOption, job_membership
 from ofplang.schedule.scheduler.model import JobSpec, Mode
 from ofplang.schedule.scheduler.result import ProcessingResult, Solution, TransportResult
@@ -614,7 +615,196 @@ def construct(
         # resort and not a fourth opinion -- and leaving it out of the ordinary
         # path is also what keeps every instance that already works unchanged.
         best = _pass(instance, _JobByJob(instance, jobs), floors)
+    if best is None:
+        # 🔴 **The end of the line, and the only part of this that backtracks.**
+        # A forward pass fails on a shape no ordering of the ready set can undo:
+        # the contended spots fill, every Object's next spot is the one another
+        # Object is standing in, and nothing can move (measured on
+        # `s1_b6r4_pool1`, report section 49.3 -- all five spots of the ring
+        # holding material, in all four passes identically).
+        #
+        # `mobility` walks that same instance with the clock erased and *does*
+        # backtrack, so where a way through exists it finds one -- and what it
+        # finds is an order of exactly these placements and moves. Laying times
+        # over it is the whole of what is left, and `_replay` does that.
+        #
+        # It runs only here, so every instance that already worked is untouched,
+        # and the walk's cost is paid only by instances that would otherwise
+        # have got nothing at all.
+        order = mobility.find_order(instance)
+        if order is not None:
+            best = _replay(instance, order, floors)
     return best
+
+
+def _replay(instance: Instance, order, floors: dict[int, int]) -> Solution | None:
+    """Lay times over an order that is already known to work.
+
+    Nothing here chooses anything: the mode of every activity and the route of
+    every move were settled by the walk, and so was the sequence. Each step is
+    put as early as the resources allow, which is what turns an order into a
+    schedule.
+
+    **Why this cannot paint itself into a corner.** The walk only ever moved
+    material into a spot nothing was standing in, so by the time a step here
+    wants a spot, the step that emptied it is behind us and has already been
+    timed. There is no refusal to make. The `None` returns below are therefore
+    assertions in the shape of code -- if one ever fires, the walk and this
+    disagree about what a spot holds, and returning nothing is the safe way to
+    disagree.
+
+    **Spots are taken at or after everything already booked in them, never in a
+    gap.** A product rests where it was made until its move comes for it, and
+    how long that is is not known yet, so resting into a gap would overrun
+    whatever was booked after it. Devices and transporters have no such
+    problem -- nothing rests on them -- so those do use the gaps.
+    """
+    board = _Board()
+    leaving, arriving = _edges(instance)
+    _counts, orders = _waiting(instance)
+    placed: dict[int, _Placement] = {}
+    moves: dict[int, _Move] = {}
+    resting: dict[int, int] = {}
+    floor = {index: floors.get(index, 0) for index in range(len(instance.activities))}
+    outputs: list[int] = []
+
+    for kind, index, choice in order:
+        if kind == "place":
+            if not _replay_place(
+                instance, board, index, choice, floor, arriving, leaving,
+                moves, placed, resting, outputs, orders,
+            ):
+                return None
+        elif not _replay_move(instance, board, index, choice, moves, resting):
+            return None
+
+    if len(placed) != len(instance.activities) or len(moves) != len(instance.arcs):
+        return None  # the order did not cover everything
+    makespan = _makespan(instance, placed, moves)
+    for activity in outputs:
+        placement = placed[activity]
+        placed[activity] = _Placement(activity, placement.mode_index, placement.start, makespan)
+        for index in arriving[activity]:
+            bay = board.spot(moves[index].option.to_spot)
+            if bay.pending is not None:
+                bay.release(makespan)
+    if any(line.pending is not None for line in board.spots.values()):
+        return None  # material left resting with nothing to take it away
+    return _assemble(instance, placed, moves, makespan)
+
+
+def _replay_place(
+    instance: Instance,
+    board: _Board,
+    index: int,
+    mode_index: int,
+    floor: dict[int, int],
+    arriving: dict[int, list[int]],
+    leaving: dict[int, list[int]],
+    moves: dict[int, _Move],
+    placed: dict[int, _Placement],
+    resting: dict[int, int],
+    outputs: list[int],
+    orders: dict[int, list[int]],
+) -> bool:
+    """Put one activity down in the mode the walk chose for it."""
+    act = instance.activities[index]
+    if act.boundary is not None:
+        pinned = _place_boundary(
+            board, instance, index, [mode_index], floor[index], arriving[index], moves
+        )
+        if pinned is None:
+            return False
+        _chosen, start, end = pinned
+        if act.boundary.kind == "output":
+            outputs.append(index)
+    else:
+        mode = act.modes[mode_index]
+        landed = {moves[arc].option.to_spot for arc in arriving[index]}
+        start = max([floor[index], *(moves[arc].end for arc in arriving[index])])
+        # Spots first, then the machines, then the spots again: pushing past a
+        # machine can only move the start later, and a spot's answer to "when is
+        # everything booked in you over" only grows with the question, so one
+        # more look settles it.
+        for _ in range(2):
+            for spot in _spots_of(mode):
+                free = board.spot(spot).clear_from(start, ours=spot in landed)
+                if free is None:
+                    return False
+                start = max(start, free)
+            if mode.device_access:
+                for device in mode.devices:
+                    free = board.device(device).earliest(start, mode.duration)
+                    if free is None:
+                        return False
+                    start = max(start, free)
+        end = start + mode.duration
+        for arc in arriving[index]:
+            bay = board.spot(moves[arc].option.to_spot)
+            if bay.pending is not None:
+                bay.release(start)
+        for spot in _spots_of(mode):
+            board.spot(spot).take(start, end)
+        if mode.device_access:
+            for device in mode.devices:
+                board.device(device).take(start, end)
+
+    placed[index] = _Placement(index, mode_index, start, end)
+    # Whatever it produced rests where it was made until its move is timed.
+    for arc_index in leaving[index]:
+        resting[arc_index] = end
+        for option in instance.arcs[arc_index].options:
+            if option.src_mode_index == mode_index:
+                board.spot(option.from_spot).hold(end)
+                break
+    for target in orders[index]:
+        floor[target] = max(floor[target], end)
+    return True
+
+
+def _replay_move(
+    instance: Instance,
+    board: _Board,
+    index: int,
+    option_index: int,
+    moves: dict[int, _Move],
+    resting: dict[int, int],
+) -> bool:
+    """Send one move on the route the walk chose for it."""
+    option = instance.arcs[index].options[option_index]
+    start = resting.pop(index, 0)
+    if option.from_spot == option.to_spot:
+        # A hand-off that stays put takes no time and names no arm (§Parameters).
+        landed = start
+    else:
+        devices = _devices_of(option)
+        for _ in range(2):
+            free = board.spot(option.to_spot).clear_from(start)
+            if free is None:
+                return False
+            start = max(start, free)
+            if option.transporter is not None:
+                booked = board.transporter(option.transporter).earliest(start, option.duration)
+                if booked is None:
+                    return False
+                start = max(start, booked)
+            for device in devices:
+                free = board.device(device).earliest(start, option.duration)
+                if free is None:
+                    return False
+                start = max(start, free)
+        landed = start + option.duration
+        board.transporter(option.transporter).take(start, landed) if option.transporter else None
+        for device in devices:
+            board.device(device).take(start, landed)
+    source = board.spot(option.from_spot)
+    if source.pending is not None:
+        source.release(landed)
+    else:
+        source.take(start, landed)
+    board.spot(option.to_spot).hold(start)
+    moves[index] = _Move(index, option_index, option, start, landed)
+    return True
 
 
 def _pass(instance: Instance, rule, floors: dict[int, int]) -> Solution | None:
