@@ -636,12 +636,74 @@ def test_a_transport_junction_is_an_ordinary_activity():
     assert built.processing[0].relay is junction.relay
 
 
-def test_an_occupied_spot_is_declined():
+def test_an_occupied_spot_is_kept_off_rather_than_declined():
+    # The spot something is already standing on (§6.12) is not work: it is booked
+    # before the pass and nothing else may have it. Here it is the *only* bay, so
+    # the work that wants it cannot be placed and the answer is still nothing --
+    # but for the right reason, and the refusal is gone.
     base = _in_scope()
-    occupied = replace(base.activities[0], boundary=BoundaryInfo(kind="held", since=0))
-    instance = replace(base, activities=(occupied,))
-    assert _refuse(instance, None, ()) == "held"
-    assert construct(instance) is None
+    occupied = ActivityInstance(
+        (), "", (Mode("held", (), 0, {"i": "lab.a"}, {}),), boundary=BoundaryInfo("held", since=0)
+    )
+    instance = replace(base, activities=(*base.activities, occupied))
+    assert _refuse(instance, None, ()) is None
+    assert construct(instance) is None, "the only bay is taken, so there is nowhere to work"
+
+
+def test_work_goes_around_an_occupied_spot():
+    instance = Instance(
+        _ENV,
+        "second",
+        (
+            ActivityInstance(
+                ("work",),
+                "work",
+                (
+                    Mode("busy", ("lab",), 3, {}, {"o": "lab.a"}),
+                    Mode("free", ("lab",), 3, {}, {"o": "lab.b"}),
+                ),
+            ),
+            ActivityInstance(
+                (),
+                "",
+                (Mode("held", (), 0, {"i": "lab.a"}, {}),),
+                boundary=BoundaryInfo("held", since=0),
+            ),
+        ),
+        (),
+        (),
+    )
+    built = construct(instance)
+    assert built is not None
+    assert _violations(instance, built) == []
+    working = next(p for p in built.processing if p.activity == 0)
+    assert working.mode.id == "free", "the work took the bay the leftovers are on"
+
+
+def test_an_occupied_spot_is_held_from_since_to_the_end_of_the_run():
+    instance = Instance(
+        _ENV,
+        "second",
+        (
+            ActivityInstance(("work",), "work", (Mode("m", ("lab",), 7, {}, {"o": "lab.b"}),)),
+            ActivityInstance(
+                (),
+                "",
+                (Mode("held", (), 0, {"i": "lab.a"}, {}),),
+                boundary=BoundaryInfo("held", since=2),
+            ),
+        ),
+        (),
+        (),
+    )
+    built = construct(instance)
+    assert built is not None
+    leftovers = next(p for p in built.processing if p.activity == 1)
+    assert leftovers.start == 2
+    assert leftovers.end == built.makespan
+    # 🔴 And it is not counted as work: the makespan is the real end, not the
+    # horizon the board booked the bay to (§8).
+    assert built.makespan == 7
 
 
 def test_cancelled_work_is_declined():
@@ -655,15 +717,42 @@ def test_cancelled_work_is_declined():
     assert construct(instance, fixation=fixation) is None
 
 
-def test_a_promised_completion_is_declined():
-    # 🔴 The one that matters most. C_j is measured over a job's own work --
-    # not its boundary nodes, and not the parts of a move that are the material
-    # resting rather than travelling -- so checking a promise here would mean
-    # checking it against a number the model does not use.
-    instance = _in_scope()
+def _owned_by(job: str) -> Instance:
+    """One activity belonging to `job`. Ownership is read off the node path, whose
+    first element is the job id on a joint plan (`instance.job_membership`)."""
+    return Instance(
+        _ENV,
+        "second",
+        (
+            ActivityInstance(
+                (job, "only"), "work", (Mode("m", ("lab",), 1, {}, {"o": "lab.a"}),)
+            ),
+        ),
+        (),
+        (),
+    )
+
+
+def test_a_promise_that_can_be_kept_is_kept():
+    # C_j is measured over a job's own work, and which ends count comes from
+    # `completion.job_end_parts` -- the same selection the solver constrains
+    # against, so the two cannot disagree about whether a promise held.
+    instance = _owned_by("job1")
     promised = (JobSpec(id="job1", release=0, bound=100),)
-    assert _refuse(instance, None, promised) == "bound"
-    assert construct(instance, jobs=promised) is None
+    assert _refuse(instance, None, promised) is None
+    built = construct(instance, jobs=promised)
+    assert built is not None
+    assert _violations(instance, built) == []
+    assert built.job_completions == {"job1": 1}
+
+
+def test_a_promise_the_schedule_breaks_is_not_offered():
+    # 🔴 There is nothing to relax against here: a constructed schedule is one
+    # schedule, not the best one, so it either keeps the promise or it is not
+    # offered. Relaxing a bound is the solver's to do and to report.
+    instance = _owned_by("job1")
+    impossible = (JobSpec(id="job1", release=0, bound=0),)
+    assert construct(instance, jobs=impossible) is None
 
 
 def test_a_fresh_roster_is_not_declined():
@@ -679,9 +768,7 @@ def test_every_listed_refusal_has_a_test_above():
     # added to `REFUSALS` with no test would look exactly like six with six.
     covered = {
         "running refill",
-        "held",
         "cancelled",
-        "bound",
     }
     assert set(REFUSALS) == covered
 

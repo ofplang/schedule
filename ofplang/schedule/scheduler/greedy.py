@@ -42,7 +42,7 @@ from ofplang.schedule.core.identifiers import (
     parse_qualified_resource,
     parse_qualified_spot,
 )
-from ofplang.schedule.scheduler import mobility
+from ofplang.schedule.scheduler import completion, mobility
 from ofplang.schedule.scheduler.instance import Instance, TransportOption, job_membership
 from ofplang.schedule.scheduler.model import JobSpec, Mode
 from ofplang.schedule.scheduler.result import (
@@ -56,9 +56,7 @@ from ofplang.schedule.scheduler.status import Fixation
 # Shapes `construct` declines, and why each needs more than list scheduling.
 REFUSALS = {
     "running refill": "a refill already under way is history this does not carry",
-    "held": "an occupied spot is held to the horizon, which is not a duration",
     "cancelled": "work a stopped job abandoned is placed at an instant this does not derive",
-    "bound": "a promised completion has to be measured the way the model measures it",
 }
 
 # How many times a start may be pushed later before this gives up. Each push
@@ -207,18 +205,16 @@ def _refuse(instance: Instance, fixation: Fixation | None, jobs: tuple) -> str |
     one 0-duration, device-less, single-spot mode -- and nothing here has to know
     it is one, beyond marking it as such in the answer (`_marked`).
 
-    A joint plan is in scope while no job carries a promised completion. The
-    release is easy -- it is a floor on when a job's work may start, and a forward
-    pass has a floor already -- but the promise is a cap on $C_j$, and $C_j$ is
-    measured over the job's *own* work: not its boundary nodes, and not the parts
-    of a move that are the material resting rather than travelling (§J, and
-    `cpsat._resting`). Measuring it some other way here would mean checking a
-    promise against a number the model does not use. So a roster with promises in
-    it is declined, and a fresh one -- which is every roster the case-study
-    laboratories submit -- is not.
+    An occupied spot is in scope: it is not work, so it goes on the board before
+    the pass and stays there (`_lay_out_held`).
+
+    So is a promised completion. $C_j$ is measured over the job's *own* work --
+    not its boundary nodes, and not the parts of a move that are the material
+    resting rather than travelling -- and that rule is not restated here: it is
+    read from `completion.job_end_parts`, which is the same thing the solver
+    constrains against. A promise that one of them thinks is kept and the other
+    thinks is broken is the failure a promise exists to prevent.
     """
-    if any(spec.bound is not None for spec in jobs):
-        return "bound"
     if fixation is not None and fixation.replenishments:
         # A refill already running is a fixed future increase the levels do not
         # yet carry (`cpsat._add_resources`). Nothing in the corpus has one, so
@@ -233,9 +229,6 @@ def _refuse(instance: Instance, fixation: Fixation | None, jobs: tuple) -> str |
         # Nothing in the corpus has any, so rather than re-derive a rule this has
         # never been measured against, it is declined.
         return "cancelled"
-    for act in instance.activities:
-        if act.boundary is not None and act.boundary.kind == "held":
-            return "held"
     return None
 
 
@@ -718,10 +711,10 @@ def construct(
         if best is None:
             return None
         if not levels:
-            return _marked(instance, fixation, best)
+            return _promised(instance, fixation, jobs, _marked(instance, fixation, best))
         stocked, wanted = _stock_plan(instance, fixation, best)
         if stocked is not None:
-            return _marked(instance, fixation, stocked)
+            return _promised(instance, fixation, jobs, _marked(instance, fixation, stocked))
         if wanted is None:
             return None  # the stocks cannot last however the work is arranged
         window = _window_for(instance, *wanted)
@@ -729,6 +722,48 @@ def construct(
             return None
         reserved = (*reserved, window)
     return None
+
+
+def _promised(
+    instance: Instance,
+    fixation: Fixation | None,
+    jobs: tuple[JobSpec, ...],
+    solution: Solution,
+) -> Solution | None:
+    """Work out when each job completed, and refuse the schedule if that breaks a
+    promise.
+
+    🔴 **Which ends count comes from `completion.job_end_parts`, not from here.**
+    The solver constrains $C_j \\le B_j$ over the same selection; a second reading
+    of it would let a promise be kept by one measure and broken by the other,
+    which is the whole of what a promise is for.
+    """
+    if not jobs:
+        return solution
+    membership = job_membership(instance, [spec.id for spec in jobs])
+    ends = {p.activity: p.end for p in solution.processing}
+    arc_ends = {index: move.end for index, move in enumerate(solution.transport)}
+    completions = {
+        job_id: max(
+            [ends[i] for i in activities if i in ends]
+            + [arc_ends[r] for r in arcs if r in arc_ends]
+        )
+        for job_id, (activities, arcs) in completion.job_end_parts(
+            instance, fixation, membership
+        ).items()
+        if activities or arcs
+    }
+    for spec in jobs:
+        if spec.bound is None:
+            continue
+        reached = completions.get(spec.id)
+        if reached is not None and reached > spec.bound:
+            # A constructed schedule is one schedule, not the best one, so there
+            # is nothing to relax against here: it either keeps the promise or it
+            # is not offered. Relaxing a bound is the solver's to do and to report
+            # (`api._solve_within_bounds`).
+            return None
+    return replace(solution, job_completions=completions)
 
 
 def _marked(
@@ -803,12 +838,17 @@ def _build(
         # have got nothing at all.
     #
     # ⚠ It is narrower than the passes above it, deliberately. The walk has no
-    # clock, so it cannot honour times that are already settled; replaying its
-    # order over a board that is part history would put the history somewhere it
-    # did not happen. A replan that defeats the forward passes therefore gets
-    # nothing -- which is what it got before replanning was in scope at all, so
-    # nothing regresses.
-    if best is None and not history.activities and not history.arcs:
+    # clock, so it cannot honour a time that is already settled -- a reported
+    # history, or a spot occupied since a stated moment (§6.12). Replaying its
+    # order over either would put a settled thing somewhere it did not happen.
+    # Such an instance therefore gets nothing when the forward passes fail,
+    # which is what it got before any of this was in scope, so nothing
+    # regresses.
+    settled_already = bool(history.activities or history.arcs) or any(
+        act.boundary is not None and act.boundary.kind == "held"
+        for act in instance.activities
+    )
+    if best is None and not settled_already:
         order = mobility.find_order(instance)
         if order is not None:
             best = _replay(instance, order, floors)
@@ -1303,6 +1343,9 @@ def _pass(
         leaving, outputs,
     ):
         return None
+    held = _lay_out_held(instance, now, board, placed, settled, orders, counts, floor)
+    if held is None:
+        return None
 
     ready = sorted(
         (i for i, count in counts.items() if count == 0 and i not in placed), reverse=True
@@ -1400,6 +1443,16 @@ def _pass(
     if len(placed) != len(instance.activities) or len(moves) != len(instance.arcs):
         return None  # a cycle, or an arc whose ends were never both placed
     makespan = _makespan(instance, placed, moves)
+    for activity in held:
+        # An occupied spot is held until the run is over (§6.12), which is what
+        # the pending hold said and what closing it here settles.
+        placement = placed[activity]
+        until = max(makespan, placement.start)
+        placed[activity] = _Placement(activity, placement.mode_index, placement.start, until)
+        for spot in _spots_of(instance.activities[activity].modes[placement.mode_index]):
+            line = board.spot(spot)
+            if line.pending is not None:
+                line.release(until)
     for activity in outputs:
         # An output node's end *is* the makespan (§8), so its bay is the material's
         # from the delivery until the run is over. Nothing could have taken that bay
@@ -1442,6 +1495,47 @@ def _place_entry(
     placed[index] = _Placement(index, 0, at, at)
     settled[index] = 0
     return placed[index]
+
+
+def _lay_out_held(
+    instance: Instance,
+    now: int,
+    board: _Board,
+    placed: dict[int, _Placement],
+    settled: dict[int, int],
+    orders: dict[int, list[int]],
+    counts: dict[int, int],
+    floor: dict[int, int],
+) -> list[int] | None:
+    """Book the spots the document says are already occupied (§6.12).
+
+    Material a stopped job left behind. It is not work and it is not going
+    anywhere: it sits from `since` -- or from `now`, if `since` is in the past,
+    since nothing pending could have used the spot before `now` anyway -- until
+    the run is over. So the pass never gets to choose anything about it; it only
+    has to keep off.
+    """
+    kept: list[int] = []
+    for index, act in enumerate(instance.activities):
+        if act.boundary is None or act.boundary.kind != "held":
+            continue
+        at = max(act.boundary.since or 0, now)
+        for spot in _spots_of(act.modes[0]):
+            if not board.spot(spot).free(at, 0):
+                return None  # something already reported is standing there
+            # 🔴 A hold, not a booking. "Until the run is over" has no number
+            # yet, and every number worked out from the durations is one the
+            # hold itself invalidates by pushing work past it. A pending hold
+            # says what is meant -- nothing may have this spot -- and closes at
+            # the makespan, the way a finished product's bay does.
+            board.spot(spot).hold(at)
+        placed[index] = _Placement(index, 0, at, at)
+        settled[index] = 0
+        kept.append(index)
+        for target in orders[index]:
+            floor[target] = max(floor[target], at)
+            counts[target] -= 1
+    return kept
 
 
 def _lay_out_history(
