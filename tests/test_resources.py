@@ -185,11 +185,15 @@ def test_the_example_plans():
     assert report.plan["outcome"] == "optimal"
 
 
-def test_a_stock_that_cannot_cover_the_work_is_infeasible():
+def test_a_stock_that_cannot_cover_the_work_is_refused_by_counting():
     # Two assays at 2 units need 4; with nothing to refill it, 3 is not enough.
+    # A stock no replenisher reaches only falls, so this needs no solving -- it
+    # is settled by the same kind of arithmetic as `final_outputs_crowded`, and
+    # the message names the stock and the shortfall rather than saying only that
+    # there is no schedule.
     report = _plan(env=_env_no_refills(), document=_document({"reader": {"reagent": 3}}))
     assert report.plan is None
-    assert "infeasible" in [d.code for d in report.diagnostics]
+    assert "stock_cannot_last" in [d.code for d in report.diagnostics]
 
 
 def test_the_plan_echoes_what_each_activity_consumed():
@@ -230,10 +234,10 @@ def test_a_consuming_environment_requires_the_starting_levels():
 
 
 def test_an_empty_initial_means_every_stock_starts_empty():
-    # Empty and nothing to refill it: the work cannot run.
+    # Empty and nothing to refill it: the work cannot run, and counting says so.
     report = _plan(env=_env_no_refills(), document=_document({}))
     assert report.plan is None
-    assert "infeasible" in [d.code for d in report.diagnostics]
+    assert "stock_cannot_last" in [d.code for d in report.diagnostics]
 
 
 @pytest.mark.parametrize(

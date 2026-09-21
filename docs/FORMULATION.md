@@ -427,6 +427,16 @@ the special case of this where the places that never free up are the finished
 products' alone; it is kept because it is cheaper and names the remedy more
 precisely.
 
+**And a stock can run out before anything is scheduled.** The reservoir of §11 is
+built only for the stocks a refill can reach: one nothing can add to only falls,
+so its whole trajectory is bounded by its end and the reservoir collapses to a
+single inequality — what is left must cover what is still to be drawn. That
+inequality needs no variables, so it is checked before the model is built
+(`stock_cannot_last`, SPEC §10.4), counting each activity's draw at the smallest
+its modes offer, since the schedule is free to choose the cheapest. ⚠ It says
+nothing about a refillable stock: there the level may rise, and whether it lasts
+depends on when the refills are placed.
+
 ### 4. Transport route selection
 
 Exactly one feasible route (source mode, destination mode, transporter) is chosen

@@ -111,6 +111,10 @@ FINAL_OUTPUTS_CROWDED = "final_outputs_crowded"
 # A blocking deadlock, settled before any solve for the same reason as the count
 # above -- the solver can only spend its budget and return `unknown`.
 OBJECTS_DEADLOCKED = "objects_deadlocked"
+# A stock no replenisher reaches, with more still to be drawn from it than it
+# holds. Monotone, so one comparison settles it -- a counting argument like the
+# two above, and settled before any solve for the same reason.
+STOCK_CANNOT_LAST = "stock_cannot_last"
 INFEASIBLE = "infeasible"
 
 # Consumable resources (§4.7, §6.10, §9.3). The model is in effect when some mode

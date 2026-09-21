@@ -48,6 +48,26 @@ def _env_no_refills():
     return env
 
 
+def _document_with_the_only_bay_occupied():
+    """The consumable document saying the reader's one bay is already taken.
+
+    Infeasible -- the assays have nowhere to run -- and **infeasible in a way
+    nothing settles before the solve**. A `held` spot is pinned in *time*, from
+    `since` onwards, and the pre-solve walk has no clock, so it passes over this
+    deliberately (report section 48.5). That gap is what makes this the right
+    fixture for "the timings survive an infeasible": every other infeasibility in
+    the corpus is now caught by counting, and a counted one runs no solve to
+    report.
+    """
+    document = yaml.safe_load(
+        (EXAMPLES / "consumable.document.yaml").read_text(encoding="utf-8")
+    )
+    document = copy.deepcopy(document)
+    document["now"] = 0
+    document["occupied"] = [{"spot": "reader.stage", "since": 0}]
+    return document
+
+
 # --- the record is there, and says what ran ------------------------------
 
 
@@ -73,10 +93,11 @@ def test_a_solved_schedule_reports_what_the_solve_cost():
 
 
 def test_an_unschedulable_instance_still_reports_the_solve():
-    # A stock nothing can refill, starting empty: the assays can never run. The
-    # point is not the outcome (test_resources covers that) but that the timings
-    # survive it -- "how long until infeasible" is a benchmark number.
-    report = _consumable(env=_env_no_refills())
+    # The reader's one bay is already occupied, so the assays can never run. The
+    # point is not the outcome but that the timings survive it -- "how long until
+    # infeasible" is a benchmark number. ⚠ The fixture has to be one the
+    # pre-solve checks cannot settle, or there is no solve left to report.
+    report = _consumable(document=_document_with_the_only_bay_occupied())
     assert report.plan is None
     assert report.outcome == "infeasible"
     assert report.stats is not None
@@ -90,7 +111,8 @@ def test_an_unschedulable_instance_still_reports_the_solve():
     assert report.stats.deterministic_time >= 0.0
     assert report.stats.wall_time >= 0.0
     assert report.stats.model.variables > 0
-    assert report.stats.model.replenishments == 0
+    assert report.stats.model.activities > 0
+    assert report.stats.model.arcs > 0
 
 
 def test_nothing_is_reported_when_no_solve_ran():

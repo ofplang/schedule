@@ -33,6 +33,7 @@ from ofplang.schedule.scheduler.instance import (
     merge_instances,
     prefix_instance,
     report_crowded_outputs,
+    report_exhausted_stocks,
     report_unreachable,
 )
 from ofplang.schedule.scheduler.mobility import report_deadlocked_objects
@@ -1526,6 +1527,10 @@ def _run(
     # expensive kind: measured, twelve minutes spent returning `unknown` on a plan
     # that never had a schedule.
     report_crowded_outputs(instance, reach)
+    # And whether the stocks can last. Beside the count for the same reason it is
+    # beside reachability: monotone arithmetic about the instance, true whichever
+    # planner is asked, and settled without solving.
+    report_exhausted_stocks(instance, fixation, reach)
     diagnostics += reach.items
     if _has_error(reach.items):
         return ScheduleReport(None, None, None, diagnostics)

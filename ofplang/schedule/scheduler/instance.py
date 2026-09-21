@@ -488,6 +488,63 @@ def _can_place(choices: list[tuple[frozenset[str], ...]]) -> bool:
     return walk(0, frozenset())
 
 
+def report_exhausted_stocks(instance: Instance, fixation, diags: Diagnostics) -> None:
+    """Emit `stock_cannot_last` where a stock has more to give than it holds.
+
+    **A stock nothing can refill only ever falls.** Its whole trajectory is then
+    bounded by its end, so "the level never goes below zero" is exactly "what is
+    still to be drawn fits in what is left" -- one comparison, no event times and
+    no ordering (the same reduction `cpsat._add_resources` makes when it declines
+    to build a reservoir for such a stock). Where the comparison fails there is no
+    schedule, whatever else is true of the instance.
+
+    🔴 **The draw is counted at its smallest.** An activity offering several modes
+    may draw different amounts in each, and the schedule is free to pick the
+    cheapest; counting anything larger would refuse instances that can be run.
+    Fixed activities are not counted at all -- their draw is already spent and
+    folded into the levels at `now` (§4.7.2).
+
+    ⚠ **A necessary condition, not a sufficient one**, and only for the stocks no
+    refill reaches. Silence says nothing about whether a refillable stock lasts:
+    that depends on when the refills go, which is a question about the schedule.
+    """
+    levels = getattr(fixation, "levels", None) or {}
+    if not levels:
+        return  # no levels stated, so no reservoir is built at all (§4.7)
+    fixed = getattr(fixation, "activities", None) or {}
+    # Which stocks something can still add to: a candidate the schedule may run,
+    # or a refill already under way whose increase is fixed.
+    refillable = {
+        (candidate.device, resource)
+        for candidate in instance.replenishments
+        for resource in candidate.resources
+    }
+    for started in (getattr(fixation, "replenishments", None) or {}).values():
+        if started.status == "running":
+            refillable.update((started.device, resource) for resource in started.amounts)
+
+    for stock in sorted(set(levels) - refillable):
+        device, resource = stock
+        qualified = f"{device}.{resource}"
+        # The least this instance can possibly draw: the cheapest mode of every
+        # activity that has not already run.
+        least = sum(
+            min(mode.consumption.get(qualified, 0) for mode in act.modes)
+            for index, act in enumerate(instance.activities)
+            if index not in fixed and act.modes
+        )
+        left = levels[stock]
+        if least <= left:
+            continue
+        diags.error(
+            errors.STOCK_CANNOT_LAST,
+            f"{qualified} has {left} left and nothing can refill it, but the work "
+            f"still to do draws at least {least} from it. No schedule exists. Either "
+            f"give the environment a replenisher that reaches it (§5.6), start the "
+            f"run with more, or plan less work against it",
+        )
+
+
 def report_unreachable(instance: Instance, fixed_arc_indices: set[int], diags: Diagnostics) -> None:
     """Emit `arc_unreachable` for every **pending** leg (an arc not in
     `fixed_arc_indices`) that no route can serve. Committed (fixed) legs are
