@@ -67,11 +67,16 @@ REFUSALS = {
 # shape nobody anticipated ends in `None` rather than in a long wait.
 _PUSHES = 64
 
-# How many times the whole construction is retried with one more refill's
-# machine time held back. Each round reshapes the schedule, which moves its own
-# draws, so there is no argument that this settles -- the cap is what makes it
-# terminate. Measured on the benchmark's stock rows, one round is enough.
-_REFILL_ROUNDS = 4
+# How many times the whole construction is retried with one more refill's machine
+# time held back. Each round reshapes the schedule, which moves its own draws, so
+# there is no argument that this settles -- the cap is what makes it terminate.
+#
+# Measured on the benchmark's stock rows, a row needs one round per refill it
+# turns out to want, plus one: none for `r1_*`, two for `r2_cap32`'s single
+# refill, four for `r2_cap16`'s three. Twelve is room for a stock that has to be
+# topped up eleven times, and costs nothing where fewer will do -- the rounds
+# stop the moment the levels come out.
+_REFILL_ROUNDS = 12
 
 
 @dataclass
@@ -627,10 +632,12 @@ def construct(
         best = _build(instance, fixation, jobs, floors, reserved)
         if best is None or not levels:
             return best
-        stocked = _with_stocks(instance, fixation, best)
+        stocked, wanted = _stock_plan(instance, fixation, best)
         if stocked is not None:
             return stocked
-        window = _reservation_for(instance, fixation, best)
+        if wanted is None:
+            return None  # the stocks cannot last however the work is arranged
+        window = _window_for(instance, *wanted)
         if window is None or window in reserved:
             return None
         reserved = (*reserved, window)
@@ -680,39 +687,31 @@ def _build(
     return best
 
 
-def _reservation_for(
-    instance: Instance, fixation: Fixation | None, solution: Solution
-) -> tuple[str, int, int] | None:
+def _window_for(instance: Instance, device: str, when: int) -> tuple[str, int, int] | None:
     """Machine time to keep clear on the next round, for a refill this schedule
     left no room for.
 
-    The window ends exactly at the draw that came up short, because that is the
-    latest a refill can be and still be of any use to it, and it is taken on the
-    machine holding the stock. Returning None means no refill could serve that
-    stock at all, and another round would only produce the same schedule.
+    🔴 **`when` is the draw that is still short once everything placeable has
+    been placed**, not the first one that looked short. Reserving against the
+    first one is what made the rounds chase their own tail: each window opened
+    next to the last, they merged into a single block, and one block holds one
+    useful refill however wide it is.
+
+    The window ends exactly at that draw, which is the latest a refill can be and
+    still feed it.
     """
-    levels = dict(fixation.levels) if fixation is not None else {}
-    draws = _draws(instance, solution)
-    for stock in sorted(set(draws) | set(levels)):
-        shortfall = _first_shortfall(
-            levels.get(stock, 0), _capacity(instance, *stock), draws.get(stock, []), []
-        )
-        if shortfall is None:
-            continue
-        visits = [
-            option.duration
-            for candidate in instance.replenishments
-            if candidate.device == stock[0] and stock[1] in candidate.resources
-            for option in candidate.options
-        ]
-        if not visits:
-            continue  # nothing refills this stock; the next round cannot help
-        when = shortfall[0]
-        longest = max(visits)
-        if when < longest:
-            continue  # the shortfall comes before any refill could have landed
-        return stock[0], when - longest, when
-    return None
+    visits = [
+        option.duration
+        for candidate in instance.replenishments
+        if candidate.device == device
+        for option in candidate.options
+    ]
+    if not visits:
+        return None
+    longest = max(visits)
+    if when < longest:
+        return None  # the draw comes before any refill could have landed
+    return device, when - longest, when
 
 
 def _with_stocks(
@@ -727,18 +726,26 @@ def _with_stocks(
     ever puts a number to, and constraining them would be inventing a constraint
     the model does not have.
     """
+    stocked, _wanted = _stock_plan(instance, fixation, solution)
+    return stocked
+
+
+def _stock_plan(
+    instance: Instance, fixation: Fixation | None, solution: Solution
+) -> tuple[Solution | None, tuple[str, int] | None]:
+    """The same, and what it would have needed if it failed."""
     levels = dict(fixation.levels) if fixation is not None else {}
     if not levels:
-        return solution
+        return solution, None
     draws = _draws(instance, solution)
     if not draws:
-        return solution
-    placed = _refills_for(instance, solution, levels, draws)
+        return solution, None
+    placed, wanted = _refills_for(instance, solution, levels, draws)
     if placed is None:
-        return None
+        return None, wanted
     if not placed:
-        return solution
-    return replace(solution, replenishment=tuple(placed))
+        return solution, None
+    return replace(solution, replenishment=tuple(placed)), None
 
 
 def _draws(instance: Instance, solution: Solution) -> dict[tuple[str, str], list[tuple[int, int]]]:
@@ -759,19 +766,30 @@ def _draws(instance: Instance, solution: Solution) -> dict[tuple[str, str], list
     return found
 
 
+# What the stocks needed: the refills to run, or the draw that could not be fed
+# and the machine whose time a later round should keep clear for it. Both empty
+# means the stocks cannot be made to last however the work is arranged.
+_Stocked = tuple[list[RefillResult] | None, tuple[str, int] | None]
+
+
 def _refills_for(
     instance: Instance,
     solution: Solution,
     levels: dict[tuple[str, str], int],
     draws: dict[tuple[str, str], list[tuple[int, int]]],
-) -> list[RefillResult] | None:
+) -> _Stocked:
     """Which refills to run, and when, or None when no arrangement of them works.
 
     Taken stock by stock. The trajectory is read; where it first falls below zero
-    a refill is placed to have landed by then; the trajectory is read again. A
-    stock nothing can refill only ever falls, so there the first shortfall is the
-    answer -- the schedule is not offered, because a plan whose reagent runs out
-    is not a plan.
+    a refill is placed to have landed by then; the trajectory is read **again,
+    with that refill counted**, so the next shortfall is the one that is left
+    rather than the one already dealt with.
+
+    A stock nothing can refill only ever falls, so there the first shortfall is
+    final -- the schedule is not offered, because a plan whose reagent runs out
+    is not a plan. Where a refill *would* serve and there is simply nowhere on
+    the machine for it, the draw and its machine are handed back so a later round
+    can keep that time clear (`construct`).
 
     **Refills fill to capacity** (SPEC 4.7.1), so one is placed only where a draw
     would actually break, and never two where one will do.
@@ -797,16 +815,18 @@ def _refills_for(
             if shortfall is None:
                 break
             if not candidates or capacity < shortfall[1]:
-                return None
+                return None, None  # nothing reaches this stock, or one draw exceeds it
             refill = _place_refill(instance, board, candidates, shortfall[0], sequence)
             if refill is None:
-                return None
+                # There is a refill that would serve this draw and no room for it.
+                # That is a question about the schedule, not about the stock.
+                return None, (device, shortfall[0])
             placed.append(refill)
             mine.append(refill.end)
             sequence += 1
         else:
-            return None
-    return placed
+            return None, None
+    return placed, None
 
 
 def _first_shortfall(
