@@ -56,7 +56,6 @@ from ofplang.schedule.scheduler.status import Fixation
 # Shapes `construct` declines, and why each needs more than list scheduling.
 REFUSALS = {
     "running refill": "a refill already under way is history this does not carry",
-    "relay": "a transport junction is a chain whose legs share one arc",
     "held": "an occupied spot is held to the horizon, which is not a duration",
     "cancelled": "work a stopped job abandoned is placed at an instant this does not derive",
     "bound": "a promised completion has to be measured the way the model measures it",
@@ -204,6 +203,10 @@ def _refuse(instance: Instance, fixation: Fixation | None, jobs: tuple) -> str |
     starts, at the times and in the modes reported, and everything still to do is
     held at `now` (`_history`).
 
+    So are transport junctions. The model makes a relay an ordinary activity --
+    one 0-duration, device-less, single-spot mode -- and nothing here has to know
+    it is one, beyond marking it as such in the answer (`_marked`).
+
     A joint plan is in scope while no job carries a promised completion. The
     release is easy -- it is a floor on when a job's work may start, and a forward
     pass has a floor already -- but the promise is a cap on $C_j$, and $C_j$ is
@@ -231,8 +234,6 @@ def _refuse(instance: Instance, fixation: Fixation | None, jobs: tuple) -> str |
         # never been measured against, it is declined.
         return "cancelled"
     for act in instance.activities:
-        if act.relay is not None:
-            return "relay"
         if act.boundary is not None and act.boundary.kind == "held":
             return "held"
     return None
@@ -714,11 +715,13 @@ def construct(
     reserved: tuple[tuple[str, int, int], ...] = ()
     for _round in range(_REFILL_ROUNDS):
         best = _build(instance, jobs, floors, reserved, history, now)
-        if best is None or not levels:
-            return best
+        if best is None:
+            return None
+        if not levels:
+            return _marked(instance, fixation, best)
         stocked, wanted = _stock_plan(instance, fixation, best)
         if stocked is not None:
-            return stocked
+            return _marked(instance, fixation, stocked)
         if wanted is None:
             return None  # the stocks cannot last however the work is arranged
         window = _window_for(instance, *wanted)
@@ -726,6 +729,39 @@ def construct(
             return None
         reserved = (*reserved, window)
     return None
+
+
+def _marked(
+    instance: Instance, fixation: Fixation | None, solution: Solution
+) -> Solution:
+    """The same schedule with what each activity *is* written on it.
+
+    `relay` drives rendering (a junction renders as `kind: relay`), `boundary`
+    tells rendering to skip a synthetic node, and `status` is what a replan
+    reported. None of the three changes a time; all three were empty while this
+    only ever produced hints, and all three have to be right the moment it
+    produces a plan.
+    """
+    acts = fixation.activities if fixation is not None else {}
+    arcs = fixation.arcs if fixation is not None else {}
+    return replace(
+        solution,
+        processing=tuple(
+            replace(
+                placement,
+                relay=instance.activities[placement.activity].relay,
+                boundary=instance.activities[placement.activity].boundary,
+                status=(
+                    acts[placement.activity].status if placement.activity in acts else None
+                ),
+            )
+            for placement in solution.processing
+        ),
+        transport=tuple(
+            replace(move, status=arcs[index].status if index in arcs else None)
+            for index, move in enumerate(solution.transport)
+        ),
+    )
 
 
 def _build(

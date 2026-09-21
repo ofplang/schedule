@@ -619,15 +619,21 @@ def test_a_running_refill_is_declined():
     assert construct(instance, fixation=fixation) is None
 
 
-def test_a_transport_junction_is_declined():
+def test_a_transport_junction_is_an_ordinary_activity():
+    # The model makes a relay one 0-duration, device-less, single-spot activity
+    # and leaves everything else alone (`instance.RelayInfo`), so there is
+    # nothing here to decline -- only a mark to carry.
     base = _in_scope()
     junction = replace(
         base.activities[0],
         relay=RelayInfo(Arc(Endpoint(("a",), "o"), Endpoint(("b",), "i")), 0),
     )
     instance = replace(base, activities=(junction,))
-    assert _refuse(instance, None, ()) == "relay"
-    assert construct(instance) is None
+    assert _refuse(instance, None, ()) is None
+    built = construct(instance)
+    assert built is not None
+    assert _violations(instance, built) == []
+    assert built.processing[0].relay is junction.relay
 
 
 def test_an_occupied_spot_is_declined():
@@ -673,7 +679,6 @@ def test_every_listed_refusal_has_a_test_above():
     # added to `REFUSALS` with no test would look exactly like six with six.
     covered = {
         "running refill",
-        "relay",
         "held",
         "cancelled",
         "bound",
@@ -894,3 +899,62 @@ def test_a_history_that_contradicts_itself_about_a_machine_is_refused():
         arcs={},
     )
     assert construct(instance, fixation=fixation) is None
+
+
+def test_the_answer_says_what_each_activity_is():
+    """🔴 `relay`, `boundary` and `status` were empty for as long as this only
+    produced hints, and a hint is judged on its times alone.
+
+    They are what rendering reads: a junction renders as `kind: relay`, a
+    synthetic boundary node is skipped, and a replan's activities carry the
+    status they were reported with. All three have to be right before a plan is
+    returned rather than hinted.
+    """
+    instance = _two_steps()
+    fixation = Fixation(
+        now=20, activities={0: ActivityFixation("completed", 3, 7, 0)}, arcs={}
+    )
+    built = construct(instance, fixation=fixation)
+    assert built is not None
+    done = next(p for p in built.processing if p.activity == 0)
+    pending = next(p for p in built.processing if p.activity == 1)
+    assert done.status == "completed"
+    assert pending.status is None
+    assert all(p.relay is None for p in built.processing)
+
+
+def test_a_boundary_node_is_marked_as_one():
+    # Built rather than taken from `examples/`: a boundary node comes from a
+    # document's `interface`, and the worked examples are loaded without one.
+    instance = Instance(
+        _ENV,
+        "second",
+        (
+            ActivityInstance(("make",), "work", (Mode("m", ("a",), 3, {}, {"o": "a.bay"}),)),
+            ActivityInstance(
+                (),
+                "",
+                (Mode("rest", (), 0, {"i": "shelf.bay"}, {}),),
+                boundary=BoundaryInfo(kind="output"),
+            ),
+        ),
+        (
+            ArcInstance(
+                Arc(Endpoint(("make",), "o"), Endpoint((), "out")),
+                0,
+                1,
+                (TransportOption(0, 0, "arm", "a.bay", "shelf.bay", 1),),
+            ),
+        ),
+        (),
+    )
+    built = construct(instance)
+    assert built is not None
+    marks = {
+        p.activity: p.boundary
+        for p in built.processing
+        if instance.activities[p.activity].boundary is not None
+    }
+    assert marks, "the example has boundary nodes"
+    for activity, boundary in marks.items():
+        assert boundary is instance.activities[activity].boundary
