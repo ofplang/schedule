@@ -245,6 +245,31 @@ a schedule exists: nothing in the walk is weighed against a duration, a machine,
 transporter or a promised completion. Silence is also the answer when the walk is
 too large to finish, so a plan is never refused on a partial search.
 
+## You can ask for the built one instead
+
+`schedule(..., planner="greedy")`, or `--planner greedy` on the command line,
+returns the constructed schedule and does not search at all. On the worked
+examples that is milliseconds against seconds — and it is a *valid* schedule,
+not a short one: the plan carries `plan_constructed` to say so, and nothing
+about it claims a better one does not exist.
+
+Ask for it when an answer is wanted sooner than an optimum: a rolling run that
+replans every few minutes, a dry run, an interactive tool that wants a first
+picture. The default is unchanged, and it is the solver.
+
+Three things can come back instead of a plan, and they mean different things:
+
+| | |
+|---|---|
+| `planner_unsupported` | the builder does not handle some shape of this plan. **Nothing about the plan** — the solver will schedule it |
+| `plan_not_constructed` | it ran and found nothing. **Not a proof of anything**: a plan with no schedule is refused earlier and told why |
+| an error before either | the plan has no schedule at all, and the message names which counting argument settled it |
+
+A constructed schedule is read back against the constraints — every spot,
+machine and arm exclusion, every route agreement, every precedence — before it
+is handed out, and dropped if it does not survive. A wrong hint costs nothing;
+a wrong plan is a wrong plan.
+
 ## The first schedule is built, not searched for
 
 Before the model reaches CP-SAT the scheduler **constructs a complete schedule by

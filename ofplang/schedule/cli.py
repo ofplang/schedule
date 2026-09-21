@@ -39,7 +39,7 @@ from ofplang.validate import EXTENSION_TOLERANT, expand
 from ofplang.validate import validate as validate_workflow
 from ofplang.validate.yamlnode import YamlError
 
-from ofplang.schedule import JobInput
+from ofplang.schedule import PLANNERS, JobInput
 from ofplang.schedule import schedule as run_schedule
 from ofplang.schedule import schedule_jobs as run_schedule_jobs
 from ofplang.schedule.core import yamlnode
@@ -149,6 +149,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "routes of the fewest possible moves are offered, so raising it never sends "
         "a move that could be direct round by way of somewhere else; it only makes "
         "reachable what was refused as arc_unreachable",
+    )
+    s.add_argument(
+        "--planner",
+        choices=PLANNERS,
+        default="cpsat",
+        help="how to produce the schedule. `cpsat` searches for one and can prove it "
+        "optimal; `greedy` builds one in milliseconds and proves nothing about it, "
+        "which is what to ask for when an answer is wanted sooner than an optimum. A "
+        "plan that was built rather than searched for says so (`plan_constructed`), "
+        "and a shape the builder does not handle is reported as `planner_unsupported` "
+        "-- which says nothing about whether the plan can be scheduled; default: cpsat",
     )
     s.add_argument(
         "--max-time",
@@ -445,6 +456,7 @@ def _cmd_schedule(args) -> int:
                 random_seed=args.seed,
                 ignore_resources=args.ignore_resources,
                 max_transport_legs=args.max_transport_legs,
+                planner=args.planner,
                 workflow_source=specs[0][1],
             )
         else:
@@ -460,6 +472,7 @@ def _cmd_schedule(args) -> int:
                 random_seed=args.seed,
                 ignore_resources=args.ignore_resources,
                 max_transport_legs=args.max_transport_legs,
+                planner=args.planner,
                 withdraw=args.withdraw,
                 carry_levels_to_now=args.carry_levels_to_now,
             )

@@ -40,7 +40,7 @@ from ofplang.schedule.scheduler.mobility import report_deadlocked_objects
 from ofplang.schedule.scheduler.model import JobSpec, Workflow
 from ofplang.schedule.scheduler.normalize import normalize
 from ofplang.schedule.scheduler.plan import render_plan
-from ofplang.schedule.scheduler.plancheck import check_plan_inventories
+from ofplang.schedule.scheduler.plancheck import check_plan_inventories, check_schedule
 from ofplang.schedule.scheduler.result import Solution
 from ofplang.schedule.scheduler.stats import SolveStats
 from ofplang.schedule.scheduler.status import ActivityFixation, ArcFixation, Fixation
@@ -958,6 +958,103 @@ def _promised(specs: tuple[JobSpec, ...], solution: Solution) -> tuple[JobSpec, 
     )
 
 
+# What a planner is called, and which one a caller gets when they say nothing.
+PLANNERS = ("cpsat", "greedy")
+
+
+def _construct_plan(
+    instance, specs: tuple[JobSpec, ...], solve_kwargs: dict
+) -> tuple[Solution, tuple[JobSpec, ...], list[Diagnostic]]:
+    """Build a schedule instead of searching for one (`greedy.construct`).
+
+    🔴 **Nothing is relaxed here.** A constructed schedule is one schedule, not
+    the best one, so a promise it cannot keep is a promise *this* schedule
+    breaks -- which says nothing about whether a schedule keeping it exists.
+    Relaxing a bound is a claim only a search can earn, and `_solve_within_bounds`
+    is where it is made and reported.
+
+    Three outcomes, and they are different in kind (report section 59):
+
+    * the shape is one the construction does not handle -- a fact about **this
+      planner**, and the solver would plan it;
+    * it ran and found nothing -- a fact about **this attempt**, and no proof of
+      anything, the impossibilities having been named before the solve;
+    * it built a schedule -- which is then read back against the constraints
+      before it is handed out, and dropped if it is not one.
+    """
+    from ofplang.schedule.scheduler import greedy
+
+    fixation = solve_kwargs["fixation"]
+    reason = greedy._refuse(instance, fixation, specs)
+    if reason is not None:
+        return (
+            Solution("unknown", None, (), ()),
+            specs,
+            [
+                Diagnostic(
+                    errors.PLANNER_UNSUPPORTED,
+                    f"the constructed planner does not handle this plan: "
+                    f"{greedy.REFUSALS[reason]}. Nothing here says the plan cannot be "
+                    f"scheduled -- ask for the solver instead",
+                    severity=WARNING,
+                )
+            ],
+        )
+
+    built = greedy.construct(
+        instance,
+        fixation=fixation,
+        jobs=specs,
+        objective=solve_kwargs["objective"],
+        running_task_margin=solve_kwargs["running_task_margin"],
+    )
+    if built is None:
+        return (
+            Solution("unknown", None, (), ()),
+            specs,
+            [
+                Diagnostic(
+                    errors.PLAN_NOT_CONSTRUCTED,
+                    "the constructed planner found no schedule. That is not a proof "
+                    "that none exists: an instance with no schedule is refused before "
+                    "this point and told why",
+                    severity=WARNING,
+                )
+            ],
+        )
+
+    # 🔴 Read back before it is handed out. A hint that is wrong costs nothing; a
+    # plan that is wrong is a wrong plan, and the three bugs this construction has
+    # had were all caught this way (report section 45.6).
+    wrong = check_schedule(instance, built, fixation)
+    if wrong:
+        return (
+            Solution("unknown", None, (), ()),
+            specs,
+            [
+                Diagnostic(
+                    errors.PLAN_NOT_CONSTRUCTED,
+                    f"the constructed schedule did not survive being read back "
+                    f"against the constraints, so it is not offered: {wrong[0]}",
+                    severity=WARNING,
+                )
+            ],
+        )
+
+    return (
+        built,
+        _promised(specs, built),
+        [
+            Diagnostic(
+                errors.PLAN_CONSTRUCTED,
+                "this plan was constructed rather than searched for, so nothing "
+                "about it says a shorter one does not exist",
+                severity=WARNING,
+            )
+        ],
+    )
+
+
 def _solve_within_bounds(
     instance, specs: tuple[JobSpec, ...], solve_kwargs: dict
 ) -> tuple[Solution, tuple[JobSpec, ...], list[Diagnostic]]:
@@ -1085,6 +1182,7 @@ def schedule(
     max_transport_legs: int = 1,
     carry_levels_to_now: bool = False,
     collect_solutions: bool = False,
+    planner: str = "cpsat",
     workflow_source: str | None = None,
     environment_source: str | None = None,
     document_source: str | None = None,
@@ -1138,6 +1236,7 @@ def schedule(
         max_transport_legs=max_transport_legs,
         carry_levels_to_now=carry_levels_to_now,
         collect_solutions=collect_solutions,
+        planner=planner,
         environment_source=environment_source,
         document_source=document_source,
     )
@@ -1156,6 +1255,7 @@ def schedule_jobs(
     max_transport_legs: int = 1,
     carry_levels_to_now: bool = False,
     collect_solutions: bool = False,
+    planner: str = "cpsat",
     environment_source: str | None = None,
     document_source: str | None = None,
 ) -> ScheduleReport:
@@ -1221,6 +1321,7 @@ def schedule_jobs(
         max_transport_legs=max_transport_legs,
         carry_levels_to_now=carry_levels_to_now,
         collect_solutions=collect_solutions,
+        planner=planner,
         environment_source=environment_source,
         document_source=document_source,
     )
@@ -1239,6 +1340,7 @@ def _run(
     max_transport_legs: int = 1,
     carry_levels_to_now: bool = False,
     collect_solutions: bool = False,
+    planner: str = "cpsat",
     environment_source: str | None = None,
     document_source: str | None = None,
 ) -> ScheduleReport:
@@ -1614,7 +1716,10 @@ def _run(
         "collect_solutions": collect_solutions,
         "interchangeable": interchangeable,
     }
-    solution, settled, relax_diags = _solve_within_bounds(instance, named, solve_kwargs)
+    if planner == "greedy":
+        solution, settled, relax_diags = _construct_plan(instance, named, solve_kwargs)
+    else:
+        solution, settled, relax_diags = _solve_within_bounds(instance, named, solve_kwargs)
     diagnostics += relax_diags
     if solution.outcome not in _SOLVED:
         # Only a *proof* is reported as one. `infeasible` says the solver showed

@@ -4,6 +4,12 @@ Development / verification fixtures for the scheduler. These are not conformance
 cases (those live under `tests/conformance/`); they are complete, realistic
 inputs used to drive and eyeball the scheduler.
 
+Every example here can also be planned without searching at all --
+`--planner greedy` builds a schedule in milliseconds instead of looking for a
+short one. ⚠ The artifacts under `outputs/` are the **solved** plans; a built one
+will differ, will carry `plan_constructed`, and is not what the byte-for-byte
+check below is about.
+
 Generated artifacts live under `outputs/`: for each example a solved execution
 plan (`<name>.plan.yaml`, §6) and a rendered `device`-view chart
 (`<name>.device.svg`), plus the `plate_batch` generator's produced workflow and

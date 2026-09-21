@@ -115,6 +115,19 @@ OBJECTS_DEADLOCKED = "objects_deadlocked"
 # holds. Monotone, so one comparison settles it -- a counting argument like the
 # two above, and settled before any solve for the same reason.
 STOCK_CANNOT_LAST = "stock_cannot_last"
+
+# --- what a constructed plan says about itself (§4.9) --------------------
+# The caller asked for the constructed schedule and this plan is one: built, not
+# searched for, so nothing about it says a better one does not exist.
+PLAN_CONSTRUCTED = "plan_constructed"
+# The caller asked for the constructed schedule and this instance has a shape the
+# construction does not handle. Not a statement about the instance: the solver
+# plans it perfectly well.
+PLANNER_UNSUPPORTED = "planner_unsupported"
+# The construction ran and came out with nothing. Not a proof of anything --
+# had the instance been impossible, the checks before the solve would have said
+# so and named the reason.
+PLAN_NOT_CONSTRUCTED = "plan_not_constructed"
 INFEASIBLE = "infeasible"
 
 # Consumable resources (§4.7, §6.10, §9.3). The model is in effect when some mode

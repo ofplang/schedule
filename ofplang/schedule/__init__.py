@@ -15,6 +15,7 @@ from ofplang.schedule.core.diagnostics import (
     ValidationResult,
 )
 from ofplang.schedule.scheduler.api import (
+    PLANNERS,
     JobInput,
     ScheduleReport,
     derived_holds,
@@ -35,6 +36,7 @@ __all__ = [
     "schedule",
     "schedule_jobs",
     "derived_holds",
+    "PLANNERS",
     "JobInput",
     "ScheduleReport",
     "SolveStats",
