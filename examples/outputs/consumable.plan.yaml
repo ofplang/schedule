@@ -19,7 +19,7 @@ activities:
   process: make_plate
   mode: slot_a
   node:
-  - MakeB
+  - MakeA
   devices:
   - bench
   output_spots:
@@ -41,11 +41,11 @@ activities:
   arc:
     from:
       node:
-      - MakeB
+      - MakeA
       port: plate
     to:
       node:
-      - AssayB
+      - AssayA
       port: plate
 - kind: processing
   start: 6
@@ -53,7 +53,7 @@ activities:
   process: make_plate
   mode: slot_a
   node:
-  - MakeA
+  - MakeB
   devices:
   - bench
   output_spots:
@@ -64,7 +64,7 @@ activities:
   process: assay
   mode: '0'
   node:
-  - AssayB
+  - AssayA
   devices:
   - reader
   input_spots:
@@ -82,11 +82,11 @@ activities:
   arc:
     from:
       node:
-      - AssayB
+      - AssayA
       port: out
     to:
       node:
-      - DropB
+      - DropA
       port: plate
 - kind: processing
   start: 18
@@ -94,7 +94,7 @@ activities:
   process: discard
   mode: '0'
   node:
-  - DropB
+  - DropA
   devices:
   - bin
   input_spots:
@@ -108,11 +108,11 @@ activities:
   arc:
     from:
       node:
-      - MakeA
+      - MakeB
       port: plate
     to:
       node:
-      - AssayA
+      - AssayB
       port: plate
 - kind: processing
   start: 20
@@ -120,7 +120,7 @@ activities:
   process: assay
   mode: '0'
   node:
-  - AssayA
+  - AssayB
   devices:
   - reader
   input_spots:
@@ -138,11 +138,11 @@ activities:
   arc:
     from:
       node:
-      - AssayA
+      - AssayB
       port: out
     to:
       node:
-      - DropA
+      - DropB
       port: plate
 - kind: processing
   start: 32
@@ -150,7 +150,7 @@ activities:
   process: discard
   mode: '0'
   node:
-  - DropA
+  - DropB
   devices:
   - bin
   input_spots:
