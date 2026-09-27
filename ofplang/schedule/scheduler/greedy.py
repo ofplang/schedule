@@ -4,8 +4,9 @@ This is a second solver, not a helper. It takes what `cpsat.solve` takes and
 returns what `cpsat.solve` returns -- a `Solution` naming a concrete mode, route,
 spot and machine for everything, with times satisfying the constraints of
 FORMULATION §7 -- and it knows nothing about CP-SAT. What the caller does with
-that is the caller's business: today `cpsat.solve` hands it to the solver as a
-`solution_hint`, and the same object would serve as a plan.
+that is the caller's business, and both things are done with it: `cpsat.solve`
+hands it to the solver as a `solution_hint`, and `schedule(planner="greedy")`
+returns the same object as the plan.
 
 **Why a first schedule is worth constructing at all.** Reducing interchangeable
 resources away (Part III) left the model proving the optimal *value* in a fifth
@@ -18,19 +19,27 @@ at optimal with zero branches (`dev-notes/report-model-size-and-presolve.md`
 the witness.
 
 **It may refuse, and refusing is the safe answer.** `construct` returns `None`
-rather than a schedule it is unsure of. The shapes it declines are listed in
-`REFUSALS`, and they were chosen by counting what instances actually contain:
-every case-study laboratory carries refills and stock draws, and none of the
-instances that return nothing today carries any of them. So the refusals are
-disjoint from the rows this is for. Growing the coverage is a later question, and
-one that has to be answered before a constructed schedule is ever *returned* to a
-caller rather than hinted -- a wrong hint costs nothing, a wrong plan is a wrong
-plan.
+rather than a schedule it is unsure of. The shapes it declines outright are listed
+in `REFUSALS`, and there are two of them left: a refill already under way, and the
+work a stopped job abandoned. Both are a *reported history* this does not carry --
+which is the one thing the refusals now have in common, the scope having grown to
+cover refills, stock draws, relays, held material, a replan's history and a
+promised completion, each because an instance the solver could not answer needed
+it. Neither refusal has a row in any case-study corpus.
 
-**No backtracking.** Activities are placed in one pass, each as early as the
-resources allow, and a placement is never revisited. Where a placement cannot be
-made the answer is `None`, not a search. That is the point: the solver is the
-thing that searches, and this has to be fast enough to be free.
+That growth is what had to happen before a constructed schedule could be
+*returned* to a caller rather than only hinted, and it is why the answer is now
+read back against the constraints before it is handed out (`plancheck`): a wrong
+hint costs nothing, a wrong plan is a wrong plan.
+
+**One forward pass, and one thing behind it.** Activities are placed in one pass,
+each as early as the resources allow, and a placement is never revisited. Where a
+placement cannot be made the pass answers `None`, not a search -- the solver is
+the thing that searches, and this has to be fast enough to be free. The one
+exception is the last resort, reached only when every pass has come out empty: the
+walk in `mobility` *does* backtrack, and where it finds an order through, `_replay`
+lays times over that order. It runs nowhere else, so every instance that already
+worked is untouched.
 """
 
 from __future__ import annotations

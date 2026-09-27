@@ -54,7 +54,7 @@ pip install -e ".[test]"
 
 ```sh
 ofp-schedule validate <file>...                 # validate an environment or a plan/status
-ofp-schedule schedule <workflow>... --env <env> [--document doc.yaml] [--withdraw ID] [--carry-levels-to-now] [--running-margin N] [--max-time SECONDS] [--seed N] [--max-transport-legs N] [--no-validate] [-o plan.yaml] [--format yaml|json]
+ofp-schedule schedule <workflow>... --env <env> [--document doc.yaml] [--withdraw ID] [--carry-levels-to-now] [--ignore-resources] [--running-margin N] [--planner cpsat|greedy] [--max-time SECONDS] [--seed N] [--max-transport-legs N] [--no-validate] [-o plan.yaml] [--format yaml|json]
 ofp-schedule visualize <plan|status> [--view device|workflow|lane] [--theme light|dark|auto] [--format svg|html] [-o FILE]
 ```
 
@@ -98,6 +98,10 @@ far is returned instead of the proven optimum, which the plan says by reporting
 `outcome: feasible` rather than `optimal` — and a search that found nothing in
 the budget reports no schedule at all (exit `1`), since an instance is not
 unschedulable merely because time ran out.
+`--planner greedy` asks for the schedule to be **built instead of searched for** —
+milliseconds rather than seconds, and a valid schedule rather than a short one, with
+`plan_constructed` among the diagnostics to say so. The default is `cpsat` and it is
+the search; `--max-time` and `--seed` are the search's and do nothing to a built plan.
 `--max-transport-legs N` is how many transport activities one Object-bearing arc may
 be moved in (§6.4.1). It is **1 by default** — the single hop per arc this has
 always planned. Raise it to describe a device the transporter reaches at one position
@@ -162,13 +166,20 @@ plan it:
 from ofplang.schedule import schedule
 
 report = schedule(workflow, environment, document_path=status)  # -> ScheduleReport
+report = schedule(workflow, environment, planner="greedy")      # built, not searched
 ```
 
 Alongside the plan, the report carries `stats`: what the *solve* cost, as opposed
 to what it decided — timings (including CP-SAT's machine-independent
 `deterministic_time`), the bound the answer was measured against, and the size of
 the model. It is there on every path that reached the solver, an infeasible
-instance included, and `None` where the inputs were refused before solving.
+instance included, and `None` on every path that did not — inputs refused before
+solving, and a plan that was built rather than searched for, which costs no solve
+to report on.
+
+Importing the package does not import the solver. `ortools` is loaded when
+something actually solves, so a process that only builds schedules
+(`planner="greedy"`), reads a plan or renders a chart never pays for it.
 Passing `collect_solutions=True` additionally records each improving solution as
 the search finds it (`stats.phases[-1].history`), which is what an anytime
 measurement — how good was the schedule at time *t*? — reads; it is off by default
@@ -302,12 +313,13 @@ a plan is possible at all is asked for the order it found, and times are laid ov
 it. On the benchmark's hardest grid that is the difference between a minute of search
 returning nothing and a schedule every time.
 
-The construction is **not general**, and does not pretend to be: it declines an
-instance that refills a stock, draws on one, relays an Object between spots, starts
-with material already held, replans from a reported history, or promises a job a
-completion time — and the solve then proceeds exactly as it did before. Where it
-runs, `stats.hint_makespan` is the makespan it built, and `None` where it declined,
-so what the solver started from is visible.
+The construction is **not general**, and does not pretend to be. Two shapes are
+declined outright: a refill already under way, which is history it does not carry,
+and the work a stopped job abandoned, which it cannot place at an instant it does
+not derive. It declines where its passes simply come out empty, too. In every case
+the solve proceeds exactly as it did before, and where the construction ran,
+`stats.hint_makespan` is the makespan it built — `None` where it declined, so what
+the solver started from is visible.
 
 It is a *valid* schedule, not a *good* one, and neither is promised. On the widest
 benchmark instances it is the optimum. On the five-job laboratory above it is what
