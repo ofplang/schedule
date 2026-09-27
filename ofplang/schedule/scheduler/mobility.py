@@ -45,6 +45,7 @@ those are exactly the ones whose state space is small.
 
 from __future__ import annotations
 
+import weakref
 from array import array
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -110,7 +111,7 @@ def report_deadlocked_objects(instance: Instance, diags: Diagnostics) -> None:
     shape = _read(instance)
     if shape is None:
         return
-    outcome, deepest, _order = _walk(instance, shape)
+    outcome, deepest, _order = _walked(instance, shape)
     if outcome != "exhausted":
         return
     diags.error(errors.OBJECTS_DEADLOCKED, _explain(instance, shape, deepest))
@@ -216,9 +217,11 @@ def find_order(instance: Instance) -> tuple[_Step, ...] | None:
     """An order of placements and moves that gets every Object to the end, or
     None when the walk finds none or is stopped before it can.
 
-    This is the same walk `report_deadlocked_objects` makes, read for its
-    *witness* rather than for its verdict. Each step names an activity and the
-    mode it runs in, or an arc and the route it takes, and the order respects
+    This is the same walk `report_deadlocked_objects` makes -- literally the same
+    one, since `_walked` hands back the walk that check already made of this
+    instance -- read for its *witness* rather than for its verdict. Each step
+    names an activity and the mode it runs in, or an arc and the route it takes,
+    and the order respects
     what a spot can hold -- so laying times over it in this order, each thing as
     early as the resources allow, turns it into a schedule. That is what
     `greedy` does with it when every one of its own passes has come out empty.
@@ -232,13 +235,49 @@ def find_order(instance: Instance) -> tuple[_Step, ...] | None:
     shape = _read(instance)
     if shape is None:
         return None
-    outcome, _deepest, order = _walk(instance, shape)
+    outcome, _deepest, order = _walked(instance, shape)
     return order if outcome == "found" else None
 
 
 # The verdict, the furthest the walk got (for the message), and the order it
 # found (empty unless the verdict is "found").
 _Walked = tuple[str, tuple[int, list[str]], tuple[_Step, ...]]
+
+
+# The last walk, kept so that one instance is not walked twice.
+#
+# One instance is asked the same question from four places: `api` runs the refusal
+# check on every instance before the solve, `greedy` walks the same instance again
+# as its last resort, `cpsat` builds a constructed hint that walks it a third time,
+# and a plan with promises builds one such hint per solve. On an instance the walk
+# settles in milliseconds none of that matters. On one it cannot settle it is the
+# whole cost paid over again -- measured at 13.7 seconds and then 12.4 on the LabOP
+# growth curve in a one-slot laboratory, for an answer already in hand (report
+# section 60.4).
+#
+# ⚠ **The cap is part of the key.** `_EXPANSIONS` is a module global a caller can
+# move, and a verdict reached under one cap says nothing under another: a walk
+# stopped at five states claims nothing where the same walk at fifty thousand
+# refuses. Keying on the instance alone would hand the refusal back to the caller
+# that asked for the smaller cap precisely to avoid it.
+#
+# ⚠ **The instance is held weakly**, so this keeps nothing alive. When it has been
+# collected the entry misses and the walk is simply made again -- and holding it
+# weakly is also what makes the identity test sound, since an address can only be
+# reused after the object at it is gone, which is exactly when the reference dies.
+_LAST: tuple[weakref.ref[Instance], int, _Walked] | None = None
+
+
+def _walked(instance: Instance, shape: _Shape) -> _Walked:
+    """`_walk`, but not a second time for an instance already walked."""
+    global _LAST
+    if _LAST is not None:
+        ref, cap, remembered = _LAST
+        if cap == _EXPANSIONS and ref() is instance:
+            return remembered
+    result = _walk(instance, shape)
+    _LAST = (weakref.ref(instance), _EXPANSIONS, result)
+    return result
 
 
 def _walk(instance: Instance, shape: _Shape) -> _Walked:

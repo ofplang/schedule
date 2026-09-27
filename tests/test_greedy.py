@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from ofplang.schedule.core.diagnostics import Diagnostics
 from ofplang.schedule.scheduler import greedy, mobility
 from ofplang.schedule.scheduler.envload import load_environment
 from ofplang.schedule.scheduler.greedy import REFUSALS, _refuse, construct
@@ -350,6 +351,46 @@ def test_without_the_walk_that_ring_comes_out_empty(monkeypatch):
     instance = _batch(objects=3, stages=3, laps=2)
     monkeypatch.setattr(greedy.mobility, "find_order", lambda _instance: None)
     assert construct(instance) is None
+
+
+def _walks(monkeypatch) -> list[int]:
+    """Every walk actually made, from here on. Returns the list it fills."""
+    made: list[int] = []
+    walk = mobility._walk
+
+    def counting(instance, shape):
+        made.append(len(instance.activities))
+        return walk(instance, shape)
+
+    monkeypatch.setattr(mobility, "_walk", counting)
+    monkeypatch.setattr(mobility, "_LAST", None)
+    return made
+
+
+def test_the_refusal_check_and_the_last_resort_share_one_walk(monkeypatch):
+    # What `api` does on the constructed path, in the order it does it. The
+    # refusal check runs before every solve and the last resort asks the same
+    # question of the same instance, so without sharing the ring is walked
+    # twice -- and on an instance the walk cannot settle that is the whole cap
+    # paid over again (report section 60.4).
+    made = _walks(monkeypatch)
+    instance = _batch(objects=3, stages=3, laps=2)
+    mobility.report_deadlocked_objects(instance, Diagnostics())
+    assert construct(instance) is not None
+    assert len(made) == 1
+
+
+def test_the_refusal_check_and_the_solvers_hint_share_one_walk(monkeypatch):
+    # 🔴 The same doubling is on the *solver* path, which is easy to miss: CP-SAT
+    # starts from a constructed schedule, so the hint walks the instance too --
+    # once per solve, and a plan with promises solves once per job.
+    from ofplang.schedule.scheduler.cpsat import solve
+
+    made = _walks(monkeypatch)
+    instance = _batch(objects=3, stages=3, laps=2)
+    mobility.report_deadlocked_objects(instance, Diagnostics())
+    solve(instance, max_time_seconds=5)
+    assert len(made) == 1
 
 
 def test_the_replayed_schedule_is_the_same_one_twice():

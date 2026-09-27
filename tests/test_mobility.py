@@ -11,6 +11,8 @@ have to be seen agreeing rather than asserted to agree.
 
 from __future__ import annotations
 
+import gc
+
 import pytest
 
 from ofplang.schedule.core.diagnostics import Diagnostics
@@ -358,6 +360,97 @@ def test_an_unreachable_arc_is_left_to_the_check_that_names_it():
 
 def test_an_instance_with_nothing_in_it_says_nothing():
     assert _codes(Instance(_ENV, "second", (), (), ())) == []
+
+
+# ---------------------------------------------------------------------------
+# One instance, one walk.
+#
+# The same question is asked of one instance from several places: the refusal
+# check runs before every solve, the constructed planner walks it again as its
+# last resort, and the hint CP-SAT starts from walks it a third time. On an
+# instance that settles in milliseconds none of that is worth a thought. On one
+# the walk cannot settle it is the whole cap paid over again -- 13.7 seconds and
+# then 12.4 on the LabOP growth curve in a one-slot laboratory, for an answer
+# already in hand (report section 60.4).
+#
+# What is asserted below is the *count*, not a duration. A duration would only be
+# a slow and flaky way of counting, and the count is the thing that has to hold.
+# ---------------------------------------------------------------------------
+
+
+def _counted(monkeypatch) -> list[int]:
+    """Every walk actually made, from here on. Returns the list it fills."""
+    made: list[int] = []
+    walk = mobility._walk
+
+    def counting(instance, shape):
+        made.append(len(instance.activities))
+        return walk(instance, shape)
+
+    monkeypatch.setattr(mobility, "_walk", counting)
+    # Whatever ran before this test left its walk behind, and an instance built
+    # here is a different object, so this is tidiness rather than need.
+    monkeypatch.setattr(mobility, "_LAST", None)
+    return made
+
+
+def test_asking_the_same_instance_twice_walks_it_once(monkeypatch):
+    made = _counted(monkeypatch)
+    instance = _pingpong(objects=2, steps=5)
+    assert _codes(instance) == ["objects_deadlocked"]
+    assert mobility.find_order(instance) is None
+    assert len(made) == 1
+
+
+def test_the_remembered_walk_is_the_one_that_would_have_been_made(monkeypatch):
+    # Cheapness on its own is not the claim. What comes back the second time has
+    # to be what walking again would have produced, or the saving is a bug.
+    monkeypatch.setattr(mobility, "_LAST", None)
+    instance = _pingpong(objects=1, steps=7)
+    walked = mobility.find_order(instance)
+    assert walked is not None
+    assert mobility.find_order(instance) == walked
+    monkeypatch.setattr(mobility, "_LAST", None)
+    assert mobility.find_order(instance) == walked
+
+
+def test_a_different_instance_is_walked_again(monkeypatch):
+    # Only one walk is kept, and it is kept for the instance it was made of.
+    made = _counted(monkeypatch)
+    first = _pingpong(objects=2, steps=5)
+    second = _pingpong(objects=2, steps=5)
+    assert _codes(first) == ["objects_deadlocked"]
+    assert _codes(second) == ["objects_deadlocked"]
+    assert len(made) == 2
+
+
+def test_moving_the_cap_walks_again(monkeypatch):
+    # 🔴 The reason the cap is part of what is remembered. A verdict reached
+    # under one cap says nothing under another: the walk that refuses at fifty
+    # thousand states claims nothing when it is stopped at five, and handing the
+    # refusal back to the caller who asked for the smaller cap would undo the
+    # whole of `test_a_walk_that_is_stopped_early_claims_nothing`.
+    made = _counted(monkeypatch)
+    instance = _pingpong(objects=2, steps=7)
+    assert _codes(instance) == ["objects_deadlocked"]
+    monkeypatch.setattr(mobility, "_EXPANSIONS", 5)
+    assert _codes(instance) == []
+    assert len(made) == 2
+
+
+def test_the_walk_that_is_remembered_is_not_kept_alive(monkeypatch):
+    # The instance is held weakly, so remembering a walk never keeps a plan in
+    # memory -- and that is also what makes recognising the instance sound, since
+    # an address can only be reused once what was at it has gone.
+    monkeypatch.setattr(mobility, "_LAST", None)
+    instance = _pingpong(objects=2, steps=5)
+    assert _codes(instance) == ["objects_deadlocked"]
+    assert mobility._LAST is not None
+    held, _cap, _remembered = mobility._LAST
+    assert held() is instance
+    del instance
+    gc.collect()
+    assert held() is None
 
 
 # ---------------------------------------------------------------------------
