@@ -1009,6 +1009,12 @@ def _construct_plan(
         running_task_margin=solve_kwargs["running_task_margin"],
     )
     if built is None:
+        # Finding nothing proves nothing either way. With nothing yet settled, an
+        # instance that has no schedule is refused before this point; with history
+        # or a spot held since a stated time, the checks that refuse it walk with
+        # the clock erased and cannot see the order that history fixed, so an
+        # instance can reach here and still have no schedule. The message says
+        # which, so that nobody reads "not constructed" as "must be solvable".
         return (
             Solution("unknown", None, (), ()),
             specs,
@@ -1016,8 +1022,12 @@ def _construct_plan(
                 Diagnostic(
                     errors.PLAN_NOT_CONSTRUCTED,
                     "the constructed planner found no schedule. That is not a proof "
-                    "that none exists: an instance with no schedule is refused before "
-                    "this point and told why",
+                    "either way: with nothing yet settled, an instance with no "
+                    "schedule is refused before this point and told why, but where "
+                    "history has been reported or a spot is held since a stated "
+                    "time those checks cannot see the order it fixes, so an "
+                    "instance can reach here and still have none. The solver is "
+                    "what settles it",
                     severity=WARNING,
                 )
             ],

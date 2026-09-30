@@ -273,7 +273,7 @@ Three things can come back instead of a plan, and they mean different things:
 | | |
 |---|---|
 | `planner_unsupported` | the builder does not handle some shape of this plan. **Nothing about the plan** — the solver will schedule it |
-| `plan_not_constructed` | it ran and found nothing. **Not a proof of anything**: a plan with no schedule is refused earlier and told why |
+| `plan_not_constructed` | it ran and found nothing. **Not a proof of anything**: with nothing yet settled, a plan with no schedule is refused earlier and told why, but after reported history or a spot held since a stated time it may not be -- ask the solver |
 | an error before either | the plan has no schedule at all, and the message names which counting argument settled it |
 
 A constructed schedule is read back against the constraints — every spot,

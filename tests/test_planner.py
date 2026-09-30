@@ -7,8 +7,11 @@ earned -- and the three ways it can come back empty are different in kind:
 * the shape is one the construction does not handle. That is a fact about the
   **planner**; the solver plans it perfectly well.
 * it ran and found nothing. A fact about the **attempt**, and a proof of
-  nothing: an instance that has no schedule is refused before this point and
-  told why (`objects_deadlocked`, `final_outputs_crowded`, `stock_cannot_last`).
+  nothing either way. With nothing yet settled, an instance that has no
+  schedule is refused before this point and told why (`objects_deadlocked`,
+  `final_outputs_crowded`, `stock_cannot_last`); with reported history or a spot
+  held since a stated time it may not be, because those checks walk with the
+  clock erased and cannot see the order the history fixed.
 * it built something that did not survive being read back. A defect, and the
   plan is dropped rather than offered.
 """
