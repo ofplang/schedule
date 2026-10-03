@@ -183,6 +183,70 @@ class Arc:
     dst: Endpoint
 
 
+# --------------------------------------------------------------------------
+# Where a value comes from (for the `ofplang-run` runner, D57)
+# --------------------------------------------------------------------------
+#
+# A `Source` says where the value of one port comes from, as a small tree. The
+# runner-facing maps below were each built for one shape -- an arc from one
+# producer, a literal, a boundary input -- and an Array gathered from several
+# producers (the collected output of a `map`), or one element taken out of a
+# producer's Array (a `map` traversing it), fits none of them. A Source covers all
+# of these with three cases:
+#
+#   SourceRef(node, port, index)  the value recorded at (node, port) -- or, with an
+#                                 `index`, one element of it. `node == ()` is the
+#                                 workflow boundary, where entry inputs are seeded.
+#   SourceLiteral(value)          a static literal, with no producer at all.
+#   SourceSeq(items)              an Array assembled element by element, each from
+#                                 its own Source; `SourceSeq(())` is the empty Array.
+#
+# A whole value that one producer recorded is one SourceRef, not a SourceSeq of its
+# elements: the tree is only as deep as the value is actually assembled. Like
+# `data_arcs`, these are additive metadata the scheduler MUST NOT read for planning,
+# and their node paths are the plan's.
+
+
+@dataclass(frozen=True)
+class SourceRef:
+    node: NodePath
+    port: str
+    index: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class SourceLiteral:
+    value: object
+
+
+@dataclass(frozen=True)
+class SourceSeq:
+    items: tuple[Source, ...]
+
+
+Source = SourceRef | SourceLiteral | SourceSeq
+
+
+@dataclass(frozen=True)
+class LengthCheck:
+    """A length the plan was built on but the scheduler could not see (D57).
+
+    A `map` / `fold` takes its invocation count from the `each` sources whose length
+    is known before the run -- an Array of Objects bound in `interface`, a literal.
+    A Pure Data `each` source zipped with one of those has a length only its value
+    shows, so the plan assumes it equals `length` and the runner, the one layer that
+    sees values, must check it (spec §17 / §18, zip-equal; a mismatch is a preflight
+    error for a run-phase value and a runtime data error for a data-phase one).
+
+    `node` is the structured node's path, `port` the `each` port, `source` where that
+    port's Array comes from."""
+
+    node: NodePath
+    port: str
+    source: Source
+    length: int
+
+
 @dataclass(frozen=True)
 class CompositeIO:
     """The value-layer boundary of one composite invocation, for external consumers
@@ -202,6 +266,12 @@ class CompositeIO:
     input_literals: dict[str, object] = field(default_factory=dict)
     outputs: dict[str, Endpoint] = field(default_factory=dict)
     output_literals: dict[str, object] = field(default_factory=dict)
+    # The same boundary as `Source` trees: port -> where its value comes from. These
+    # can say what the four maps above cannot (an Array gathered from several
+    # producers, one element of another's Array) and are meant to replace them; the
+    # maps stay, unchanged, for the readers they already have.
+    input_sources: dict[str, Source] = field(default_factory=dict)
+    output_sources: dict[str, Source] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -318,6 +388,27 @@ class Workflow:
     # activity and no boundary input either, so neither `exit_outputs` nor anything
     # else can carry it. Runner-only, with the same INVARIANTS as `data_arcs`.
     exit_literals: dict[str, object] = field(default_factory=dict)
+
+    # -- The same dataflow as `Source` trees, for the runner (D57) ------------------
+    #
+    # Everything the runner-facing fields above say, said one way: for every input
+    # port of every atomic activity, and for every final output, where its value comes
+    # from. Unlike those fields these can hold what expanding a `map` / `fold`
+    # produces -- an Array gathered from the invocations, one element of an Array --
+    # and they are what the runner is meant to move to; the fields above stay as they
+    # are until it has. Same INVARIANTS as `data_arcs`.
+    #
+    # consuming atomic input Endpoint -> its Source (Object and Pure Data alike; an
+    # input with no source at all is absent).
+    input_sources: dict[Endpoint, Source] = field(default_factory=dict)
+    # main output port -> its Source. An Object-bearing pass-through is absent, as it
+    # is from `exit_outputs` (out of scope).
+    output_sources: dict[str, Source] = field(default_factory=dict)
+    # `map` / `fold` node path -> its invocation count L, the length the plan was
+    # built on. Recorded because L = 0 leaves no iteration path behind to count.
+    iterations: dict[NodePath, int] = field(default_factory=dict)
+    # Lengths the plan assumed but the runner has to check (see `LengthCheck`).
+    length_checks: tuple[LengthCheck, ...] = ()
     # Nested composite invocation boundaries, keyed by the composite's node path ->
     # its `CompositeIO` (port -> value-store key / literal). For the runner's composite
     # contract checks only (D34); same INVARIANTS as `data_arcs` (the scheduler MUST

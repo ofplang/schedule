@@ -34,6 +34,9 @@ from ofplang.schedule.scheduler.model import (
     NodeInvocation,
     NodePath,
     Port,
+    Source,
+    SourceLiteral,
+    SourceRef,
     Workflow,
 )
 from ofplang.schedule.validation import errors
@@ -296,6 +299,15 @@ def _read_workflow(data: dict, diags: Diagnostics) -> tuple[Workflow | None, Dia
             data_inputs = [p.name for p in sig.inputs if not p.object_bearing]
             in_ports = {p.name: p.object_bearing for p in sig.inputs}
             out_ports = {p.name: p.object_bearing for p in sig.outputs}
+            # As Source trees every port is said, Pure Data ones included: each input is
+            # the workflow's entry input of the same name, seeded at the boundary, and
+            # each output is this one activity's.
+            input_sources: dict[Endpoint, Source] = {
+                Endpoint(path, p.name): SourceRef((), p.name) for p in sig.inputs
+            }
+            output_sources: dict[str, Source] = {
+                p.name: SourceRef(path, p.name) for p in sig.outputs
+            }
             return (
                 Workflow(
                     (NodeInvocation(path, entry),), (), (), {entry: sig},
@@ -304,6 +316,7 @@ def _read_workflow(data: dict, diags: Diagnostics) -> tuple[Workflow | None, Dia
                         Arc(Endpoint((), name), Endpoint(path, name)) for name in data_inputs
                     ),
                     data_entry_inputs={name: Endpoint(path, name) for name in data_inputs},
+                    input_sources=input_sources, output_sources=output_sources,
                 ),
                 diags,
             )
@@ -325,7 +338,8 @@ def _read_workflow(data: dict, diags: Diagnostics) -> tuple[Workflow | None, Dia
 
     (
         activities, arcs, precedence, used, entry_inputs, exit_outputs,
-        data_arcs, data_entry_inputs, data_literals, exit_literals, composites,
+        data_arcs, data_entry_inputs, data_literals, exit_literals,
+        input_sources, output_sources, composites,
     ) = _expand_body(entry, entry_proc, procs, atomic, out_ports, diags)
 
     # scheduling_policies (§23) / object policies (§24) are best-effort preferences
@@ -353,6 +367,7 @@ def _read_workflow(data: dict, diags: Diagnostics) -> tuple[Workflow | None, Dia
             # does not read these, so the plan is unaffected.
             data_arcs=tuple(data_arcs), data_entry_inputs=data_entry_inputs,
             data_literals=data_literals, exit_literals=exit_literals,
+            input_sources=input_sources, output_sources=output_sources,
             # Nested composite invocation boundaries for the runner's contract checks
             # (D34); value-independent, so the plan is unaffected.
             composites=composites,
@@ -419,8 +434,12 @@ def _expand_body(entry_name, entry_proc, procs, atomic, exit_object_bearing, dia
             # nothing is recorded for it.
             if not exit_object_bearing.get(out_name, True):
                 exp.exit_outputs[out_name] = Endpoint((), producer.name)
+            else:
+                continue  # an Object pass-through: out of scope, so no Source either
         elif isinstance(producer, _Literal):
             exp.exit_literals[out_name] = producer.value
+        if (resolved := _source_of(producer)) is not None:
+            exp.output_sources[out_name] = resolved
 
     # Pure Data fan-in can occasionally add the same precedence edge twice; keep
     # each edge once, in first-seen order for a deterministic activity ordering.
@@ -434,6 +453,8 @@ def _expand_body(entry_name, entry_proc, procs, atomic, exit_object_bearing, dia
         exp.activities, exp.arcs, precedence, exp.used, exp.entry_inputs, exp.exit_outputs,
         # Pure Data port-level dataflow and static literals, for the runner only (D26-0).
         exp.data_arcs, exp.data_entry_inputs, exp.data_literals, exp.exit_literals,
+        # The same dataflow as Source trees, for the runner only (D57).
+        exp.input_sources, exp.output_sources,
         # Nested composite invocation boundaries, for the runner's contract checks (D34).
         exp.composites,
     )
@@ -519,6 +540,10 @@ class _Expander:
         self.exit_outputs: dict[str, Endpoint] = {}
         # Main output port -> a static literal it returns (see `Workflow.exit_literals`).
         self.exit_literals: dict[str, object] = {}
+        # The same dataflow as `Source` trees, for the runner (see `Workflow`):
+        # consuming atomic input -> its source, and main output -> its source.
+        self.input_sources: dict[Endpoint, Source] = {}
+        self.output_sources: dict[str, Source] = {}
         # Nested composite invocation boundaries (D34), keyed by the composite's node
         # path -> CompositeIO. Recorded for the runner's composite contract checks
         # only; the scheduler never reads them (like data_arcs). The entry composite
@@ -585,6 +610,12 @@ class _Expander:
                     )
                     if producer is None:
                         continue  # an unconnected workflow input
+                    # The runner's one record of where this input's value comes from,
+                    # whatever kind of source it is (see `model.Source`). The
+                    # per-kind records below are kept alongside it.
+                    source = _source_of(producer)
+                    if source is not None:
+                        self.input_sources[Endpoint(path, port)] = source
                     if isinstance(producer, _Literal):
                         # A static literal: no producer, no precedence, no arc. A Pure
                         # Data one is recorded port-level for the runner's value layer
@@ -674,17 +705,27 @@ class _Expander:
             self._place_source(producer, port, inputs, input_literals)
         outputs: dict[str, Endpoint] = {}
         output_literals: dict[str, object] = {}
+        output_sources: dict[str, Source] = {}
         for out_port, source in _returns(cproc).items():
             producer = self._resolve(
                 _parse_ref(source), path, child_env, _body_nodes(cproc), stack + (pname,)
             )
             self._place_source(producer, out_port, outputs, output_literals)
+            if (resolved := _source_of(producer)) is not None:
+                output_sources[out_port] = resolved
+        input_sources = {
+            port: resolved
+            for port, producer in child_env.items()
+            if (resolved := _source_of(producer)) is not None
+        }
         self.composites[path] = CompositeIO(
             process=pname,
             inputs=inputs,
             input_literals=input_literals,
             outputs=outputs,
             output_literals=output_literals,
+            input_sources=input_sources,
+            output_sources=output_sources,
         )
 
     @staticmethod
@@ -746,6 +787,19 @@ class _Expander:
                 stack + (pname,),
             )
         return None  # a structured or unknown child output cannot be a scheduler source
+
+
+def _source_of(producer) -> Source | None:
+    """A resolved reference as a `Source`: a producing atomic output or the workflow
+    boundary `()` (where entry inputs are seeded) as a reference, a static literal as
+    itself, and an unconnected source (None) as nothing."""
+    if isinstance(producer, _Producer):
+        return SourceRef(producer.path, producer.port)
+    if isinstance(producer, _EntryInput):
+        return SourceRef((), producer.name)
+    if isinstance(producer, _Literal):
+        return SourceLiteral(producer.value)
+    return None
 
 
 def _body_nodes(comp: dict) -> dict[str, dict]:
