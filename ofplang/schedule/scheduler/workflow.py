@@ -264,19 +264,28 @@ def _read_workflow(data: dict, diags: Diagnostics) -> tuple[Workflow | None, Dia
 
     entry_proc = procs[entry]
     if entry_proc.get("kind") != "composite":
-        # A degenerate single-atomic entry: one activity, no arcs. Its own
-        # Object-bearing ports are the workflow's boundary connections.
+        # A degenerate single-atomic entry: one activity, no arcs. Its own ports are
+        # the workflow's boundary connections. The Object-bearing ones are the ones
+        # the planner places; the Pure Data ones are recorded for the runner exactly
+        # as a composite entry's are (a boundary data arc per input, the activity's
+        # output for each output) -- leaving them out handed the runner a typed
+        # default for every Pure Data input and dropped every Pure Data output.
         if entry in atomic:
             sig = atomic[entry]
             path = (entry,)
             entry_inputs = {p.name: Endpoint(path, p.name) for p in sig.inputs if p.object_bearing}
-            exit_outputs = {p.name: Endpoint(path, p.name) for p in sig.outputs if p.object_bearing}
+            exit_outputs = {p.name: Endpoint(path, p.name) for p in sig.outputs}
+            data_inputs = [p.name for p in sig.inputs if not p.object_bearing]
             in_ports = {p.name: p.object_bearing for p in sig.inputs}
             out_ports = {p.name: p.object_bearing for p in sig.outputs}
             return (
                 Workflow(
                     (NodeInvocation(path, entry),), (), (), {entry: sig},
                     entry_inputs, exit_outputs, in_ports, out_ports,
+                    data_arcs=tuple(
+                        Arc(Endpoint((), name), Endpoint(path, name)) for name in data_inputs
+                    ),
+                    data_entry_inputs={name: Endpoint(path, name) for name in data_inputs},
                 ),
                 diags,
             )
@@ -535,36 +544,49 @@ class _Expander:
         child_kind = self.procs[pname].get("kind")
         if child_kind == "atomic":
             # An atomic invocation is a real activity; wire each bound input to its
-            # producer (`state` -> Object arc + precedence, `bind` -> precedence).
+            # producer: an Object-bearing port gets an Object arc (a transport) and a
+            # precedence edge, a Pure Data port a precedence edge and a data arc.
             self.activities.append(NodeInvocation(path, pname))
-            self.used[pname] = self.atomic[pname]
+            sig = self.atomic[pname]
+            self.used[pname] = sig
+            # 🔴 Whether a binding moves an Object is the target **port's type**, never
+            # the section it is written under. The spec pairs the two (`state` for
+            # Object-bearing ports, `bind` for Pure Data, v0 §11), but this reader does
+            # not run the validator, and a section that disagrees with the port is a
+            # document to diagnose upstream, not one to mis-plan: read by section, a Pure
+            # Data entry input written under `state` became an Object boundary input the
+            # interface was then required to place on a spot, and a literal under
+            # `state` was dropped. A port the process does not declare (invalid
+            # upstream) falls back to its section, which is all there is to go on.
+            object_ports = {p.name: p.object_bearing for p in sig.inputs}
             for section in ("state", "bind"):
                 for port, binding in (node.get(section) or {}).items():
+                    object_bearing = object_ports.get(port, section == "state")
                     producer = self._resolve(
                         _parse_ref(binding), prefix, inputs_env, siblings, stack
                     )
                     if producer is None:
                         continue  # an unconnected workflow input
                     if isinstance(producer, _Literal):
-                        # A Pure Data static literal: no producer, no precedence, no
-                        # arc. Recorded port-level for the runner's value layer only
-                        # (like data_arcs); the scheduler never reads it. Literals are
-                        # Pure Data, so this happens under `bind` (a literal wrongly on
-                        # `state` is a validation error, caught upstream; ignore here).
-                        if section == "bind":
+                        # A static literal: no producer, no precedence, no arc. A Pure
+                        # Data one is recorded port-level for the runner's value layer
+                        # only (like data_arcs); the scheduler never reads it. A literal
+                        # on an Object-bearing port names no Object to move, so there is
+                        # nothing to record for it.
+                        if not object_bearing:
                             self.data_literals[Endpoint(path, port)] = producer.value
                         continue
                     if isinstance(producer, _EntryInput):
                         # A workflow entry input: no in-body producer, so no arc /
-                        # precedence. A `state` (Object-bearing) binding records the
-                        # boundary connection; a `bind` (Pure Data) one carries no spot
-                        # but its port-level boundary is recorded for the runner (D26-0)
-                        # so it can seed the value that enters here.
-                        if section == "state":
+                        # precedence. An Object-bearing port records the boundary
+                        # connection; a Pure Data one carries no spot but its port-level
+                        # boundary is recorded for the runner (D26-0) so it can seed the
+                        # value that enters here.
+                        if object_bearing:
                             self.entry_inputs[producer.name] = Endpoint(path, port)
                         else:
-                            # bind: a Pure Data entry input consumed at this atomic. Unlike
-                            # an Object, one Pure Data entry input may feed any number of
+                            # A Pure Data entry input consumed at this atomic. Unlike an
+                            # Object, one Pure Data entry input may feed any number of
                             # atomics, so each consumer gets a data arc of its own whose
                             # source is the boundary node `()` -- the same convention as
                             # the plan's boundary arcs. `data_entry_inputs` maps a port to
@@ -576,14 +598,14 @@ class _Expander:
                             self.data_entry_inputs[producer.name] = Endpoint(path, port)
                         continue
                     self.precedence.append((producer.path, path))
-                    if section == "state":
+                    if object_bearing:
                         self.arcs.append(
                             Arc(Endpoint(producer.path, producer.port), Endpoint(path, port))
                         )
                     else:
-                        # A `bind` is Pure Data: a precedence edge for the solver (added
-                        # above), plus the port-level arc for the runner's value routing
-                        # (D26-0). The scheduler does not read `data_arcs`.
+                        # Pure Data: a precedence edge for the solver (added above), plus
+                        # the port-level arc for the runner's value routing (D26-0). The
+                        # scheduler does not read `data_arcs`.
                         self.data_arcs.append(
                             Arc(Endpoint(producer.path, producer.port), Endpoint(path, port))
                         )

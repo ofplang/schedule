@@ -586,12 +586,12 @@ def _add_boundary_inputs(
     spot_owner: dict[str, str] = {}
     # 🔴 **Whether the port occupies a spot at all is asked first.** `entry_input_ports`
     # is the table that knows (`{port: object_bearing}`); `entry_inputs` is the one that
-    # says which activity consumes it, and for a composite entry it holds Pure Data ports
-    # too -- a `state:`-wired one is in there like any other. Consulting that first took a
-    # Data binding for a good one and let it through to fail later as `arc_unreachable`,
-    # which says nothing about the mistake. Measured: only a `bind:`-wired Data port was
-    # ever caught, which is to say the rule worked on half the ways of writing the same
-    # thing.
+    # says which activity consumes it. It once held Pure Data ports too -- the flattener
+    # read a `state:`-wired one as Object-bearing -- and consulting it first took a Data
+    # binding for a good one and let it through to fail later as `arc_unreachable`,
+    # which says nothing about the mistake. The flattener now classifies by port type,
+    # so `entry_inputs` holds Object-bearing ports only; the port table is still asked
+    # first, since it is the one that says what the port is.
     #
     # And the duplicate check comes after, for the same reason: a binding that should not
     # name a spot at all is not "the second job to want this one". Reported in the order

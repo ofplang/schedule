@@ -117,6 +117,13 @@ model:
 | Object-bearing | Occupies a spot | Transported between spots | Physical material |
 | Pure Data | None | None | Information; produces a dependency (ordering) only |
 
+A port's kind is its **declared type** (v0 §5.2): a type with an Object slot is
+Object-bearing, any other is Pure Data. It is never read off the binding section a
+node writes the port under. v0 §11 pairs the two — `state` for Object-bearing ports,
+`bind` for Pure Data — but a document whose section disagrees with its port is one to
+diagnose before scheduling, not one to plan by the section: a Pure Data value written
+under `state` is still Pure Data here, with no spot and no transport.
+
 ### 4.4 Devices and spots (the exclusive resources)
 
 Both **devices** and **spots** are exclusive resources; the model applies
