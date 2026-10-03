@@ -144,6 +144,38 @@ def test_interface_constrains_mode_to_slot_b(tmp_path):
     assert heat["mode"] == "at_b"
 
 
+def test_a_pure_data_pass_through_leaves_the_plan_alone(tmp_path):
+    # A Pure Data entry input returned verbatim is recorded in `exit_outputs` with the
+    # boundary node `()` as its producer, for the runner. It occupies no spot and has
+    # no activity behind it, so the plan must be exactly the plan without it: no
+    # extra boundary node, no transport, no unbound-output warning.
+    with_pass_through = WORKFLOW.replace(
+        "inputs:  { sample: { type: Sample, phase: data } }",
+        "inputs:  { sample: { type: Sample, phase: data }, t: { type: Float, phase: run } }",
+    ).replace(
+        "outputs: { result: { type: Sample, phase: data } }",
+        "outputs: { result: { type: Sample, phase: data }, t_echo: { type: Float, phase: run } }",
+    ).replace(
+        "returns: { result: { from: Heat.out } }",
+        "returns: { result: { from: Heat.out }, t_echo: { from: inputs.t } }",
+    )
+    assert with_pass_through.count("t_echo") == 2  # all three replacements applied
+
+    wf, ev, doc = _write(tmp_path, document=_iface("rack.slot_a"))
+    plain = schedule(wf, ev, document_path=doc)
+    (tmp_path / "pass").mkdir()
+    wf, ev, doc = _write(
+        tmp_path / "pass", workflow=with_pass_through, document=_iface("rack.slot_a")
+    )
+    workflow, _ = parse_workflow(wf)
+    assert workflow.exit_outputs["t_echo"].node == ()
+    report = schedule(wf, ev, document_path=doc)
+
+    assert report.ok and plain.ok
+    assert report.plan["activities"] == plain.plan["activities"]
+    assert not [d for d in report.diagnostics if "t_echo" in d.message]
+
+
 def test_interface_unreachable_spot_is_infeasible(tmp_path):
     # slot_c is served by no mode and no transport -> the boundary arc is unreachable.
     wf, ev, doc = _write(tmp_path, document=_iface("rack.slot_c"))

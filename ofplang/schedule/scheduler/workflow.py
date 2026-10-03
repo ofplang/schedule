@@ -283,10 +283,23 @@ def _read_workflow(data: dict, diags: Diagnostics) -> tuple[Workflow | None, Dia
         diags.error(errors.UNSUPPORTED_FEATURE, f"entry process {entry!r} is not a composite")
         return None, diags
 
+    # The entry composite's declared ports, tagged Object-bearing (for classifying
+    # `interface` bindings, and -- on the output side -- for telling a Pure Data
+    # pass-through return from an Object one during the flattening). Values are
+    # `{type, phase}` specs like an atomic's.
+    in_ports = {
+        n: _object_bearing((s or {}).get("type", ""), domains)
+        for n, s in (entry_proc.get("inputs") or {}).items()
+    }
+    out_ports = {
+        n: _object_bearing((s or {}).get("type", ""), domains)
+        for n, s in (entry_proc.get("outputs") or {}).items()
+    }
+
     (
         activities, arcs, precedence, used, entry_inputs, exit_outputs,
-        data_arcs, data_entry_inputs, data_literals, composites,
-    ) = _expand_body(entry, entry_proc, procs, atomic, diags)
+        data_arcs, data_entry_inputs, data_literals, exit_literals, composites,
+    ) = _expand_body(entry, entry_proc, procs, atomic, out_ports, diags)
 
     # scheduling_policies (§23) / object policies (§24) are best-effort preferences
     # this scheduler does not honor; a composite's `scheduling` section is dropped
@@ -305,16 +318,6 @@ def _read_workflow(data: dict, diags: Diagnostics) -> tuple[Workflow | None, Dia
                 f"scheduling policies on composite {cname!r} are not supported and are ignored",
                 f"processes.{cname}.scheduling",
             )
-    # The entry composite's declared ports, tagged Object-bearing (for classifying
-    # `interface` bindings). Values are `{type, phase}` specs like an atomic's.
-    in_ports = {
-        n: _object_bearing((s or {}).get("type", ""), domains)
-        for n, s in (entry_proc.get("inputs") or {}).items()
-    }
-    out_ports = {
-        n: _object_bearing((s or {}).get("type", ""), domains)
-        for n, s in (entry_proc.get("outputs") or {}).items()
-    }
     return (
         Workflow(
             tuple(activities), tuple(arcs), tuple(precedence), used,
@@ -322,7 +325,7 @@ def _read_workflow(data: dict, diags: Diagnostics) -> tuple[Workflow | None, Dia
             # Pure Data port-level dataflow for the runner (D26-0); the scheduler
             # does not read these, so the plan is unaffected.
             data_arcs=tuple(data_arcs), data_entry_inputs=data_entry_inputs,
-            data_literals=data_literals,
+            data_literals=data_literals, exit_literals=exit_literals,
             # Nested composite invocation boundaries for the runner's contract checks
             # (D34); value-independent, so the plan is unaffected.
             composites=composites,
@@ -352,9 +355,13 @@ def _object_bearing(type_expr: str, domains: dict[str, str | None]) -> bool:
     return domains.get(t) == "object"
 
 
-def _expand_body(entry_name, entry_proc, procs, atomic, diags):
+def _expand_body(entry_name, entry_proc, procs, atomic, exit_object_bearing, diags):
     """Flatten the entry composite into atomic activities, Object-bearing arcs, and
-    precedence edges, following nested composites (see `_Expander`)."""
+    precedence edges, following nested composites (see `_Expander`).
+
+    `exit_object_bearing` is the entry's `{output port: object_bearing}` table, needed
+    to tell a Pure Data pass-through return (recorded) from an Object one (out of
+    scope)."""
     exp = _Expander(procs, atomic, diags)
     # The entry's own inputs are the workflow's boundary inputs: seed the entry
     # scope so `inputs.X` resolves to an `_EntryInput(X)` marker, which propagates
@@ -363,13 +370,30 @@ def _expand_body(entry_name, entry_proc, procs, atomic, diags):
     exp.expand(entry_proc, (), entry_env, (entry_name,))
 
     # The entry's `returns` are the workflow's boundary outputs: resolve each to the
-    # atomic that produces it (an entry input returned verbatim resolves to an
-    # `_EntryInput` marker — a pass-through, left out of `exit_outputs`).
+    # atomic that produces it. Two other sources reach here, and only for Pure Data:
+    #  - an entry input returned verbatim (directly, or through nested composites)
+    #    resolves to an `_EntryInput` marker -- a pass-through. A Pure Data one is
+    #    recorded with the boundary node `()` as its producer, which is where the
+    #    runner seeds entry inputs, so the value it returns is the one that came in.
+    #    An Object-bearing one stays out of `exit_outputs`: a pass-through Object has
+    #    no activity to deliver it, and is out of scope (an `interface` binding of it
+    #    is diagnosed in `instance`).
+    #  - a nested composite that returns a literal-bound input resolves to a
+    #    `_Literal`; it has no producer at all, so it is kept apart in `exit_literals`.
+    # Before these were recorded, both kinds of output silently vanished from what the
+    # runner returns.
     siblings = _body_nodes(entry_proc)
     for out_name, source in _returns(entry_proc).items():
         producer = exp._resolve(_parse_ref(source), (), entry_env, siblings, (entry_name,))
         if isinstance(producer, _Producer):
             exp.exit_outputs[out_name] = Endpoint(producer.path, producer.port)
+        elif isinstance(producer, _EntryInput):
+            # An undeclared port (invalid upstream) counts as Object-bearing, so that
+            # nothing is recorded for it.
+            if not exit_object_bearing.get(out_name, True):
+                exp.exit_outputs[out_name] = Endpoint((), producer.name)
+        elif isinstance(producer, _Literal):
+            exp.exit_literals[out_name] = producer.value
 
     # Pure Data fan-in can occasionally add the same precedence edge twice; keep
     # each edge once, in first-seen order for a deterministic activity ordering.
@@ -382,7 +406,7 @@ def _expand_body(entry_name, entry_proc, procs, atomic, diags):
     return (
         exp.activities, exp.arcs, precedence, exp.used, exp.entry_inputs, exp.exit_outputs,
         # Pure Data port-level dataflow and static literals, for the runner only (D26-0).
-        exp.data_arcs, exp.data_entry_inputs, exp.data_literals,
+        exp.data_arcs, exp.data_entry_inputs, exp.data_literals, exp.exit_literals,
         # Nested composite invocation boundaries, for the runner's contract checks (D34).
         exp.composites,
     )
@@ -466,6 +490,8 @@ class _Expander:
         # `returns`). Only Object-bearing ports land here (state = Object-bearing).
         self.entry_inputs: dict[str, Endpoint] = {}
         self.exit_outputs: dict[str, Endpoint] = {}
+        # Main output port -> a static literal it returns (see `Workflow.exit_literals`).
+        self.exit_literals: dict[str, object] = {}
         # Nested composite invocation boundaries (D34), keyed by the composite's node
         # path -> CompositeIO. Recorded for the runner's composite contract checks
         # only; the scheduler never reads them (like data_arcs). The entry composite
@@ -536,7 +562,17 @@ class _Expander:
                         # so it can seed the value that enters here.
                         if section == "state":
                             self.entry_inputs[producer.name] = Endpoint(path, port)
-                        else:  # bind: Pure Data entry input consumed at this atomic.
+                        else:
+                            # bind: a Pure Data entry input consumed at this atomic. Unlike
+                            # an Object, one Pure Data entry input may feed any number of
+                            # atomics, so each consumer gets a data arc of its own whose
+                            # source is the boundary node `()` -- the same convention as
+                            # the plan's boundary arcs. `data_entry_inputs` maps a port to
+                            # ONE consumer and so can hold only the last of them; it is
+                            # kept for callers that read it, but `data_arcs` is complete.
+                            self.data_arcs.append(
+                                Arc(Endpoint((), producer.name), Endpoint(path, port))
+                            )
                             self.data_entry_inputs[producer.name] = Endpoint(path, port)
                         continue
                     self.precedence.append((producer.path, path))

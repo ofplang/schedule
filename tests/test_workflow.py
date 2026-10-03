@@ -200,9 +200,11 @@ def test_pure_data_arcs_are_recorded_separately(tmp_path):
 
     # The Pure Data `bind` from M.reading -> A.reading is a port-level data arc,
     # NOT an Object-bearing `arc` (which stays empty: sample enters as a boundary
-    # input, so there is no in-body Object arc here).
+    # input, so there is no in-body Object arc here). The entry input `config` bound
+    # into A.cfg is a data arc too, from the boundary node `()`.
     assert wf.data_arcs == (
         Arc(Endpoint(("M",), "reading"), Endpoint(("A",), "reading")),
+        Arc(Endpoint((), "config"), Endpoint(("A",), "cfg")),
     )
     assert wf.arcs == ()
     # A Pure Data entry input (config) bound into A.cfg is recorded as a Pure Data
@@ -361,6 +363,117 @@ def test_static_literal_spliced_across_composite_boundary(tmp_path):
     assert {a.path for a in wf.activities} == {("W", "A")}
     assert wf.data_literals == {Endpoint(("W", "A"), "cfg"): 7}
     assert wf.data_arcs == ()
+
+
+# The Pure Data boundary shapes that used to vanish from what the runner was handed:
+#  - the entry input `t` feeds three atomics (A and B directly, and W.inner through a
+#    composite), where a one-consumer map could hold only one of them;
+#  - `t_echo` returns `t` verbatim, and `t_wrapped` returns it through a composite
+#    that passes it straight back -- both pass-throughs with no producing activity;
+#  - `k` returns the literal a nested composite was bound to.
+# `p_echo` is the Object-bearing counterpart of the pass-through, which stays out of
+# scope and so out of `exit_outputs`.
+_PURE_DATA_BOUNDARY = """\
+spec_version: "0.0"
+types:
+  Plate: {domain: object}
+processes:
+  heat:
+    kind: atomic
+    inputs:
+      plate: {type: Plate, phase: data}
+      t: {type: Float, phase: run}
+    outputs:
+      plate: {type: Plate, phase: data}
+    objects: {map: {outputs.plate: inputs.plate}}
+  read:
+    kind: atomic
+    inputs: {t: {type: Float, phase: run}}
+    outputs: {r: {type: Float, phase: data}}
+  wrap:
+    kind: composite
+    inputs: {t: {type: Float, phase: run}}
+    outputs: {r: {type: Float, phase: data}}
+    body:
+      nodes:
+        - {id: inner, process: read, bind: {t: {from: inputs.t}}}
+      returns: {r: {from: inner.r}}
+  echo:
+    kind: composite
+    inputs: {k: {type: Float, phase: run}}
+    outputs: {k: {type: Float, phase: run}}
+    body:
+      nodes: []
+      returns: {k: {from: inputs.k}}
+  main:
+    kind: composite
+    inputs:
+      p: {type: Plate, phase: data}
+      q: {type: Plate, phase: data}
+      t: {type: Float, phase: run}
+    outputs:
+      p: {type: Plate, phase: data}
+      p_echo: {type: Plate, phase: data}
+      r: {type: Float, phase: data}
+      t_echo: {type: Float, phase: run}
+      t_wrapped: {type: Float, phase: run}
+      k: {type: Float, phase: run}
+    body:
+      nodes:
+        - {id: A, process: heat, state: {plate: {from: inputs.p}}, bind: {t: {from: inputs.t}}}
+        - {id: B, process: heat, state: {plate: {from: A.plate}}, bind: {t: {from: inputs.t}}}
+        - {id: W, process: wrap, bind: {t: {from: inputs.t}}}
+        - {id: E, process: echo, bind: {k: {from: inputs.t}}}
+        - {id: C, process: echo, bind: {k: {value: 3.0}}}
+      returns:
+        p: {from: B.plate}
+        p_echo: {from: inputs.q}
+        r: {from: W.r}
+        t_echo: {from: inputs.t}
+        t_wrapped: {from: E.k}
+        k: {from: C.k}
+entry: main
+"""
+
+
+def test_pure_data_entry_input_reaches_every_consumer(tmp_path):
+    doc = tmp_path / "boundary.yaml"
+    doc.write_text(_PURE_DATA_BOUNDARY, encoding="utf-8")
+    wf, diags = parse_workflow(doc)
+    assert not _errors(diags)
+    assert wf is not None
+
+    # One boundary data arc per consuming atomic, including the one reached through
+    # a composite. A runner that inverts `data_arcs` finds a source for every one.
+    boundary_arcs = {arc for arc in wf.data_arcs if arc.src == Endpoint((), "t")}
+    assert boundary_arcs == {
+        Arc(Endpoint((), "t"), Endpoint(("A",), "t")),
+        Arc(Endpoint((), "t"), Endpoint(("B",), "t")),
+        Arc(Endpoint((), "t"), Endpoint(("W", "inner"), "t")),
+    }
+    # The one-consumer map is kept as it was, for its existing readers: it can name
+    # only one of the three.
+    assert wf.data_entry_inputs["t"] in {arc.dst for arc in boundary_arcs}
+
+
+def test_pure_data_pass_through_and_literal_returns_are_recorded(tmp_path):
+    doc = tmp_path / "boundary.yaml"
+    doc.write_text(_PURE_DATA_BOUNDARY, encoding="utf-8")
+    wf, diags = parse_workflow(doc)
+    assert not _errors(diags)
+    assert wf is not None
+
+    # A Pure Data pass-through -- direct, or through a composite that returns its
+    # input -- is produced by the boundary node `()`, where the entry input is seeded.
+    assert wf.exit_outputs["t_echo"] == Endpoint((), "t")
+    assert wf.exit_outputs["t_wrapped"] == Endpoint((), "t")
+    # A return with no producer at all: the literal a nested composite was bound to.
+    assert wf.exit_literals == {"k": 3.0}
+    assert "k" not in wf.exit_outputs
+    # The ordinary returns are unchanged, and an Object pass-through stays out.
+    assert wf.exit_outputs["p"] == Endpoint(("B",), "plate")
+    assert wf.exit_outputs["r"] == Endpoint(("W", "inner"), "r")
+    assert "p_echo" not in wf.exit_outputs
 
 
 def test_recursive_composite_is_reported(tmp_path):

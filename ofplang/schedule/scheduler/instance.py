@@ -774,6 +774,12 @@ def _add_boundary_outputs(
     for name, producer in workflow.exit_outputs.items():
         if name in outputs:
             continue  # stated: bound above, or diagnosed and skipped there
+        if not workflow.exit_output_ports.get(name):
+            # A Pure Data return occupies no spot. `exit_outputs` lists them for the
+            # runner, some with the boundary node `()` as producer (a pass-through),
+            # which is no activity at all -- so they are skipped by kind here, not
+            # left to fall through the lookups below.
+            continue
         si = index_by_node.get(producer.node)
         if si is None:
             continue

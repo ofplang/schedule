@@ -244,7 +244,11 @@ class Workflow:
     processes: dict[str, AtomicProcess]
     # main input port name -> the atomic input Endpoint that consumes it.
     entry_inputs: dict[str, Endpoint] = field(default_factory=dict)
-    # main output port name -> the atomic output Endpoint that produces it.
+    # main output port name -> the atomic output Endpoint that produces it. A Pure
+    # Data entry input returned verbatim (a pass-through) is recorded with the
+    # boundary `Endpoint((), <entry input name>)` as its producer -- not an activity,
+    # so the planning code reads only the Object-bearing entries here. An
+    # Object-bearing pass-through is absent (out of scope).
     exit_outputs: dict[str, Endpoint] = field(default_factory=dict)
     # every main input / output port name -> whether it is Object-bearing (used to
     # classify an `interface` binding: unknown port vs Pure Data vs pass-through).
@@ -278,12 +282,19 @@ class Workflow:
     #     naming silently breaks the runner -- see `scheduler/workflow.py` and
     #     coordinate any change with ofplang-run (its dev-notes design.md D26).
     #
-    # (Pure Data final outputs need no new field: the runner reads `exit_outputs`
-    # together with `exit_output_ports` to recover every return, Object or Pure Data.)
+    # (Pure Data final outputs are in `exit_outputs`: the runner reads it together
+    # with `exit_output_ports` to recover every return, Object or Pure Data. The one
+    # return with no producer at all -- a literal -- is in `exit_literals` below.)
     #
-    # Pure Data connection: producer output Endpoint -> consumer input Endpoint.
+    # Pure Data connection: producer output Endpoint -> consumer input Endpoint. A
+    # source of `Endpoint((), name)` is the workflow's Pure Data entry input `name`
+    # (the boundary node, as in the plan's boundary arcs): there is one such arc per
+    # consuming atomic, so an entry input bound to several atomics reaches them all.
     data_arcs: tuple[Arc, ...] = ()
-    # main Pure Data input port name -> the atomic input Endpoint that consumes it.
+    # main Pure Data input port name -> ONE atomic input Endpoint that consumes it.
+    # 🔴 Incomplete when the port feeds several atomics: each entry holds one consumer,
+    # and the last one wins. The boundary arcs in `data_arcs` are the complete
+    # record; this map is kept only so that existing readers keep working.
     data_entry_inputs: dict[str, Endpoint] = field(default_factory=dict)
     # Static literal bindings (`bind: {port: {value: ...}}`, §11): the consuming
     # atomic input Endpoint -> the literal value. Like `data_arcs`, this is additive
@@ -291,6 +302,12 @@ class Workflow:
     # read it for planning, and its node paths match the plan's). The runner seeds
     # these as the input values of the ports they bind, in place of a typed default.
     data_literals: dict[Endpoint, object] = field(default_factory=dict)
+    # main output port name -> a static literal it returns. `returns` itself names only
+    # dataflow references, so this arises from one shape alone: a nested composite that
+    # returns an input the caller bound to a literal. Such an output has no producing
+    # activity and no boundary input either, so neither `exit_outputs` nor anything
+    # else can carry it. Runner-only, with the same INVARIANTS as `data_arcs`.
+    exit_literals: dict[str, object] = field(default_factory=dict)
     # Nested composite invocation boundaries, keyed by the composite's node path ->
     # its `CompositeIO` (port -> value-store key / literal). For the runner's composite
     # contract checks only (D34); same INVARIANTS as `data_arcs` (the scheduler MUST
