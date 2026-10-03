@@ -266,7 +266,7 @@ def build_instance(
     return Instance(env, env.time_unit, tuple(activities), tuple(arcs), precedence), diags
 
 
-def prefix_instance(instance: Instance, prefix: NodePath) -> Instance:
+def prefix_instance(instance: Instance, prefix: tuple[str, ...]) -> Instance:
     """`instance` with every workflow node path prefixed by `prefix`.
 
     Planning several workflows together (SPEC §6.11) merges their instances into
@@ -304,12 +304,14 @@ def prefix_instance(instance: Instance, prefix: NodePath) -> Instance:
         else replace(a, node=prefix + a.node)
         for a in instance.activities
     )
+    # Only the node path is prefixed; `replace` keeps the rest of each endpoint --
+    # its element `index` included -- as it was.
     arcs = tuple(
         replace(
             r,
             arc=Arc(
-                Endpoint(endpoint(r.src_activity, r.arc.src.node), r.arc.src.port),
-                Endpoint(endpoint(r.dst_activity, r.arc.dst.node), r.arc.dst.port),
+                replace(r.arc.src, node=endpoint(r.src_activity, r.arc.src.node)),
+                replace(r.arc.dst, node=endpoint(r.dst_activity, r.arc.dst.node)),
             ),
         )
         for r in instance.arcs

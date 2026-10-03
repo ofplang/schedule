@@ -16,8 +16,11 @@ from dataclasses import dataclass, field
 from ofplang.schedule.core.yamlnode import YMap, YNode, YScalar, YSeq
 from ofplang.schedule.scheduler.model import NodePath
 
-# Arc identity key: (source node path, source port, dest node path, dest port).
-ArcKey = tuple[NodePath, str, NodePath, str]
+# Arc identity key: (source node path, source port, source element index, dest node
+# path, dest port, dest element index). An index is `()` for a whole-port endpoint;
+# two arcs that differ only in which element of an Array they carry are different
+# connections, and each has its own transports (§6.4, §6.6).
+ArcKey = tuple[NodePath, str, tuple[int, ...], NodePath, str, tuple[int, ...]]
 
 
 @dataclass(frozen=True)
@@ -134,9 +137,21 @@ def times(item: YMap) -> tuple[int, int]:
 
 
 def node_path(node: YNode | None) -> NodePath:
+    """A node path read back from a document: node ids and iteration indices, each
+    kept as the type it was written in (§6.3). An index must come back as the int it
+    is in the instance -- read as anything else, the path would silently not match."""
     if not isinstance(node, YSeq):
         return ()
-    return tuple(x.value for x in node.items if isinstance(x, YScalar) and x.is_str)
+    return tuple(
+        x.value for x in node.items if isinstance(x, YScalar) and (x.is_str or x.is_int)
+    )
+
+
+def element_index(node: YNode | None) -> tuple[int, ...]:
+    """An arc endpoint's element `index` (§6.4), or `()` where it has none."""
+    if not isinstance(node, YSeq):
+        return ()
+    return tuple(x.value for x in node.items if isinstance(x, YScalar) and x.is_int)
 
 
 def arc_key(node: YNode | None, job: str = "") -> ArcKey | None:
@@ -148,8 +163,10 @@ def arc_key(node: YNode | None, job: str = "") -> ArcKey | None:
     return (
         scoped(job, node_path(frm.get("node"))),
         text(frm.get("port")),
+        element_index(frm.get("index")),
         scoped(job, node_path(to.get("node"))),
         text(to.get("port")),
+        element_index(to.get("index")),
     )
 
 

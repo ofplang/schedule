@@ -844,6 +844,17 @@ environment.
 - `node` (required) — provenance / identity: the node path, i.e. node ids from the
   entry composite's body down to the atomic node invoked, as a list (e.g.
   `[brew, heat]`); a single-level workflow yields a one-element list.
+  - **Iteration index.** Inside a `map` or `fold` node the path says which
+    invocation the activity belongs to: the node's id is followed by a non-negative
+    integer, the invocation's position (from 0). `[Wash, 2, aspirate]` is node
+    `aspirate` in invocation 2 of `Wash`; nested, `[Outer, 0, Inner, 3, step]`.
+    Each path segment is therefore a node id optionally followed by **one** index:
+    an index never starts a path and two never stand side by side. A path through
+    no such node has no index, so every path of a workflow without them reads as
+    before. The index is an integer, never the string `"2"` — a path is compared
+    element by element, so the two would not match. Written as text (in a message,
+    §9) it is `Wash/2/aspirate`; a node id cannot start with a digit, so the `2`
+    reads back unambiguously.
 - `devices`, `input_spots`, `output_spots` (optional) — derivable echo of the
   mode's devices and qualified spot mappings. A Pure-Data-only activity has none.
 - `device_access` (optional) — derivable echo of the mode's `device_access` (§5.5).
@@ -908,6 +919,13 @@ environment.
     interface side (`from_spot` for a boundary input, `to_spot` for a boundary
     output) — the bound one, or the one the scheduler chose for an unbound final
     output (§6.8); the other side is the consuming / producing activity's spot.
+  - An endpoint may add **`index`**, a non-empty list of non-negative integers, when
+    the arc carries **one element** of an Array-valued port rather than the whole
+    value: one integer per nesting level, outermost first (`{ node: [], port:
+    plates, index: [2] }` is element 2 of the entry input `plates`). Each element of
+    an Array of Objects is its own Object on its own spot, so each is its own
+    connection with its own transports. A whole-port endpoint omits the key; an
+    empty list is not another way of writing that.
 - `seq` (optional) — the leg's position in a multi-leg chain for that arc (§6.6).
   Omitted for a single-leg transport (equivalent to the first position).
 
@@ -977,7 +995,9 @@ alone identifies it (`seq` omitted = position `0`). A multi-leg move (through
 relays, §6.4.1) has several legs and relays on the **same** `arc`, distinguished
 by `seq` — a per-arc chain ordinal. A **boundary** transport is matched the same
 way; its `arc` simply carries an empty-path endpoint (§6.4, §6.8), so a boundary
-arc keys distinctly from any interior arc. `seq` is a **stable** position: once assigned
+arc keys distinctly from any interior arc. An endpoint's element `index` (§6.4) is
+part of the `arc`, so two elements of one Array port key as two arcs; a node path's
+iteration indices (§6.3) are part of the `node` the same way. `seq` is a **stable** position: once assigned
 to a chain element it is carried unchanged across replans (a fresh element takes
 the next unused position for that arc), so a status lines up against the prior
 plan even when a spot is revisited (the same `spot` can appear at two positions).
@@ -1880,7 +1900,8 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
     `device_access` are optional (`consumption` is a map of qualified resource id to
     a positive integer; `device_access` is a boolean, §6.3).
   - transport: `from_spot`, `to_spot` (qualified spots) and `arc` (`from` / `to`,
-    each `{ node: <list>, port: <id> }`) are required; `transporter` is required
+    each `{ node: <list>, port: <id> }`, with an optional `index` — a non-empty list
+    of non-negative integers, §6.4) are required; `transporter` is required
     unless the move is same-spot (`from_spot == to_spot`), where it may be omitted
     (§6.4), and its value is a transporter id **or null** (a move no transporter
     carries, §6.4); `seq` (if present) is a non-negative integer. A **boundary** transport's
@@ -1897,7 +1918,9 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
     must not appear.
 - Form rules: identifiers match `[A-Za-z_][A-Za-z0-9_]*`; a qualified spot has
   exactly one `.` with identifier parts, as does a qualified resource; a node path
-  is a non-empty list of identifiers.
+  is a non-empty list of identifiers, each optionally followed by one non-negative
+  integer iteration index (§6.3) — an index at the start, after another index, or
+  below zero is `invalid_node_path`.
 
 ### 9.3 Execution-layer validation (needs the workflow / solvability)
 
@@ -2136,7 +2159,8 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `unknown_outcome` | `outcome` is not one of the defined values |
 | `end_before_start` | `end` is earlier than `start` |
 | `empty_node_path` | a processing `node` is an empty list (an `arc` boundary endpoint may be empty, §6.4) |
-| `malformed_arc` | an `arc`'s `from` / `to` / `node` / `port` structure is wrong |
+| `invalid_node_path` | a processing `node`'s iteration index starts the path, follows another index, or is negative (§6.3) |
+| `malformed_arc` | an `arc`'s `from` / `to` / `node` / `port` / `index` structure is wrong |
 | `relay_nonzero_duration` | a `relay` activity's `end` is not equal to its `start` |
 | `empty_amounts` | a `replenishment` activity's `amounts` is empty — a refill that adds nothing (§6.9) |
 | `duplicate_activity_id` | two activities in one document share an `id` |

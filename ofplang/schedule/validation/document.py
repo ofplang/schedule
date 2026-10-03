@@ -11,6 +11,8 @@ from ofplang.schedule.core import yamlnode
 from ofplang.schedule.core.diagnostics import Diagnostics, ValidationResult
 from ofplang.schedule.core.identifiers import (
     is_identifier,
+    is_iteration_index,
+    node_path_problem,
     parse_qualified_resource,
     parse_qualified_spot,
 )
@@ -90,7 +92,7 @@ RELAY_KEYS = {"kind", "job", "status", "start", "end", "arc", "seq", "spot"}
 # commonly serves several jobs (§6.11).
 REPLENISHMENT_KEYS = {"kind", "status", "start", "end", "id", "device", "replenisher", "amounts"}
 ACTIVITY_KINDS = {"processing", "transport", "relay", "replenishment"}
-ARC_ENDPOINT_KEYS = {"node", "port"}
+ARC_ENDPOINT_KEYS = {"node", "port", "index"}
 
 
 def validate_document(source) -> ValidationResult:
@@ -590,18 +592,43 @@ def _check_node_path(node: YNode | None, path: str, diags: Diagnostics) -> None:
     if not seq.items:
         diags.error(errors.EMPTY_NODE_PATH, "node path is empty", path, at=seq)
         return
+    # Each element is a node id, or an iteration index straight after the id of the
+    # `map` / `fold` node whose invocation it counts (§6.3). Elements are reported
+    # one by one, so a path with several faults names each of them.
+    after_node_id = False
     for i, element in enumerate(seq.items):
-        if not (isinstance(element, YScalar) and element.is_str):
+        where = f"{path}[{i}]"
+        if isinstance(element, YScalar) and element.is_str:
+            if not is_identifier(element.value):
+                diags.error(
+                    errors.INVALID_IDENTIFIER, f"invalid node id {element.value!r}", where,
+                    at=element,
+                )
+            after_node_id = True
+        elif isinstance(element, YScalar) and element.is_int:
+            if element.value < 0:
+                diags.error(
+                    errors.INVALID_NODE_PATH,
+                    f"iteration index {element.value} is negative",
+                    where,
+                    at=element,
+                )
+            elif not after_node_id:
+                diags.error(
+                    errors.INVALID_NODE_PATH,
+                    f"iteration index {element.value} does not follow a node id",
+                    where,
+                    at=element,
+                )
+            after_node_id = False
+        else:
             diags.error(
-                errors.WRONG_TYPE, "node-path element must be a string", f"{path}[{i}]", at=element
-            )
-        elif not is_identifier(element.value):
-            diags.error(
-                errors.INVALID_IDENTIFIER,
-                f"invalid node id {element.value!r}",
-                f"{path}[{i}]",
+                errors.WRONG_TYPE,
+                "node-path element must be a node id (string) or an iteration index (integer)",
+                where,
                 at=element,
             )
+            after_node_id = False
 
 
 def _check_transport(amap: YMap, base: str, diags: Diagnostics) -> None:
@@ -701,13 +728,13 @@ def _check_relay(amap: YMap, base: str, diags: Diagnostics) -> None:
 
 
 def _check_arc(node: YNode, path: str, diags: Diagnostics) -> None:
-    # An arc is `{from, to}`, each endpoint a `{node, port}`; any structural
-    # deviation is reported as a single malformed_arc.
+    # An arc is `{from, to}`, each endpoint a `{node, port}` with an optional element
+    # `index`; any structural deviation is reported as a single malformed_arc.
     ok = isinstance(node, YMap) and _endpoint_ok(node.get("from")) and _endpoint_ok(node.get("to"))
     if not ok:
         diags.error(
             errors.MALFORMED_ARC,
-            "malformed arc (need from/to each with node and port)",
+            "malformed arc (need from/to each with node and port, and an optional index)",
             path,
             at=node,
         )
@@ -721,11 +748,22 @@ def _endpoint_ok(node: YNode | None) -> bool:
     path_node = node.get("node")
     port = node.get("port")
     # An empty node path denotes the workflow interface (a boundary arc endpoint,
-    # §6.4/§6.8); a non-empty path names an atomic node. Both are well-formed here.
+    # §6.4/§6.8); a non-empty path names an atomic node, and may carry iteration
+    # indices (§6.3). Both are well-formed here.
     if not isinstance(path_node, YSeq):
         return False
-    if not all(isinstance(x, YScalar) and is_identifier(x.value) for x in path_node.items):
+    elements = [x.value for x in path_node.items if isinstance(x, YScalar)]
+    if len(elements) != len(path_node.items) or node_path_problem(elements) is not None:
         return False
+    # `index` picks one element of an Array-valued port (§6.4): a non-empty list of
+    # non-negative integers, one per nesting level. A whole-port endpoint omits it,
+    # so an empty list is not a second way of writing that.
+    index = node.get("index")
+    if index is not None:
+        if not (isinstance(index, YSeq) and index.items):
+            return False
+        if not all(isinstance(x, YScalar) and is_iteration_index(x.value) for x in index.items):
+            return False
     return isinstance(port, YScalar) and port.is_str and bool(port.value)
 
 

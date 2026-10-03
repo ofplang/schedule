@@ -298,16 +298,27 @@ def _arc_job(arc, jobs: tuple[str, ...]) -> str | None:
 def _arc(arc, jobs: tuple[str, ...] = ()) -> dict:
     """Render an Arc as the document's `{from, to}` provenance, with the job prefix
     split off both endpoints (it is carried once, by the activity's `job`)."""
-    return {
-        "from": {"node": _split_job(arc.src.node, jobs)[1], "port": arc.src.port},
-        "to": {"node": _split_job(arc.dst.node, jobs)[1], "port": arc.dst.port},
-    }
+    return {"from": _endpoint(arc.src, jobs), "to": _endpoint(arc.dst, jobs)}
+
+
+def _endpoint(endpoint, jobs: tuple[str, ...]) -> dict:
+    """One arc endpoint as `{node, port}`, plus `index` where the arc carries one
+    element of an Array-valued port (§6.4). A whole-port endpoint has no `index`
+    key at all, which is what keeps a plan without Arrays exactly as it was."""
+    rendered = {"node": _split_job(endpoint.node, jobs)[1], "port": endpoint.port}
+    if endpoint.index:
+        rendered["index"] = list(endpoint.index)
+    return rendered
 
 
 def _arc_key(arc: dict) -> tuple:
-    """The identity of a rendered `{from, to}` arc, for pairing legs and relays."""
+    """The identity of a rendered `{from, to}` arc, for pairing legs and relays. The
+    element `index` is part of it: two elements of one Array port are two arcs."""
     f, t = arc["from"], arc["to"]
-    return (tuple(f["node"]), f["port"], tuple(t["node"]), t["port"])
+    return (
+        tuple(f["node"]), f["port"], tuple(f.get("index", ())),
+        tuple(t["node"]), t["port"], tuple(t.get("index", ())),
+    )
 
 
 def _fold_relayed_zero_distance(activities: list[dict]) -> list[dict]:

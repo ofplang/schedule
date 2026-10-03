@@ -130,13 +130,19 @@ def fingerprint(workflow: Workflow) -> str:
     stop being replannable by the next. Keep the ingredients spec-level, and treat any
     change to them as one.
     """
+    # An arc that carries one element of an Array port adds its two element indices.
+    # A whole-port arc adds nothing, so the digest of a workflow without Arrays of
+    # Objects is the one it always had.
+    def arc_entry(arc: Arc) -> tuple:
+        entry: tuple = (list(arc.src.node), arc.src.port, list(arc.dst.node), arc.dst.port)
+        if arc.src.index or arc.dst.index:
+            entry += (list(arc.src.index), list(arc.dst.index))
+        return entry
+
     parts = [
-        sorted((list(a.path), a.process) for a in workflow.activities),
-        sorted(
-            (list(arc.src.node), arc.src.port, list(arc.dst.node), arc.dst.port)
-            for arc in workflow.arcs
-        ),
-        sorted((list(s), list(d)) for s, d in workflow.precedence),
+        sorted(((list(a.path), a.process) for a in workflow.activities), key=_typed),
+        sorted((arc_entry(arc) for arc in workflow.arcs), key=_typed),
+        sorted(((list(s), list(d)) for s, d in workflow.precedence), key=_typed),
         sorted(workflow.entry_input_ports.items()),
         sorted(workflow.exit_output_ports.items()),
     ]
@@ -144,6 +150,18 @@ def fingerprint(workflow: Workflow) -> str:
     # depends on the structure above and not on how Python happens to repr it.
     payload = json.dumps(parts, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _typed(value):
+    """A sort key that orders node ids and iteration indices without comparing a str
+    with an int (which Python refuses). Strings sort among themselves exactly as
+    before, so the order -- and with it the digest -- of anything without an index
+    is unchanged."""
+    if isinstance(value, (list, tuple)):
+        return tuple(_typed(element) for element in value)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return (1, value)
+    return (0, value)
 
 
 def _check_readable(data: dict, diags: Diagnostics) -> bool:

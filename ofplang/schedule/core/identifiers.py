@@ -18,16 +18,53 @@ def is_identifier(value) -> bool:
     return isinstance(value, str) and _IDENTIFIER.match(value) is not None
 
 
+def is_iteration_index(value) -> bool:
+    """True for a node-path iteration index: a non-negative int, never a bool (YAML
+    and Python both let `true` pass for an int)."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def node_path_problem(elements) -> str | None:
+    """Why a sequence is not a well-formed node path, or None if it is one
+    (SPECIFICATIONS.md §6.3).
+
+    A node path is a list of segments, each a node id optionally followed by one
+    iteration index: the index says which invocation of a `map` / `fold` node the
+    rest of the path lies in, so it can only come straight after that node's id.
+    Hence an index never starts a path and two never stand side by side. A path
+    without structured nodes has no index at all, which is every path written
+    before indices existed. The empty path is not judged here: whether it is
+    allowed (a boundary arc endpoint) or not (a processing `node`) depends on where
+    it appears.
+    """
+    after_node_id = False
+    for element in elements:
+        if isinstance(element, str):
+            if not is_identifier(element):
+                return f"invalid node id {element!r}"
+            after_node_id = True
+        elif is_iteration_index(element):
+            if not after_node_id:
+                return f"iteration index {element} does not follow a node id"
+            after_node_id = False
+        else:
+            return f"{element!r} is neither a node id nor an iteration index"
+    return None
+
+
 def format_node_path(path) -> str:
     """Render a node path as `a/b/c` for diagnostics and messages — the
     hierarchical node-path form (SPECIFICATIONS.md §6.3), readable where the raw
-    tuple/list would leak Python syntax."""
-    return "/".join(path)
+    tuple/list would leak Python syntax. An iteration index renders as its number
+    (`Wash/2/aspirate`); a node id cannot start with a digit, so it reads back
+    unambiguously."""
+    return "/".join(str(element) for element in path)
 
 
-def format_endpoint(node_path, port) -> str:
-    """Render an arc endpoint (`node` path + `port`) as `a/b/c.port`."""
-    return f"{format_node_path(node_path)}.{port}"
+def format_endpoint(node_path, port, index=()) -> str:
+    """Render an arc endpoint (`node` path + `port`) as `a/b/c.port`, with the
+    element `index` of an Array-valued port, if any, as `a/b/c.port[2][0]`."""
+    return f"{format_node_path(node_path)}.{port}" + "".join(f"[{i}]" for i in index)
 
 
 def parse_qualified_resource(value) -> tuple[str, str] | None:

@@ -1278,7 +1278,11 @@ def _subject(job: str, path: NodePath) -> str:
 
 
 def _arc_key_of(arc: Arc) -> tuple:
-    return (arc.src.node, arc.src.port, arc.dst.node, arc.dst.port)
+    """An instance arc's identity, in the shape `status.arc_key` reads a document
+    arc into -- the two are compared, so they change together."""
+    return (
+        arc.src.node, arc.src.port, arc.src.index, arc.dst.node, arc.dst.port, arc.dst.index
+    )
 
 
 def _node_of(activities, i: int) -> NodePath:

@@ -72,6 +72,10 @@ UNKNOWN_STATUS = "unknown_status"
 UNKNOWN_OUTCOME = "unknown_outcome"
 END_BEFORE_START = "end_before_start"
 EMPTY_NODE_PATH = "empty_node_path"
+# A node path's iteration index (§6.3) is negative, starts the path, or stands next to
+# another index: an index only ever comes straight after the `map` / `fold` node id it
+# counts invocations of.
+INVALID_NODE_PATH = "invalid_node_path"
 MALFORMED_ARC = "malformed_arc"
 # A `relay` activity (a transport junction, §6) has a non-zero duration; a relay
 # is instantaneous, so its `end` must equal its `start`.
@@ -400,6 +404,7 @@ ERROR_CODES = frozenset(
         UNKNOWN_OUTCOME,
         END_BEFORE_START,
         EMPTY_NODE_PATH,
+        INVALID_NODE_PATH,
         MALFORMED_ARC,
         RELAY_NONZERO_DURATION,
         EMPTY_AMOUNTS,

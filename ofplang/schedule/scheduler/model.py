@@ -18,8 +18,12 @@ from dataclasses import dataclass, field
 
 # A node path (SPECIFICATIONS.md §6.3): node ids from the entry composite's body
 # down to the atomic invocation. Single-level workflows yield a one-tuple. It is
-# the stable identity of a processing activity.
-NodePath = tuple[str, ...]
+# the stable identity of a processing activity. Inside a `map` / `fold` node the
+# path carries an iteration index (an int) straight after that node's id --
+# `("Wash", 2, "aspirate")` is node `aspirate` in invocation 2 of `Wash`. The index
+# stays an int everywhere, in the plan and in a status read back, never the string
+# "2": these paths are compared as tuples, so the two would silently not match.
+NodePath = tuple[str | int, ...]
 
 
 # --------------------------------------------------------------------------
@@ -158,10 +162,16 @@ class NodeInvocation:
 
 @dataclass(frozen=True)
 class Endpoint:
-    """One side of an arc: the node that owns the port and the port name."""
+    """One side of an arc: the node that owns the port and the port name.
+
+    `index` selects one element of an Array-valued port -- one per nesting level,
+    outermost first -- where the arc carries a single element rather than the whole
+    value (SPECIFICATIONS.md §6.4). Empty, the default, is the whole port, which is
+    every endpoint of a workflow without Arrays of Objects."""
 
     node: NodePath
     port: str
+    index: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
