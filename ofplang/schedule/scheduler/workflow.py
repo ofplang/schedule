@@ -317,6 +317,7 @@ def _read_workflow(data: dict, diags: Diagnostics) -> tuple[Workflow | None, Dia
                     ),
                     data_entry_inputs={name: Endpoint(path, name) for name in data_inputs},
                     input_sources=input_sources, output_sources=output_sources,
+                    **_planner_boundary(entry_proc, entry_inputs, exit_outputs, out_ports),
                 ),
                 diags,
             )
@@ -371,9 +372,53 @@ def _read_workflow(data: dict, diags: Diagnostics) -> tuple[Workflow | None, Dia
             # Nested composite invocation boundaries for the runner's contract checks
             # (D34); value-independent, so the plan is unaffected.
             composites=composites,
+            **_planner_boundary(entry_proc, entry_inputs, exit_outputs, out_ports),
         ),
         diags,
     )
+
+
+def _planner_boundary(entry_proc: dict, entry_inputs: dict, exit_outputs: dict,
+                      out_ports: dict[str, bool]) -> dict:
+    """The Object-bearing boundary as the planner reads it (`Workflow.entry_arcs` /
+    `exit_arcs`), and every boundary port's Array rank.
+
+    One arc per Object crossing the boundary. Each port here carries one whole
+    Object (an Array port's elements get an arc each, with an element index, once
+    an expansion produces them), so the arcs say what `entry_inputs` /
+    `exit_outputs` say, in the shape that can hold elements too. A final output is
+    on the planner's side only if it is Object-bearing and has a producing activity:
+    a Pure Data return, and one passed straight through from the boundary, occupy
+    no spot it could place.
+    """
+    entry_arcs = tuple(Arc(Endpoint((), name), consumer) for name, consumer in entry_inputs.items())
+    exit_arcs = tuple(
+        Arc(producer, Endpoint((), name))
+        for name, producer in exit_outputs.items()
+        if out_ports.get(name) and producer.node != ()
+    )
+    return {
+        "entry_arcs": entry_arcs,
+        "exit_arcs": exit_arcs,
+        "entry_input_ranks": {
+            n: _array_rank((s or {}).get("type", ""))
+            for n, s in (entry_proc.get("inputs") or {}).items()
+        },
+        "exit_output_ranks": {
+            n: _array_rank((s or {}).get("type", ""))
+            for n, s in (entry_proc.get("outputs") or {}).items()
+        },
+    }
+
+
+def _array_rank(type_expr) -> int:
+    """How deeply a type nests Arrays: 0 for `Plate`, 2 for `Array<Array<Plate>>`."""
+    t = str(type_expr).strip()
+    rank = 0
+    while t.startswith("Array<") and t.endswith(">"):
+        t = t[len("Array<") : -1].strip()
+        rank += 1
+    return rank
 
 
 def _atomic_signature(name: str, proc: dict, domains: dict[str, str | None]) -> AtomicProcess:

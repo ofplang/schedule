@@ -99,7 +99,7 @@ from dataclasses import dataclass, field
 
 from ofplang.schedule.core.diagnostics import Diagnostics
 from ofplang.schedule.scheduler.instance import Instance
-from ofplang.schedule.scheduler.model import Mode
+from ofplang.schedule.scheduler.model import Mode, slot_key
 from ofplang.schedule.scheduler.status import Fixation
 from ofplang.schedule.validation import errors
 
@@ -776,7 +776,9 @@ def _spot_collapsible(instance: Instance, members: frozenset[str]) -> bool:
             if option.duration == 0:
                 return False  # G1 again, on a route
         if any(o.from_spot in members for o in arc.options):
-            key = (arc.src_activity, arc.arc.src.port)
+            # By slot, not port: two elements of one Array leave from spots of their
+            # own, which is two Objects departing rather than one port departing twice.
+            key = (arc.src_activity, slot_key(arc.arc.src))
             if key in seen_departures:
                 return False  # G7: one port, two departures
             seen_departures.add(key)

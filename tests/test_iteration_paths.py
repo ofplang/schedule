@@ -15,8 +15,6 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-import yaml
-
 from ofplang.schedule import validate_document
 from ofplang.schedule.core import yamlnode
 from ofplang.schedule.core.identifiers import (
@@ -154,17 +152,21 @@ def test_status_reads_an_index_back_as_an_int():
 
 
 def test_iterated_paths_survive_solve_render_validate_and_replan():
-    inst, env = _instance(_iterated_workflow())
+    # Whole-port arcs: an atomic process's modes place whole ports, so an element
+    # index on an atomic endpoint has no spot to be planned onto in this stage. The
+    # element index is exercised where it does have one, at the boundary
+    # (`tests/test_array_boundary.py`).
+    inst, env = _instance(_iterated_workflow(src_index=()))
     solution = solve(inst, random_seed=0)
     assert solution.outcome == "optimal"
     plan = render_plan(inst, solution)
 
-    # The plan carries the paths and the element index as written, ints as ints.
+    # The plan carries the paths as written, ints as ints.
     processing = {tuple(a["node"]) for a in plan["activities"] if a["kind"] == "processing"}
     assert processing == {SOURCE, TARGET}
     (move,) = [a for a in plan["activities"] if a["kind"] == "transport"]
-    assert move["arc"]["from"] == {"node": list(SOURCE), "port": "source_out", "index": [1]}
-    assert move["arc"]["to"] == {"node": list(TARGET), "port": "target_in"}  # no `index` key
+    assert move["arc"]["from"] == {"node": list(SOURCE), "port": "source_out"}  # no `index`
+    assert move["arc"]["to"] == {"node": list(TARGET), "port": "target_in"}
     assert _codes(plan) == []
 
     # Fed back as a status with everything done, every activity is recognised and
@@ -177,20 +179,6 @@ def test_iterated_paths_survive_solve_render_validate_and_replan():
     assert [d.code for d in diags.items] == []
     assert fixation is not None
     assert len(fixation.activities) == 2 and len(fixation.arcs) == 1
-
-
-def test_a_status_naming_another_element_is_not_this_arc():
-    # Element 1 and element 2 of one port are two connections; history for one must
-    # not be pinned onto the other.
-    inst, env = _instance(_iterated_workflow(src_index=(1,)))
-    plan = render_plan(inst, solve(inst, random_seed=0))
-    for activity in plan["activities"]:
-        activity["status"] = "completed"
-        if activity["kind"] == "transport":
-            activity["arc"]["from"]["index"] = [2]
-    plan["now"] = max(a["end"] for a in plan["activities"])
-    _, _, diags = normalize(inst, yamlnode.loads(yaml.safe_dump(plan)), env)
-    assert "status_arc_unknown" in [d.code for d in diags.items]
 
 
 def test_a_joint_plan_prefix_keeps_the_element_index():

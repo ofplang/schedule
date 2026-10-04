@@ -23,6 +23,7 @@ The second exclusion was learned the hard way and the story is in `resting`.
 from __future__ import annotations
 
 from ofplang.schedule.scheduler.instance import Instance
+from ofplang.schedule.scheduler.model import slot_key
 from ofplang.schedule.scheduler.status import Fixation
 
 
@@ -68,7 +69,8 @@ def arrived_at(instance, fixation: Fixation | None, membership, final_spots) -> 
         job_id = membership[arc.src_activity] or membership[arc.dst_activity]
         # A fixed leg carries one frozen route (`ArcFixation`), so its destination is
         # where the Object actually is.
-        if arc.options[0].to_spot not in final_spots.get((job_id, arc.arc.dst.port), ()):
+        # Keyed as the output node's modes key it: by port, or by element for an Array.
+        if arc.options[0].to_spot not in final_spots.get((job_id, slot_key(arc.arc.dst)), ()):
             continue
         key = (job_id, arc.arc)
         seq = arc.seq or 0

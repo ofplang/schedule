@@ -1127,18 +1127,43 @@ destination input spot), whereas a most-upstream input port and a final output
 port have no such arc, so `interface` supplies the equivalent constraint.
 
 - `inputs` (map) — each Object-bearing **entry input** port of the workflow → the
-  qualified spot `<device>.<spot>` where its Object sits at the start.
+  qualified spot `<device>.<spot>` where its Object sits at the start (a list of
+  spots for an Array port, below).
 - `outputs` (map, optional per port) — each Object-bearing **final output** port →
-  the qualified spot its Object must be delivered to. **Binding every final output is
+  the qualified spot its Object must be delivered to (likewise a list for an Array). **Binding every final output is
   recommended** (below): an unbound one still comes to rest somewhere, but the
   scheduler picks where, and a spot chosen to suit a schedule is rarely the one a
   laboratory wants its product left on.
 
-Only Object-bearing boundary ports appear (Pure Data ports occupy no spot). Each
-port maps to exactly one spot; two bindings on the same side (two `inputs`, or two
-`outputs`) may not share a spot — two entry Objects cannot start at one spot, and
-two delivered Objects cannot rest at one. An input and an output may share a spot
-(they occupy it at different times).
+Only Object-bearing boundary ports appear (Pure Data ports occupy no spot). Two
+bindings on the same side (two `inputs`, or two `outputs`) may not share a spot — two
+entry Objects cannot start at one spot, and two delivered Objects cannot rest at one.
+An input and an output may share a spot (they occupy it at different times).
+
+**One spot per Object, so a list for an Array.** A port whose type is an Object
+carries one Object and maps to one spot. A port of type `Array<T>` carries one Object
+per element, each on a spot of its own, so it maps to a **list of spots in element
+order** — element `i` is on the `i`-th spot — and `Array<Array<T>>` to a list of such
+lists, nested as deep as the port's Arrays. The list *is* the Array's shape: its
+length is how many elements there are, an inner list may be as long as its element is,
+and `[]` is an Array with none. A spot for an Array port is not read as a one-element
+list, nor a list for a scalar port as one spot (`interface_shape_mismatch`, §10.4), and
+the elements bound must be exactly the ones that cross the boundary
+(`interface_length_mismatch`). The no-sharing rule above is per element: two elements
+of one Array are two Objects and need two spots.
+
+```yaml
+interface:
+  inputs:
+    plates: [hotel.s1, hotel.s2, hotel.s3]   # Array<Plate>: element 0 on hotel.s1, …
+  outputs:
+    results: [rack.a, rack.b, rack.c]
+```
+
+Each element crosses the boundary on an arc of its own, whose boundary endpoint names
+the element (`{ node: [], port: plates, index: [2] }`, §6.4). An unbound Array output
+has each element's resting place chosen as an unbound output's is (below), and is
+reported once for the port.
 
 **Meaning (induces boundary transports).** Every Object-bearing boundary port adds a
 boundary transport (§6.4) — each binding, and each unbound final output, whose spot
@@ -1881,10 +1906,11 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
   other key is accepted — an entry says a spot is held and nothing more (§6.12) — and
   no spot is named twice (`occupied_duplicate_spot`).
 - `interface` (if present): `inputs` / `outputs` (each optional) are maps of a port
-  identifier to a qualified spot; a spot value is a well-formed qualified spot
+  identifier to a qualified spot, or to a list of bindings (an Array port's elements,
+  §6.8) nested to any depth; every spot value is a well-formed qualified spot
   (`<device>.<spot>`, exactly one `.`). (That a port is an Object-bearing boundary
-  port, and input-completeness / spot uniqueness / spot existence, are
-  execution-layer, §9.3.)
+  port, that the nesting is the port's, and input-completeness / spot uniqueness /
+  spot existence, are execution-layer, §9.3.)
 - Each activity: `kind` is required and is `processing`, `transport`, `relay`, or
   `replenishment`; `job` (if present) is an identifier (§6.11) naming an entry of the
   `jobs` roster (`unknown_job`, which also covers a `job` in a document with no
@@ -1969,10 +1995,13 @@ environment for processes the workflow never invokes are not checked.
 - **Interface** (§6.8): each bound port is an Object-bearing boundary port of the
   workflow on the correct side — an entry input under `inputs`, a final output
   under `outputs` (`interface_unknown_port` if it is not that port, or is mapped on
-  the wrong side; `interface_pure_data_port` if the port is Pure Data). Its spot
-  exists in the environment (`unknown_device` / `unknown_spot`, reused from §9.1).
-  No two bindings on the same side (two `inputs`, or two `outputs`) bind the same
-  spot (`interface_duplicate_spot`). Every Object-bearing entry input must be bound
+  the wrong side; `interface_pure_data_port` if the port is Pure Data). Each spot it
+  names exists in the environment (`unknown_device` / `unknown_spot`, reused from
+  §9.1). Its shape is the port's — one spot for an Object, lists nested as deep as an
+  Array port's Arrays (`interface_shape_mismatch`) — and it binds exactly the elements
+  that cross the boundary (`interface_length_mismatch`). No two bindings on the same
+  side (two `inputs`, or two `outputs`), nor two elements of one, bind the same spot
+  (`interface_duplicate_spot`). Every Object-bearing entry input must be bound
   (`interface_input_missing` otherwise). An output binding may be omitted, and each
   omitted one is reported (`interface_output_unbound`, a warning): the output is then
   bound to a spot the scheduler chooses, so the section is checked and applied whether
@@ -2200,6 +2229,8 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `interface_pure_data_port` | an `interface` binding names a Pure Data port (occupies no spot) |
 | `interface_duplicate_spot` | two bindings of one `interface`, on the same side (two inputs, or two outputs), bind the same spot. Across *jobs* the same claim is `interface_simultaneous_input_spot` / `interface_shared_output_spot` (below) |
 | `interface_input_missing` | an Object-bearing entry input has no `interface` binding (§6.8) |
+| `interface_shape_mismatch` | a binding's shape is not its port's: a list for an Object port, a spot for an Array port, or lists nested to a different depth than the port's Arrays (§6.8) |
+| `interface_length_mismatch` | an Array port's binding names elements other than the ones that cross the boundary: one nothing consumes or produces, or one moved that no spot was given for (§6.8) |
 | `interface_output_unbound` | **warning**: an Object-bearing final output has no `interface.outputs` binding (§6.8), so the schedule decides where it comes to rest. Binding every final output is the normal way to write the section |
 | `job_workflow_mismatch` | a job's workflow is not the one its roster entry's `fingerprint` records (§6.11) |
 | `job_bound_relaxed` | **warning**: a job could no longer finish by the completion it was promised, so the promise was re-derived (§6.11) |

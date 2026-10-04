@@ -57,7 +57,7 @@ from ofplang.schedule.scheduler.instance import (
     routes,
     transport_options,
 )
-from ofplang.schedule.scheduler.model import Arc, Mode, NodePath
+from ofplang.schedule.scheduler.model import Arc, Mode, NodePath, slot_key
 from ofplang.schedule.scheduler.status import (
     COMPLETION,
     START,
@@ -1099,7 +1099,7 @@ def _build_chain(
         # further apart than one move. Reachability is checked by the caller after
         # normalization, which finds an option-less arc either way.
         _append_move(
-            logical, src_i, logical.src.port, dst_i, logical.dst.port, None,
+            logical, src_i, slot_key(logical.src), dst_i, slot_key(logical.dst), None,
             activities=activities, arcs=arcs, env=env, hops=hops, max_legs=max_legs,
         )
         return
@@ -1181,7 +1181,7 @@ def _build_chain(
     # pending re-transport from the last committed spot to the successor.
     if not dst_fixed:
         _append_move(
-            logical, prev_i, "out", dst_i, logical.dst.port, legs[-1].seq + 2,
+            logical, prev_i, "out", dst_i, slot_key(logical.dst), legs[-1].seq + 2,
             activities=activities, arcs=arcs, env=env, hops=hops, max_legs=max_legs,
         )
 

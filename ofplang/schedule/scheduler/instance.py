@@ -19,6 +19,11 @@ from dataclasses import dataclass, replace
 
 from ofplang.schedule.core.diagnostics import Diagnostics
 from ofplang.schedule.core.identifiers import format_endpoint, parse_qualified_spot
+from ofplang.schedule.scheduler.interface import (
+    binding_elements,
+    binding_matches,
+    element_label,
+)
 from ofplang.schedule.scheduler.model import (
     Arc,
     Endpoint,
@@ -26,6 +31,7 @@ from ofplang.schedule.scheduler.model import (
     Mode,
     NodePath,
     Workflow,
+    slot_key,
 )
 from ofplang.schedule.validation import errors
 
@@ -219,7 +225,7 @@ def build_instance(
             )
             continue
         options = transport_options(
-            activities[si], arc.src.port, activities[di], arc.dst.port, env
+            activities[si], slot_key(arc.src), activities[di], slot_key(arc.dst), env
         )
         if not options and check_reachability:
             diags.error(
@@ -234,7 +240,9 @@ def build_instance(
     # are optional.) Runs even without an interface, so a workflow with entry inputs
     # and no interface is rejected rather than silently unconstrained.
     bound_inputs = set((interface or {}).get("inputs") or {})
-    for name in workflow.entry_inputs:
+    # Every port some Object enters through, once each (an Array port has an arc per
+    # element), in the workflow's order.
+    for name in dict.fromkeys(arc.src.port for arc in workflow.entry_arcs):
         if name not in bound_inputs:
             diags.error(
                 errors.INTERFACE_INPUT_MISSING,
@@ -584,84 +592,156 @@ def _add_boundary_inputs(
     or a spot the environment does not define.
     """
     inputs = interface.get("inputs") or {}
-    valid: list[tuple[str, str, Endpoint]] = []  # (port name, spot, consumer endpoint)
+    # Who consumes each Object crossing the boundary: (port, element index) -> the
+    # consuming atomic input. One per Object -- an Object is linear.
+    consumers = {(arc.src.port, arc.src.index): arc.dst for arc in workflow.entry_arcs}
+    # (boundary endpoint, spot, consumer endpoint)
+    valid: list[tuple[Endpoint, str, Endpoint]] = []
     spot_owner: dict[str, str] = {}
     # 🔴 **Whether the port occupies a spot at all is asked first.** `entry_input_ports`
-    # is the table that knows (`{port: object_bearing}`); `entry_inputs` is the one that
-    # says which activity consumes it. It once held Pure Data ports too -- the flattener
-    # read a `state:`-wired one as Object-bearing -- and consulting it first took a Data
-    # binding for a good one and let it through to fail later as `arc_unreachable`,
-    # which says nothing about the mistake. The flattener now classifies by port type,
-    # so `entry_inputs` holds Object-bearing ports only; the port table is still asked
+    # is the table that knows (`{port: object_bearing}`); `entry_arcs` is the one that
+    # says which activity consumes it. `entry_inputs` once held Pure Data ports too --
+    # the flattener read a `state:`-wired one as Object-bearing -- and consulting it
+    # first took a Data binding for a good one and let it through to fail later as
+    # `arc_unreachable`, which says nothing about the mistake. The port table is asked
     # first, since it is the one that says what the port is.
     #
     # And the duplicate check comes after, for the same reason: a binding that should not
     # name a spot at all is not "the second job to want this one". Reported in the order
     # the reader can act on -- fix the port, then the spot.
-    for name, spot in inputs.items():
-        if not _spot_exists(spot, env, name, diags):
-            continue
-        object_bearing = workflow.entry_input_ports.get(name)
-        if object_bearing is None:
-            diags.error(
-                errors.INTERFACE_UNKNOWN_PORT,
-                f"interface input {name!r} is not an entry input of the workflow",
-            )
-            continue
-        if not object_bearing:
-            diags.error(
-                errors.INTERFACE_PURE_DATA_PORT,
-                f"interface input {name!r} is a Pure Data port and occupies no spot",
-            )
-            continue
-        consumer = workflow.entry_inputs.get(name)
-        if consumer is None:
-            diags.error(
-                errors.INTERFACE_UNKNOWN_PORT,
-                f"interface input {name!r} is a pass-through entry input with no consuming"
-                f" activity (out of scope)",
-            )
-            continue
-        if spot in spot_owner:
-            diags.error(
-                errors.INTERFACE_DUPLICATE_SPOT,
-                f"interface inputs {name!r} and {spot_owner[spot]!r} both bind spot {spot!r}",
-            )
-            continue
-        spot_owner[spot] = name
-        valid.append((name, spot, consumer))
+    for name, binding in inputs.items():
+        bound = _bound_elements(
+            "input", name, binding, workflow.entry_input_ports, workflow.entry_input_ranks,
+            {index: ep for (port, index), ep in consumers.items() if port == name},
+            env, diags,
+        )
+        for index, spot, consumer in bound:
+            label = element_label(name, index)
+            if spot in spot_owner:
+                diags.error(
+                    errors.INTERFACE_DUPLICATE_SPOT,
+                    f"interface inputs {label!r} and {spot_owner[spot]!r} both bind spot {spot!r}",
+                )
+                continue
+            spot_owner[spot] = label
+            valid.append((Endpoint((), name, index), spot, consumer))
 
     if not valid:
         return
 
-    # A single input node: one mode placing every bound entry input at its spot,
-    # no device (it holds spots only), zero duration (pinned to time 0 by cpsat).
+    # A single input node: one mode placing every bound entry input -- every element
+    # of a bound Array, each under its own key -- at its spot, no device (it holds
+    # spots only), zero duration (pinned to time 0 by cpsat).
     mode = Mode(
         id="interface_in",
         devices=(),
         duration=0,
         input_spots={},
-        output_spots={n: s for n, s, _ in valid},
+        output_spots={slot_key(boundary): s for boundary, s, _ in valid},
     )
     node_index = len(activities)
     activities.append(ActivityInstance((), "", (mode,), boundary=BoundaryInfo("input")))
 
-    for name, _spot, consumer in valid:
+    for boundary, _spot, consumer in valid:
         di = index_by_node.get(consumer.node)
         if di is None:
             # a consumer that is not a scheduled activity; cannot happen for a valid workflow
             continue
         options = transport_options(
-            activities[node_index], name, activities[di], consumer.port, env
+            activities[node_index], slot_key(boundary), activities[di], slot_key(consumer), env
         )
         if not options and check_reachability:
             diags.error(
                 errors.ARC_UNREACHABLE,
-                f"no route can serve the boundary input {name!r} -> "
-                f"{format_endpoint(consumer.node, consumer.port)}",
+                f"no route can serve the boundary input "
+                f"{element_label(boundary.port, boundary.index)!r} -> "
+                f"{format_endpoint(consumer.node, consumer.port, consumer.index)}",
             )
-        arc = Arc(Endpoint((), name), Endpoint(consumer.node, consumer.port))
-        arcs.append(ArcInstance(arc, node_index, di, tuple(options)))
+        arcs.append(ArcInstance(Arc(boundary, consumer), node_index, di, tuple(options)))
+
+
+def _bound_elements(
+    side: str,
+    name: str,
+    binding,
+    port_kinds: dict[str, bool],
+    ranks: dict[str, int],
+    crossing: dict[tuple[int, ...], Endpoint],
+    env: Environment,
+    diags: Diagnostics,
+) -> list[tuple[tuple[int, ...], str, Endpoint]]:
+    """Read one `interface` binding (§6.8) against the workflow: every (element
+    index, spot, atomic endpoint) it validly binds, or nothing where it cannot be used.
+
+    `side` is "input" or "output", `port_kinds` / `ranks` that side's port tables,
+    and `crossing` the Objects of this port that cross the boundary, by element index
+    (`()` for a scalar port) -> the atomic endpoint at the other end.
+
+    Checked in the order the reader can act on, each stopping the binding: every spot
+    named exists; the port is a boundary port of this side and Object-bearing; the
+    binding's shape is the port's (a spot, or lists of spots as deep as its Arrays
+    nest); something crosses the boundary through it at all (not a pass-through);
+    and it binds exactly the elements that cross. Duplicate spots are the caller's,
+    since they are judged across every binding of the side.
+    """
+    named = list(binding_elements(binding))
+    spots_ok = [_spot_exists(spot, env, element_label(name, index), diags) for index, spot in named]
+    if not all(spots_ok):
+        return []
+    entry_side = side == "input"
+    object_bearing = port_kinds.get(name)
+    if object_bearing is None:
+        what = "an entry input" if entry_side else "a final output"
+        diags.error(
+            errors.INTERFACE_UNKNOWN_PORT,
+            f"interface {side} {name!r} is not {what} of the workflow",
+        )
+        return []
+    if not object_bearing:
+        diags.error(
+            errors.INTERFACE_PURE_DATA_PORT,
+            f"interface {side} {name!r} is a Pure Data port and occupies no spot",
+        )
+        return []
+    rank = ranks.get(name, 0)
+    if not binding_matches(binding, rank):
+        expected = "one spot" if rank == 0 else (
+            "a list of spots" if rank == 1 else f"lists of spots nested {rank} deep"
+        )
+        diags.error(
+            errors.INTERFACE_SHAPE_MISMATCH,
+            f"interface {side} {name!r} binds a port of Array rank {rank}, which takes "
+            f"{expected}",
+        )
+        return []
+    if not crossing and named:
+        # Nothing crosses the boundary through this port: an entry input no activity
+        # consumes, or a final output returned straight from the boundary.
+        diags.error(
+            errors.INTERFACE_UNKNOWN_PORT,
+            f"interface input {name!r} is a pass-through entry input with no consuming"
+            f" activity (out of scope)"
+            if entry_side
+            else f"interface output {name!r} is a pass-through entry input returned"
+            f" directly (out of scope)",
+        )
+        return []
+    bound = {index for index, _ in named}
+    if bound != set(crossing):
+        missing = sorted(set(crossing) - bound)
+        extra = sorted(bound - set(crossing))
+        said = []
+        if extra:
+            said.append(f"binds {[element_label(name, i) for i in extra]}, which nothing "
+                        f"{'consumes' if entry_side else 'produces'}")
+        if missing:
+            said.append(f"gives no spot for {[element_label(name, i) for i in missing]}")
+        diags.error(
+            errors.INTERFACE_LENGTH_MISMATCH,
+            f"interface {side} {name!r} " + " and ".join(said),
+        )
+        return []
+    return [(index, spot, crossing[index]) for index, spot in named]
 
 
 def _add_boundary_outputs(
@@ -696,44 +776,33 @@ def _add_boundary_outputs(
     spot the environment does not define.
     """
     outputs = interface.get("outputs") or {}
-    valid: list[tuple[str, str, Endpoint]] = []  # (port name, spot, producer endpoint)
+    # Who produces each Object crossing the boundary: (port, element index) -> the
+    # producing atomic output. Pure Data returns and pass-throughs are not here: they
+    # occupy no spot the planner could place.
+    producers = {(arc.dst.port, arc.dst.index): arc.src for arc in workflow.exit_arcs}
+    # (boundary endpoint, spot, producer endpoint)
+    valid: list[tuple[Endpoint, str, Endpoint]] = []
     spot_owner: dict[str, str] = {}
     # The same order as the entry side, and for the same reason (see there): does this
     # port occupy a spot at all, then is it produced, then is the spot already spoken for.
-    for name, spot in outputs.items():
-        if not _spot_exists(spot, env, name, diags):
-            continue
-        object_bearing = workflow.exit_output_ports.get(name)
-        if object_bearing is None:
-            diags.error(
-                errors.INTERFACE_UNKNOWN_PORT,
-                f"interface output {name!r} is not a final output of the workflow",
-            )
-            continue
-        if not object_bearing:
-            diags.error(
-                errors.INTERFACE_PURE_DATA_PORT,
-                f"interface output {name!r} is a Pure Data port and occupies no spot",
-            )
-            continue
-        producer = workflow.exit_outputs.get(name)
-        if producer is None:
-            diags.error(
-                errors.INTERFACE_UNKNOWN_PORT,
-                f"interface output {name!r} is a pass-through entry input returned"
-                f" directly (out of scope)",
-            )
-            continue
-        if spot in spot_owner:
-            diags.error(
-                errors.INTERFACE_DUPLICATE_SPOT,
-                f"interface outputs {name!r} and {spot_owner[spot]!r} both bind spot {spot!r}",
-            )
-            continue
-        spot_owner[spot] = name
-        valid.append((name, spot, producer))
+    for name, binding in outputs.items():
+        bound = _bound_elements(
+            "output", name, binding, workflow.exit_output_ports, workflow.exit_output_ranks,
+            {index: ep for (port, index), ep in producers.items() if port == name},
+            env, diags,
+        )
+        for index, spot, producer in bound:
+            label = element_label(name, index)
+            if spot in spot_owner:
+                diags.error(
+                    errors.INTERFACE_DUPLICATE_SPOT,
+                    f"interface outputs {label!r} and {spot_owner[spot]!r} both bind spot {spot!r}",
+                )
+                continue
+            spot_owner[spot] = label
+            valid.append((Endpoint((), name, index), spot, producer))
 
-    def add_arc(node_index: int, name: str, producer: Endpoint) -> None:
+    def add_arc(node_index: int, boundary: Endpoint, producer: Endpoint) -> None:
         """The `producer -> output node` boundary arc, with the routes that can serve
         it. An unbound output can always be served -- staying put is among its
         candidates and a same-spot move is a no-op (§5.4) -- so the reachability error
@@ -743,69 +812,70 @@ def _add_boundary_outputs(
             # a producer that is not a scheduled activity; cannot happen for a valid workflow
             return
         options = transport_options(
-            activities[si], producer.port, activities[node_index], name, env
+            activities[si], slot_key(producer), activities[node_index], slot_key(boundary), env
         )
         if not options and check_reachability:
             diags.error(
                 errors.ARC_UNREACHABLE,
                 f"no route can serve the boundary output "
-                f"{format_endpoint(producer.node, producer.port)} -> {name!r}",
+                f"{format_endpoint(producer.node, producer.port, producer.index)} -> "
+                f"{element_label(boundary.port, boundary.index)!r}",
             )
-        arc = Arc(Endpoint(producer.node, producer.port), Endpoint((), name))
-        arcs.append(ArcInstance(arc, si, node_index, tuple(options)))
+        arcs.append(ArcInstance(Arc(producer, boundary), si, node_index, tuple(options)))
 
     if valid:
-        # One node for the bound outputs: a single mode placing every one of them at its
-        # spot, no device, its end pinned to the makespan by cpsat.
+        # One node for the bound outputs: a single mode placing every one of them -- every
+        # element of a bound Array, each under its own key -- at its spot, no device, its
+        # end pinned to the makespan by cpsat.
         mode = Mode(
             id="interface_out",
             devices=(),
             duration=0,
-            input_spots={n: s for n, s, _ in valid},
+            input_spots={slot_key(boundary): s for boundary, s, _ in valid},
             output_spots={},
         )
         node_index = len(activities)
         activities.append(ActivityInstance((), "", (mode,), boundary=BoundaryInfo("output")))
-        for name, _spot, producer in valid:
-            add_arc(node_index, name, producer)
+        for boundary, _spot, producer in valid:
+            add_arc(node_index, boundary, producer)
 
     # An unbound final output (§6.8): bound to a spot the scheduler chooses, which is
     # every spot its producer can reach. Warned about rather than refused -- the choice
     # suits the schedule, and nothing tells the scheduler that a spot is a working
-    # position rather than somewhere a product may be left.
-    for name, producer in workflow.exit_outputs.items():
-        if name in outputs:
+    # position rather than somewhere a product may be left. Each element of an unbound
+    # Array gets a node of its own, for the reason a port does (see above); the warning
+    # is said once per port, since it is one thing left unsaid, however many elements.
+    warned: set[str] = set()
+    for arc in workflow.exit_arcs:
+        producer, boundary = arc.src, arc.dst
+        if boundary.port in outputs:
             continue  # stated: bound above, or diagnosed and skipped there
-        if not workflow.exit_output_ports.get(name):
-            # A Pure Data return occupies no spot. `exit_outputs` lists them for the
-            # runner, some with the boundary node `()` as producer (a pass-through),
-            # which is no activity at all -- so they are skipped by kind here, not
-            # left to fall through the lookups below.
-            continue
         si = index_by_node.get(producer.node)
         if si is None:
             continue
-        candidates = _resting_spots(activities[si], producer.port, env)
+        candidates = _resting_spots(activities[si], slot_key(producer), env)
         if not candidates:
             continue  # its producer places the port nowhere; already diagnosed
-        diags.warning(
-            errors.INTERFACE_OUTPUT_UNBOUND,
-            f"final output {name!r} has no interface.outputs binding, so the schedule "
-            f"decides where it comes to rest; bind it to say where it belongs",
-        )
+        if boundary.port not in warned:
+            warned.add(boundary.port)
+            diags.warning(
+                errors.INTERFACE_OUTPUT_UNBOUND,
+                f"final output {boundary.port!r} has no interface.outputs binding, so the "
+                f"schedule decides where it comes to rest; bind it to say where it belongs",
+            )
         modes = tuple(
             Mode(
                 id=f"interface_out:{spot}",
                 devices=(),
                 duration=0,
-                input_spots={name: spot},
+                input_spots={slot_key(boundary): spot},
                 output_spots={},
             )
             for spot in candidates
         )
         node_index = len(activities)
         activities.append(ActivityInstance((), "", modes, boundary=BoundaryInfo("output")))
-        add_arc(node_index, name, producer)
+        add_arc(node_index, boundary, producer)
 
 
 def _resting_spots(producer: ActivityInstance, port: str, env: Environment) -> list[str]:

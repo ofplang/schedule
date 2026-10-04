@@ -174,6 +174,18 @@ class Endpoint:
     index: tuple[int, ...] = ()
 
 
+def slot_key(endpoint: Endpoint) -> str:
+    """The key a mode's `input_spots` / `output_spots` hold this endpoint's spot
+    under: the port name, or -- for one element of an Array-valued port, which sits
+    on a spot of its own -- the port with its index, `plates[2]`.
+
+    Only a boundary node (§6.8) has element keys in this stage: an atomic process's
+    modes map whole ports. A port name is an identifier and cannot contain `[`, so an
+    element key never collides with a port. Every lookup of an arc endpoint's spot
+    goes through here, so a whole-port endpoint finds exactly what it always did."""
+    return endpoint.port + "".join(f"[{i}]" for i in endpoint.index)
+
+
 @dataclass(frozen=True)
 class Arc:
     """An Object-bearing connection (source output port -> destination input
@@ -334,6 +346,19 @@ class Workflow:
     # classify an `interface` binding: unknown port vs Pure Data vs pass-through).
     entry_input_ports: dict[str, bool] = field(default_factory=dict)
     exit_output_ports: dict[str, bool] = field(default_factory=dict)
+    # The Object-bearing boundary as the planner reads it (§6.8): one arc per Object
+    # that crosses it -- `Endpoint((), port)` -> consumer for an entry input, producer
+    # -> `Endpoint((), port)` for a final output, with the element `index` where the
+    # port is an Array and each element is an Object on a spot of its own. This is
+    # what `entry_inputs` / `exit_outputs` say for a whole port, and what they cannot
+    # say for an Array's elements; those two maps stay for the runner.
+    entry_arcs: tuple[Arc, ...] = ()
+    exit_arcs: tuple[Arc, ...] = ()
+    # Every main input / output port -> how deeply its type nests Arrays (0 for a
+    # scalar, 2 for `Array<Array<Plate>>`), which is the shape its `interface`
+    # binding has to have: a spot, or lists of spots that deep.
+    entry_input_ranks: dict[str, int] = field(default_factory=dict)
+    exit_output_ranks: dict[str, int] = field(default_factory=dict)
 
     # -- Pure Data port-level dataflow, for external consumers only (D26-0) --------
     #

@@ -36,6 +36,7 @@ from ofplang.schedule.scheduler.instance import (
     report_exhausted_stocks,
     report_unreachable,
 )
+from ofplang.schedule.scheduler.interface import binding_elements, element_label
 from ofplang.schedule.scheduler.mobility import report_deadlocked_objects
 from ofplang.schedule.scheduler.model import JobSpec, Workflow
 from ofplang.schedule.scheduler.normalize import normalize
@@ -312,10 +313,11 @@ def _holds_of(activities: list[dict], entries: dict | None, job_ids, now: int) -
         # move that collects it, no activity has touched it and only the interface says
         # where it is.
         placed = release <= now
+        # Every spot an entry binding names -- each element of a bound Array included.
         interface_inputs = {
             spot
-            for spot in ((entry.get("interface") or {}).get("inputs") or {}).values()
-            if isinstance(spot, str)
+            for binding in ((entry.get("interface") or {}).get("inputs") or {}).values()
+            for _index, spot in binding_elements(binding)
         }
         entry_spots = interface_inputs if placed else set()
 
@@ -455,8 +457,9 @@ def _frozen_holds(
         mine = [a for a in activities if _job_of_activity(a) == job_id]
         bound = {
             spot
-            for spot in ((entry.get("interface") or {}).get("outputs") or {}).values()
-            if isinstance(spot, str) and _delivered_product(mine, spot)
+            for binding in ((entry.get("interface") or {}).get("outputs") or {}).values()
+            for _index, spot in binding_elements(binding)
+            if _delivered_product(mine, spot)
         }
         for spot, since in sorted(_holds_of(activities, entries, [job_id], now).items()):
             if spot in bound or spot in held:
@@ -742,12 +745,15 @@ def _check_fingerprints(specs, roster: dict[str, dict]) -> list[Diagnostic]:
 
 
 def _boundary_spots(spec: JobSpec, side: str) -> dict[str, str]:
-    """One job's `interface` bindings on one side, as spot -> port name."""
+    """One job's `interface` bindings on one side, as spot -> what binds it: the port
+    name, or `plates[2]` for one element of a bound Array (each element is an Object
+    on a spot of its own, so each is a claim on that spot)."""
     bindings = (spec.interface or {}).get(side) or {}
     return {
-        spot: port
-        for port, spot in bindings.items()
-        if isinstance(port, str) and isinstance(spot, str)
+        spot: element_label(port, index)
+        for port, binding in bindings.items()
+        if isinstance(port, str)
+        for index, spot in binding_elements(binding)
     }
 
 

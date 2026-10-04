@@ -698,8 +698,16 @@ def _proc_label(a: dict) -> str:
 def _xfer_label(a: dict) -> str:
     to = (a.get("arc") or {}).get("to") or {}
     node = to.get("node") or []
+    if node:
+        where = "/".join(str(x) for x in node)
+    elif to.get("index"):
+        # A delivery of one element of an Array output (§6.4): named by the element,
+        # since every element's delivery would otherwise read "transport" alike.
+        where = str(to.get("port", "")) + "".join(f"[{i}]" for i in to["index"])
+    else:
+        where = "transport"
     # ASCII prefix (">") keeps output printable on any console encoding.
-    return "> " + _job_prefix(a) + ("/".join(str(x) for x in node) if node else "transport")
+    return "> " + _job_prefix(a) + where
 
 
 def _makespan_of(objective):

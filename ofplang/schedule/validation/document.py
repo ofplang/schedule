@@ -412,7 +412,19 @@ def _check_interface(node: YNode | None, diags: Diagnostics, base: str = "interf
                     path,
                     at=entry.value or smap,
                 )
-            _check_qualified_spot(entry.value, path, diags)
+            _check_binding(entry.value, path, diags)
+
+
+def _check_binding(node: YNode | None, path: str, diags: Diagnostics) -> None:
+    """One `interface` binding: a qualified spot, or -- for an Array-valued port, one
+    spot per element -- a list of bindings, nested as deep as the port's Arrays.
+    Whether the depth is the port's is the execution layer's question (it needs the
+    workflow); here only the leaves are checked, wherever they are."""
+    if isinstance(node, YSeq):
+        for i, item in enumerate(node.items):
+            _check_binding(item, f"{path}[{i}]", diags)
+        return
+    _check_qualified_spot(node, path, diags)
 
 
 def _check_activity(

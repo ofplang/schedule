@@ -215,6 +215,15 @@ INTERFACE_DUPLICATE_SPOT = "interface_duplicate_spot"
 # An Object-bearing entry input has no `interface` binding (only where interface is
 # required; optional in the current phase).
 INTERFACE_INPUT_MISSING = "interface_input_missing"
+# A binding's shape does not match its port's type (§6.8): a scalar port takes one
+# spot, an `Array<T>` port a list of spots, `Array<Array<T>>` a list of lists, and so
+# on. A spot for an Array port is not read as a one-element list, nor a list for a
+# scalar port as one spot -- either would be a guess at what was meant.
+INTERFACE_SHAPE_MISMATCH = "interface_shape_mismatch"
+# A binding of an Array port names a different set of elements than the workflow
+# moves across the boundary (§6.8): an element bound that nothing consumes or
+# produces, or one moved that no spot was given for.
+INTERFACE_LENGTH_MISMATCH = "interface_length_mismatch"
 # A warning: an Object-bearing final output has no `interface.outputs` binding (§6.8).
 # Not an error -- an unbound output is bound to a spot the *scheduler* chooses, and is
 # treated exactly like a bound one otherwise, so nothing about it is unaccounted for.
@@ -431,6 +440,8 @@ ERROR_CODES = frozenset(
         INTERFACE_PURE_DATA_PORT,
         INTERFACE_DUPLICATE_SPOT,
         INTERFACE_INPUT_MISSING,
+        INTERFACE_SHAPE_MISMATCH,
+        INTERFACE_LENGTH_MISMATCH,
         INTERFACE_OUTPUT_UNBOUND,
         OCCUPIED_DUPLICATE_SPOT,
         OCCUPIED_ALREADY_DERIVED,
