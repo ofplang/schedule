@@ -160,7 +160,9 @@ def test_a_structured_node_is_still_reported_as_unsupported() -> None:
     (`api.schedule`); the guards did not change it.
     """
     doc = copy.deepcopy(VALID)
-    doc["processes"]["main"]["body"]["nodes"][0]["kind"] = "map"
+    # `do_while`: `map` and `fold` are expanded now (design.md D57); `do_while` and
+    # `branch` are what this reader still does not support.
+    doc["processes"]["main"]["body"]["nodes"][0]["kind"] = "do_while"
     _workflow, diags = parse_workflow(doc)
     assert {d.code for d in diags.items} == {"unsupported_feature"}
 

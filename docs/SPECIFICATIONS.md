@@ -40,8 +40,12 @@ plan for the remaining work.
 The scheduler targets a subset of v0. The following are **out of scope** for the
 initial versions:
 
-- **Structured nodes** — `node_map`, `node_fold`, `node_do_while`, `node_branch`.
-  Excluding these keeps the schedulable graph a static, non-branching DAG.
+- **`do_while` and `branch` nodes** — `node_do_while`, `node_branch`. How many
+  times a `do_while` runs, and which arm a `branch` takes, are decided by values the
+  run produces, so neither has one graph to plan before the run.
+- **An atomic process with an Object-bearing Array port** — each element is an
+  Object on a spot of its own, and a mode maps a port to one spot; traverse the
+  Array with a `map` / `fold` instead.
 - **Scheduling policies** — `scheduling_policies` (both scheduling and Object
   policy targets). Documents that declare the feature or carry a `scheduling`
   section are accepted, but the policies are **ignored** (not applied).
@@ -53,6 +57,21 @@ In scope:
 - Core dataflow: atomic and composite processes, node invocation bindings, ports,
   linear Object tracking, and the atomic `objects` section
   (`map` / `consume` / `create` / `transform`).
+- **`map` and `fold` nodes** (`node_map`, `node_fold`) — expanded into their
+  invocations before planning, so the schedulable graph is still a static DAG.
+  Invocation `i` of a node `N` is under the node path `N, i` (§6.3). How many
+  invocations there are — L, the common length of the node's `each` sources — has
+  to be known before the run: from an Array of Objects at the boundary (as many
+  elements as its `interface` binding lists spots, §6.8), from a literal, or from
+  another `map` / `fold`'s output. An `each` source whose length is a value only the
+  run has — a Pure Data entry input, an atomic's output — is planned at the L the
+  others give and left for the runner to check; one of those alone gives no L
+  (`array_length_unknown`), and known lengths that differ are refused
+  (`each_length_mismatch`). A `map`'s invocations are independent and ordered by
+  nothing; a `fold`'s are ordered by its carry alone — invocation `i + 1` reads
+  invocation `i`'s carry outputs — so the parts of one invocation that do not read
+  the carry are not held back by the previous one. The same workflow with a longer
+  list is a different graph, with a different fingerprint (§6.11).
 - **`python_script_processes`** — per v0 §22.1 these are Pure Data only (no
   Object-bearing ports, no `objects` section). They are treated as opaque
   Pure Data atomic steps: they take time but occupy no spot and are not
@@ -1955,11 +1974,14 @@ solver instance. The catalog of codes these checks emit is §10.4.
 
 The scheduler is capability-driven by the processes it actually schedules: it
 expands the entry composite — flattening nested composite invocations by splicing
-dataflow across their boundaries — into the atomic, in-scope invocations it will
-run and validates the capability of each. Existence, atomic-ness, and scope (§2)
-hold by construction for those invocations (a structured node is diagnosed
-separately as `unsupported_feature`, and a recursive composite definition as
-`recursive_composite`, neither being scheduled). Capabilities declared in the
+dataflow across their boundaries, and `map` / `fold` nodes into their invocations —
+into the atomic, in-scope invocations it will run and validates the capability of
+each. Existence, atomic-ness, and scope (§2) hold by construction for those
+invocations (a `do_while` or `branch` node, and an atomic process with an
+Object-bearing Array port, are diagnosed separately as `unsupported_feature`, a
+recursive composite definition as `recursive_composite`, and a traversal whose length
+is not known before the run as `array_length_unknown` / `each_length_mismatch`, none
+being scheduled). Capabilities declared in the
 environment for processes the workflow never invokes are not checked.
 
 - **Against the workflow** — for each invoked process, its capability's modes are
@@ -2214,7 +2236,9 @@ building the solver instance. Severity is `error` unless marked *warning*.
 
 | code | meaning |
 | --- | --- |
-| `unsupported_feature` | a workflow feature outside the scheduler's v0 subset (a structured node) |
+| `unsupported_feature` | a workflow feature outside the scheduler's v0 subset (a `do_while` or `branch` node, an atomic process with an Object-bearing Array port, §2) |
+| `array_length_unknown` | a `map` / `fold` none of whose `each` sources has a length known before the run (§2) |
+| `each_length_mismatch` | a `map` / `fold` whose `each` sources' known lengths differ (they are zipped, §2) |
 | `scheduling_policies_ignored` | a composite carries a `scheduling` section; the policies are best-effort preferences this scheduler does not implement (§2), so the section is dropped when the composite is flattened (*warning*) |
 | `no_entry_process` | the workflow has no resolvable entry process |
 | `process_not_defined` | a node invokes, or an arc references, a process/node not defined in the workflow |

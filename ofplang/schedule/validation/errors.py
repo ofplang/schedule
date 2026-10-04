@@ -224,6 +224,15 @@ INTERFACE_SHAPE_MISMATCH = "interface_shape_mismatch"
 # moves across the boundary (§6.8): an element bound that nothing consumes or
 # produces, or one moved that no spot was given for.
 INTERFACE_LENGTH_MISMATCH = "interface_length_mismatch"
+# A `map` / `fold` whose invocation count cannot be known before the run (design.md
+# D57): none of its `each` sources has a length the scheduler can see -- an Array of
+# Objects bound in `interface`, a literal, another map / fold's output -- so there is
+# no number of invocations to plan. Planning one anyway would be a guess.
+ARRAY_LENGTH_UNKNOWN = "array_length_unknown"
+# The `each` sources of one `map` / `fold` whose lengths are known have different
+# lengths (spec 17, 18: zipped, so equal). Known before the run, this is the run-start
+# error spec 6.2 makes it.
+EACH_LENGTH_MISMATCH = "each_length_mismatch"
 # A warning: an Object-bearing final output has no `interface.outputs` binding (§6.8).
 # Not an error -- an unbound output is bound to a spot the *scheduler* chooses, and is
 # treated exactly like a bound one otherwise, so nothing about it is unaccounted for.
@@ -442,6 +451,8 @@ ERROR_CODES = frozenset(
         INTERFACE_INPUT_MISSING,
         INTERFACE_SHAPE_MISMATCH,
         INTERFACE_LENGTH_MISMATCH,
+        ARRAY_LENGTH_UNKNOWN,
+        EACH_LENGTH_MISMATCH,
         INTERFACE_OUTPUT_UNBOUND,
         OCCUPIED_DUPLICATE_SPOT,
         OCCUPIED_ALREADY_DERIVED,

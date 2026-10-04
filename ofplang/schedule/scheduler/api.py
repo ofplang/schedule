@@ -744,6 +744,33 @@ def _check_fingerprints(specs, roster: dict[str, dict]) -> list[Diagnostic]:
     return out
 
 
+def _interfaces_for_parsing(document, root) -> tuple[dict | None, dict[str, dict]]:
+    """The `interface` each workflow is read with: the document's own (a single
+    workflow) and each roster entry's by job id (a joint plan, §6.11).
+
+    Read ahead of the document's validation, for one purpose only -- the lengths an
+    expansion takes from an Array binding -- so it is read leniently: anything not
+    shaped as a mapping is no interface here, and is the validation's to report."""
+    if isinstance(document, dict):
+        plain = document
+    elif isinstance(root, YMap):
+        plain = {key: yamlnode.to_plain(root.get(key)) for key in ("interface", "jobs")}
+    else:
+        return None, {}
+    top = plain.get("interface")
+    per_job: dict[str, dict] = {}
+    roster = plain.get("jobs")
+    if isinstance(roster, list):
+        for entry in roster:
+            if (
+                isinstance(entry, dict)
+                and isinstance(entry.get("id"), str)
+                and isinstance(entry.get("interface"), dict)
+            ):
+                per_job[entry["id"]] = entry["interface"]
+    return (top if isinstance(top, dict) else None), per_job
+
+
 def _boundary_spots(spec: JobSpec, side: str) -> dict[str, str]:
     """One job's `interface` bindings on one side, as spot -> what binds it: the port
     name, or `plates[2]` for one element of a bound Array (each element is an Object
@@ -1371,11 +1398,22 @@ def _run(
     if env is None:
         return ScheduleReport(None, None, None, diagnostics)
 
+    # The document is loaded once, here, though it is validated only after the
+    # workflows are read (below): a workflow that traverses an Array of Objects at its
+    # boundary is expanded into as many invocations as its `interface` binding lists
+    # spots (design.md D57), so each workflow is read with its own job's binding --
+    # the roster entry's in a joint plan, the document's for a single workflow.
+    root = yamlnode.load_source(document_path) if document_path is not None else None
+    top_interface, job_interfaces = _interfaces_for_parsing(document_path, root)
+
     # 2. Workflows: our own minimal parse (D17), one per job. Every job is parsed
     # before any is rejected, so a caller with two broken workflows hears about both.
     workflows: list[Workflow] = []
     for job in jobs:
-        workflow, wf_diags = parse_workflow(job.workflow)
+        workflow, wf_diags = parse_workflow(
+            job.workflow,
+            interface=job_interfaces.get(job.id) if job.id else top_interface,
+        )
         diagnostics += _attribute(wf_diags.items, job, jobs)
         if workflow is not None and not _has_error(wf_diags.items):
             workflows.append(workflow)
@@ -1395,9 +1433,7 @@ def _run(
     occupied = None
     had_now = False
     now_value = 0
-    root = None
     if doc_path is not None:
-        root = yamlnode.load_source(doc_path)
         doc_result = validate_document_node(root)
         diagnostics += doc_result.diagnostics
         if not doc_result.ok:

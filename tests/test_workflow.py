@@ -505,12 +505,13 @@ def test_structured_node_is_unsupported(tmp_path):
         "    kind: composite\n"
         "    body:\n"
         "      nodes:\n"
-        "        - {id: m, kind: map, process: make, each: {x: {from: inputs.xs}}}\n"
+        "        - {id: m, kind: do_while, process: make, max_iterations: {value: 3}}\n"
         "entry: main\n",
         encoding="utf-8",
     )
     wf, diags = parse_workflow(doc)
     codes = {d.code for d in _errors(diags)}
+    # `map` / `fold` are expanded (design.md D57); `do_while` and `branch` are not.
     assert "unsupported_feature" in codes
 
 

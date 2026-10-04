@@ -157,7 +157,8 @@ plan it:
 |---|---|
 | `python_script_processes` | Supported. A script process is scheduled like any atomic one; its mode `duration` is the estimate of the compute cost. Running the script is the runner's job. |
 | `scheduling_policies` | Accepted, then **ignored**: §23 makes these best-effort preferences, and a composite's `scheduling` section is dropped when the composite is flattened. The report's diagnostics carry a `scheduling_policies_ignored` warning. |
-| `node_map`, `node_fold`, `node_do_while`, `node_branch` | **Not supported.** A structured node reshapes dataflow in ways the flat scheduler graph cannot represent, so it is refused with `unsupported_feature`. |
+| `node_map`, `node_fold` | Supported. Each node is expanded into its invocations before planning, invocation `i` of `N` under the node path `[N, i, …]`. The number of invocations has to be known before the run — from an Array of Objects bound in `interface` as a list of spots, a literal, or another map / fold's output. An atomic process with an Object-bearing Array port is not supported (`unsupported_feature`); traverse the Array with a map or fold. |
+| `node_do_while`, `node_branch` | **Not supported.** How many times a `do_while` runs, and which arm a `branch` takes, are decided by values the run produces, so there is no single graph to plan; refused with `unsupported_feature`. |
 | `generic_processes` | **Not supported.** Refused with `unsupported_feature`. |
 
 ## Library

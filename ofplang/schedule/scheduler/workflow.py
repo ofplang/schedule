@@ -5,15 +5,17 @@ The scheduler reads the workflow itself (decision D17) instead of depending on
 atomic, each port's Object-bearing-ness (§5), and the expanded node graph
 (processing activities with node paths, Object-bearing arcs, and precedence).
 Composite invocations — including nested ones — are flattened by splicing
-dataflow across the composite boundary (see `_Expander`). The workflow is assumed
-to be valid v0; this reader only diagnoses the parts the scheduler cannot handle
-(a capability gate): generic processes (`generic_processes`), an unexpanded
-`$import`, structured nodes, recursive composite definitions, and a missing
-entry.
+dataflow across the composite boundary, and `map` / `fold` nodes are expanded into
+their invocations (see `_Expander`). The workflow is assumed to be valid v0; this
+reader only diagnoses the parts the scheduler cannot handle (a capability gate):
+generic processes (`generic_processes`), an unexpanded `$import`, `branch` and
+`do_while` nodes, an atomic process with an Object-bearing Array port, a traversal
+whose length is not known before the run, recursive composite definitions, and a
+missing entry.
 
-Binding semantics follow §11: a `state` binding carries an Object-bearing linear
-input (so it is a transport arc), while a `bind` binding is Pure Data (a
-precedence dependency only).
+Binding semantics follow §11, read by the port's type: a binding to an
+Object-bearing input carries an Object (so it is a transport arc), one to a Pure
+Data input a value (a precedence dependency only).
 """
 
 from __future__ import annotations
@@ -26,25 +28,26 @@ from pathlib import Path
 import yaml
 
 from ofplang.schedule.core.diagnostics import Diagnostics
+from ofplang.schedule.core.identifiers import format_node_path
 from ofplang.schedule.scheduler.model import (
     Arc,
     AtomicProcess,
     CompositeIO,
     Endpoint,
+    LengthCheck,
     NodeInvocation,
     NodePath,
     Port,
     Source,
     SourceLiteral,
     SourceRef,
+    SourceSeq,
     Workflow,
 )
 from ofplang.schedule.validation import errors
 
 # v0 built-in primitive Data types (no Object slots, §7.1).
 _PRIMITIVES = {"Bool", "Int", "Float", "String"}
-# Structured node kinds — all out of scope for the scheduler (D6, §17-20).
-_STRUCTURED_KINDS = {"map", "fold", "do_while", "branch"}
 
 
 def _contains_import_key(obj) -> bool:
@@ -60,12 +63,19 @@ def _contains_import_key(obj) -> bool:
     return False
 
 
-def parse_workflow(source) -> tuple[Workflow | None, Diagnostics]:
+def parse_workflow(source, *, interface: dict | None = None) -> tuple[Workflow | None, Diagnostics]:
     """Parse the v0 workflow into a schedulable `Workflow`.
 
     `source` is either a path to a workflow YAML file, or an already-loaded workflow
     document (a mapping) -- so a caller holding the document in memory (e.g. the runner
     after an in-process rewrite) need not round-trip it through a temp file.
+
+    `interface` is the document's §6.8 section for this workflow, where one is given.
+    It matters only to a workflow that traverses an Array of Objects at its boundary
+    with a `map` / `fold`: the binding's list of spots is how many elements there are,
+    and so how many invocations the expansion makes (design.md D57). The result is a
+    function of the two -- the same workflow with a longer list is a different graph,
+    and its fingerprint says so. Every other workflow reads the same with or without it.
 
     Returns `(workflow, diagnostics)`; the workflow is None when a blocking
     diagnostic (unparseable document or no entry) is raised.
@@ -98,7 +108,7 @@ def parse_workflow(source) -> tuple[Workflow | None, Diagnostics]:
     # The exception's own type and text go into the message: a genuine bug in the
     # reader must not be disguised as a malformed document.
     try:
-        return _read_workflow(data, diags)
+        return _read_workflow(data, diags, interface)
     except (AttributeError, TypeError, KeyError) as exc:
         diags.error(
             errors.WRONG_TYPE,
@@ -218,7 +228,7 @@ def _check_readable(data: dict, diags: Diagnostics) -> bool:
                     continue
                 if not isinstance(node.get("id"), str):
                     wrong(f"{npath}.id", "a string (a node is keyed by its id)")
-                for section in ("state", "bind"):
+                for section in ("state", "bind", "each", "carry"):
                     entries = node.get(section)
                     if not isinstance(entries, dict):
                         continue  # unreadable: left to the translation
@@ -233,7 +243,9 @@ def _check_readable(data: dict, diags: Diagnostics) -> bool:
     return ok
 
 
-def _read_workflow(data: dict, diags: Diagnostics) -> tuple[Workflow | None, Diagnostics]:
+def _read_workflow(
+    data: dict, diags: Diagnostics, interface: dict | None = None
+) -> tuple[Workflow | None, Diagnostics]:
     """Read a document this reader can use: the capability gate, then the flattening.
 
     Split out so the guards in `parse_workflow` wrap the whole of it -- including the
@@ -292,6 +304,8 @@ def _read_workflow(data: dict, diags: Diagnostics) -> tuple[Workflow | None, Dia
         # output for each output) -- leaving them out handed the runner a typed
         # default for every Pure Data input and dropped every Pure Data output.
         if entry in atomic:
+            if not _Expander(procs, atomic, diags, domains)._plannable(entry):
+                return None, diags  # an Object-bearing Array port (reported there)
             sig = atomic[entry]
             path = (entry,)
             entry_inputs = {p.name: Endpoint(path, p.name) for p in sig.inputs if p.object_bearing}
@@ -317,7 +331,16 @@ def _read_workflow(data: dict, diags: Diagnostics) -> tuple[Workflow | None, Dia
                     ),
                     data_entry_inputs={name: Endpoint(path, name) for name in data_inputs},
                     input_sources=input_sources, output_sources=output_sources,
-                    **_planner_boundary(entry_proc, entry_inputs, exit_outputs, out_ports),
+                    # The planner's boundary: one arc per Object-bearing port, each
+                    # one Object (an Array port was refused above).
+                    entry_arcs=tuple(
+                        Arc(Endpoint((), name), consumer) for name, consumer in entry_inputs.items()
+                    ),
+                    exit_arcs=tuple(
+                        Arc(Endpoint(path, p.name), Endpoint((), p.name))
+                        for p in sig.outputs if p.object_bearing
+                    ),
+                    **_boundary_ranks(entry_proc),
                 ),
                 diags,
             )
@@ -337,11 +360,9 @@ def _read_workflow(data: dict, diags: Diagnostics) -> tuple[Workflow | None, Dia
         for n, s in (entry_proc.get("outputs") or {}).items()
     }
 
-    (
-        activities, arcs, precedence, used, entry_inputs, exit_outputs,
-        data_arcs, data_entry_inputs, data_literals, exit_literals,
-        input_sources, output_sources, composites,
-    ) = _expand_body(entry, entry_proc, procs, atomic, out_ports, diags)
+    exp, precedence = _expand_body(
+        entry, entry_proc, procs, atomic, in_ports, out_ports, interface, domains, diags
+    )
 
     # scheduling_policies (§23) / object policies (§24) are best-effort preferences
     # this scheduler does not honor; a composite's `scheduling` section is dropped
@@ -349,7 +370,7 @@ def _read_workflow(data: dict, diags: Diagnostics) -> tuple[Workflow | None, Dia
     # composite that carries one, so the ignored feature is visible rather than
     # silently discarded.
     used_composites = {entry: entry_proc}
-    for io in composites.values():
+    for io in exp.composites.values():
         cp = procs.get(io.process)
         if cp is not None:
             used_composites.setdefault(io.process, cp)
@@ -362,44 +383,33 @@ def _read_workflow(data: dict, diags: Diagnostics) -> tuple[Workflow | None, Dia
             )
     return (
         Workflow(
-            tuple(activities), tuple(arcs), tuple(precedence), used,
-            entry_inputs, exit_outputs, in_ports, out_ports,
+            tuple(exp.activities), tuple(exp.arcs), tuple(precedence), exp.used,
+            exp.entry_inputs, exp.exit_outputs, in_ports, out_ports,
             # Pure Data port-level dataflow for the runner (D26-0); the scheduler
             # does not read these, so the plan is unaffected.
-            data_arcs=tuple(data_arcs), data_entry_inputs=data_entry_inputs,
-            data_literals=data_literals, exit_literals=exit_literals,
-            input_sources=input_sources, output_sources=output_sources,
+            data_arcs=tuple(exp.data_arcs), data_entry_inputs=exp.data_entry_inputs,
+            data_literals=exp.data_literals, exit_literals=exp.exit_literals,
+            input_sources=exp.input_sources, output_sources=exp.output_sources,
             # Nested composite invocation boundaries for the runner's contract checks
             # (D34); value-independent, so the plan is unaffected.
-            composites=composites,
-            **_planner_boundary(entry_proc, entry_inputs, exit_outputs, out_ports),
+            composites=exp.composites,
+            # The Object-bearing boundary as the planner reads it, an arc per Object.
+            entry_arcs=tuple(exp.entry_arcs),
+            exit_arcs=tuple(exp.exit_arcs),
+            # How many invocations each map / fold made, and the lengths the runner
+            # has to check (D57); the scheduler does not read these either.
+            iterations=exp.iterations,
+            length_checks=tuple(exp.length_checks),
+            **_boundary_ranks(entry_proc),
         ),
         diags,
     )
 
 
-def _planner_boundary(entry_proc: dict, entry_inputs: dict, exit_outputs: dict,
-                      out_ports: dict[str, bool]) -> dict:
-    """The Object-bearing boundary as the planner reads it (`Workflow.entry_arcs` /
-    `exit_arcs`), and every boundary port's Array rank.
-
-    One arc per Object crossing the boundary. Each port here carries one whole
-    Object (an Array port's elements get an arc each, with an element index, once
-    an expansion produces them), so the arcs say what `entry_inputs` /
-    `exit_outputs` say, in the shape that can hold elements too. A final output is
-    on the planner's side only if it is Object-bearing and has a producing activity:
-    a Pure Data return, and one passed straight through from the boundary, occupy
-    no spot it could place.
-    """
-    entry_arcs = tuple(Arc(Endpoint((), name), consumer) for name, consumer in entry_inputs.items())
-    exit_arcs = tuple(
-        Arc(producer, Endpoint((), name))
-        for name, producer in exit_outputs.items()
-        if out_ports.get(name) and producer.node != ()
-    )
+def _boundary_ranks(entry_proc: dict) -> dict:
+    """Every boundary port's Array rank -- the shape its `interface` binding takes (a
+    spot, or lists of spots that deep)."""
     return {
-        "entry_arcs": entry_arcs,
-        "exit_arcs": exit_arcs,
         "entry_input_ranks": {
             n: _array_rank((s or {}).get("type", ""))
             for n, s in (entry_proc.get("inputs") or {}).items()
@@ -442,14 +452,17 @@ def _object_bearing(type_expr: str, domains: dict[str, str | None]) -> bool:
     return domains.get(t) == "object"
 
 
-def _expand_body(entry_name, entry_proc, procs, atomic, exit_object_bearing, diags):
+def _expand_body(entry_name, entry_proc, procs, atomic, in_ports, exit_object_bearing,
+                 interface, domains, diags):
     """Flatten the entry composite into atomic activities, Object-bearing arcs, and
-    precedence edges, following nested composites (see `_Expander`).
+    precedence edges, following nested composites and expanding `map` / `fold`
+    nodes (see `_Expander`).
 
-    `exit_object_bearing` is the entry's `{output port: object_bearing}` table, needed
-    to tell a Pure Data pass-through return (recorded) from an Object one (out of
-    scope)."""
-    exp = _Expander(procs, atomic, diags)
+    `in_ports` / `exit_object_bearing` are the entry's `{port: object_bearing}`
+    tables: the first says which entry inputs are Arrays of Objects whose length the
+    `interface` gives, the second tells a Pure Data pass-through return (recorded)
+    from an Object one (out of scope)."""
+    exp = _Expander(procs, atomic, diags, domains, interface, in_ports)
     # The entry's own inputs are the workflow's boundary inputs: seed the entry
     # scope so `inputs.X` resolves to an `_EntryInput(X)` marker, which propagates
     # into nested composites and is recorded at the atomic that consumes it.
@@ -457,7 +470,7 @@ def _expand_body(entry_name, entry_proc, procs, atomic, exit_object_bearing, dia
     exp.expand(entry_proc, (), entry_env, (entry_name,))
 
     # The entry's `returns` are the workflow's boundary outputs: resolve each to the
-    # atomic that produces it. Two other sources reach here, and only for Pure Data:
+    # atomic that produces it. Other sources reach here too:
     #  - an entry input returned verbatim (directly, or through nested composites)
     #    resolves to an `_EntryInput` marker -- a pass-through. A Pure Data one is
     #    recorded with the boundary node `()` as its producer, which is where the
@@ -467,23 +480,36 @@ def _expand_body(entry_name, entry_proc, procs, atomic, exit_object_bearing, dia
     #    is diagnosed in `instance`).
     #  - a nested composite that returns a literal-bound input resolves to a
     #    `_Literal`; it has no producer at all, so it is kept apart in `exit_literals`.
-    # Before these were recorded, both kinds of output silently vanished from what the
-    # runner returns.
+    #  - a `map` / `fold` output is an Array gathered from the invocations
+    #    (`_Gathered`): its Objects cross the boundary one element at a time, each on
+    #    an exit arc of its own, and the runner reads the whole from `output_sources`.
     siblings = _body_nodes(entry_proc)
     for out_name, source in _returns(entry_proc).items():
-        producer = exp._resolve(_parse_ref(source), (), entry_env, siblings, (entry_name,))
-        if isinstance(producer, _Producer):
-            exp.exit_outputs[out_name] = Endpoint(producer.path, producer.port)
-        elif isinstance(producer, _EntryInput):
-            # An undeclared port (invalid upstream) counts as Object-bearing, so that
-            # nothing is recorded for it.
-            if not exit_object_bearing.get(out_name, True):
-                exp.exit_outputs[out_name] = Endpoint((), producer.name)
-            else:
+        value = exp._resolve(_parse_ref(source), (), entry_env, siblings, (entry_name,))
+        # An undeclared port (invalid upstream) counts as Object-bearing, so that
+        # nothing is recorded for it as Pure Data.
+        object_bearing = exit_object_bearing.get(out_name, True)
+        if isinstance(value, _Producer) and not value.index:
+            exp.exit_outputs[out_name] = Endpoint(value.path, value.port)
+        elif isinstance(value, _EntryInput) and not value.index:
+            if object_bearing:
                 continue  # an Object pass-through: out of scope, so no Source either
-        elif isinstance(producer, _Literal):
-            exp.exit_literals[out_name] = producer.value
-        if (resolved := _source_of(producer)) is not None:
+            exp.exit_outputs[out_name] = Endpoint((), value.name)
+        elif isinstance(value, _Literal):
+            exp.exit_literals[out_name] = value.value
+        leaves = list(_leaves(value))
+        if object_bearing:
+            # The planner's exit: one arc per Object, the element index on the
+            # boundary end. An element that is itself a boundary input passed through
+            # is out of scope, as a whole pass-through is.
+            for index, leaf in leaves:
+                if isinstance(leaf, _Producer) and not leaf.index:
+                    exp.exit_arcs.append(
+                        Arc(Endpoint(leaf.path, leaf.port), Endpoint((), out_name, index))
+                    )
+            if any(isinstance(leaf, _EntryInput) for _, leaf in leaves):
+                continue
+        if (resolved := _source_of(value)) is not None:
             exp.output_sources[out_name] = resolved
 
     # Pure Data fan-in can occasionally add the same precedence edge twice; keep
@@ -494,25 +520,19 @@ def _expand_body(entry_name, entry_proc, procs, atomic, exit_object_bearing, dia
         if edge not in seen:
             seen.add(edge)
             precedence.append(edge)
-    return (
-        exp.activities, exp.arcs, precedence, exp.used, exp.entry_inputs, exp.exit_outputs,
-        # Pure Data port-level dataflow and static literals, for the runner only (D26-0).
-        exp.data_arcs, exp.data_entry_inputs, exp.data_literals, exp.exit_literals,
-        # The same dataflow as Source trees, for the runner only (D57).
-        exp.input_sources, exp.output_sources,
-        # Nested composite invocation boundaries, for the runner's contract checks (D34).
-        exp.composites,
-    )
+    return exp, precedence
 
 
 @dataclass(frozen=True)
 class _Producer:
     """The concrete atomic output that ultimately feeds a reference, after
     resolving through any composite boundaries (a `returns` map, or a composite's
-    own input)."""
+    own input). `index` selects one element of that output's Array, where a `map` /
+    `fold` traverses it; empty, the whole value."""
 
     path: NodePath
     port: str
+    index: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -521,9 +541,11 @@ class _EntryInput:
     a `main`-level input port with no in-body producer. Carried (instead of a
     `_Producer`) so the atomic that ultimately consumes it can be recorded as a
     boundary connection (`Workflow.entry_inputs`); the name survives nesting because
-    the marker propagates through composite input environments."""
+    the marker propagates through composite input environments. `index` selects one
+    element of an Array entry input, as `_Producer.index` does."""
 
     name: str
+    index: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -532,15 +554,29 @@ class _Literal:
     has no in-body producer. Carried like `_EntryInput` so the atomic that ultimately
     consumes it can be recorded (`Workflow.data_literals`); the value survives nesting
     because the marker propagates through composite input environments. Literals are
-    Pure Data (`bind` only) and, like `data_arcs`, are recorded for the sibling
-    `ofplang-run` runner alone -- the scheduler never reads them."""
+    Pure Data and, like `data_arcs`, are recorded for the sibling `ofplang-run` runner
+    alone -- the scheduler never reads them."""
 
     value: object
 
 
+@dataclass(frozen=True)
+class _Gathered:
+    """An Array assembled element by element: the output of a `map`, or a `fold`'s
+    collected output, element `i` being invocation `i`'s value. Its elements are any
+    of the markers above (or None where an invocation produced nothing to read)."""
+
+    items: tuple
+
+
+# Structured node kinds the expansion does not handle yet (D57: `branch` is the
+# next step; `do_while`'s count is a run-time value).
+_UNSUPPORTED_KINDS = {"do_while", "branch"}
+
+
 class _Expander:
     """Flattens the entry composite into atomic activities, splicing dataflow
-    across composite boundaries.
+    across composite boundaries and expanding `map` / `fold` nodes.
 
     Node bindings and returns use body dataflow references (v0 §2.6.1): `inputs.X`
     names an input port of the current composite, `Node.Y` an output of a direct
@@ -552,14 +588,39 @@ class _Expander:
       `returns[Y]` to the atomic that actually produces the value.
 
     Both directions are handled by `_resolve`, which walks these boundaries down to
-    the producing atomic. Only atomic invocations become activities; a `state`
-    binding on an atomic input yields an Object-bearing transport arc, a `bind`
-    binding only a precedence edge (v0 §11)."""
+    the producing atomic. Only atomic invocations become activities; a binding to an
+    Object-bearing atomic input yields a transport arc, one to a Pure Data input only
+    a precedence edge (v0 §11).
 
-    def __init__(self, procs: dict, atomic: dict[str, AtomicProcess], diags: Diagnostics) -> None:
+    A `map` / `fold` node is expanded into its invocations, invocation `i` under the
+    path `node_id, i` (design.md D57): each `each` source gives element `i`, each
+    `bind` the whole value, and a `fold`'s carry threads invocation `i`'s output into
+    invocation `i + 1`. How many invocations there are -- L -- is the length of the
+    `each` sources, which must be known before the run: from an `interface` list for
+    an Array of Objects at the boundary, a literal, or another `map` / `fold`'s
+    output. A structured node is expanded once, the first time it is reached --
+    walking the body or resolving a reference to its output, whichever comes first --
+    and its outputs are kept, so a second reference reads the same invocations
+    rather than making new ones."""
+
+    def __init__(
+        self,
+        procs: dict,
+        atomic: dict[str, AtomicProcess],
+        diags: Diagnostics,
+        domains: dict | None = None,
+        interface: dict | None = None,
+        entry_ports: dict[str, bool] | None = None,
+    ) -> None:
         self.procs = procs
         self.atomic = atomic
         self.diags = diags
+        self.domains = domains or {}
+        # The entry composite's input ports -> Object-bearing, and the `interface`
+        # bindings of its inputs: an Array of Objects at the boundary has as many
+        # elements as its binding has spots (§6.8), which is where L comes from.
+        self.entry_ports = entry_ports or {}
+        self.entry_bindings = dict((interface or {}).get("inputs") or {})
         self.activities: list[NodeInvocation] = []
         self.arcs: list[Arc] = []
         self.precedence: list[tuple[NodePath, NodePath]] = []
@@ -578,11 +639,13 @@ class _Expander:
         # (like data_arcs); the scheduler never reads them.
         self.data_literals: dict[Endpoint, object] = {}
         # Boundary connections (SPEC §6.8): main input port -> consuming atomic
-        # endpoint (recorded from `state` bindings that resolve to an entry input),
-        # and main output port -> producing atomic endpoint (from the entry's
-        # `returns`). Only Object-bearing ports land here (state = Object-bearing).
+        # endpoint, and main output port -> producing atomic endpoint (from the
+        # entry's `returns`), for a whole port. The planner reads `entry_arcs` /
+        # `exit_arcs` instead, which also hold one arc per element of an Array.
         self.entry_inputs: dict[str, Endpoint] = {}
         self.exit_outputs: dict[str, Endpoint] = {}
+        self.entry_arcs: list[Arc] = []
+        self.exit_arcs: list[Arc] = []
         # Main output port -> a static literal it returns (see `Workflow.exit_literals`).
         self.exit_literals: dict[str, object] = {}
         # The same dataflow as `Source` trees, for the runner (see `Workflow`):
@@ -594,6 +657,14 @@ class _Expander:
         # only; the scheduler never reads them (like data_arcs). The entry composite
         # `()` is omitted (the runner checks it via its whole-workflow handles, D33).
         self.composites: dict[NodePath, CompositeIO] = {}
+        # `map` / `fold` node path -> its invocation count, and the lengths the plan
+        # assumed but only the runner can check (see `Workflow`).
+        self.iterations: dict[NodePath, int] = {}
+        self.length_checks: list[LengthCheck] = []
+        # `map` / `fold` node path -> its outputs, once expanded (see the class doc).
+        self.structured: dict[NodePath, dict] = {}
+        # Atomic processes already reported for an Object-bearing Array port.
+        self.refused: set[str] = set()
 
     def expand(
         self, comp: dict, prefix: NodePath, inputs_env: dict, stack: tuple[str, ...]
@@ -612,9 +683,11 @@ class _Expander:
         node_id: str = node["id"]  # every body node has an id (see _body_nodes)
         path = prefix + (node_id,)
         kind = node.get("kind")
-        # Structured nodes stay out of scope (D6): they reshape dataflow in ways the
-        # flat scheduler graph cannot represent.
-        if kind in _STRUCTURED_KINDS:
+        if kind in ("map", "fold"):
+            # Expanded here, unless a reference to one of its outputs already did.
+            self._structured_outputs(node, prefix, inputs_env, siblings, stack)
+            return
+        if kind in _UNSUPPORTED_KINDS:
             self.diags.error(
                 errors.UNSUPPORTED_FEATURE,
                 f"structured node {node_id!r} (kind {kind!r}) is out of scope",
@@ -631,78 +704,13 @@ class _Expander:
 
         child_kind = self.procs[pname].get("kind")
         if child_kind == "atomic":
-            # An atomic invocation is a real activity; wire each bound input to its
-            # producer: an Object-bearing port gets an Object arc (a transport) and a
-            # precedence edge, a Pure Data port a precedence edge and a data arc.
-            self.activities.append(NodeInvocation(path, pname))
-            sig = self.atomic[pname]
-            self.used[pname] = sig
-            # 🔴 Whether a binding moves an Object is the target **port's type**, never
-            # the section it is written under. The spec pairs the two (`state` for
-            # Object-bearing ports, `bind` for Pure Data, v0 §11), but this reader does
-            # not run the validator, and a section that disagrees with the port is a
-            # document to diagnose upstream, not one to mis-plan: read by section, a Pure
-            # Data entry input written under `state` became an Object boundary input the
-            # interface was then required to place on a spot, and a literal under
-            # `state` was dropped. A port the process does not declare (invalid
-            # upstream) falls back to its section, which is all there is to go on.
-            object_ports = {p.name: p.object_bearing for p in sig.inputs}
-            for section in ("state", "bind"):
-                for port, binding in (node.get(section) or {}).items():
-                    object_bearing = object_ports.get(port, section == "state")
-                    producer = self._resolve(
-                        _parse_ref(binding), prefix, inputs_env, siblings, stack
-                    )
-                    if producer is None:
-                        continue  # an unconnected workflow input
-                    # The runner's one record of where this input's value comes from,
-                    # whatever kind of source it is (see `model.Source`). The
-                    # per-kind records below are kept alongside it.
-                    source = _source_of(producer)
-                    if source is not None:
-                        self.input_sources[Endpoint(path, port)] = source
-                    if isinstance(producer, _Literal):
-                        # A static literal: no producer, no precedence, no arc. A Pure
-                        # Data one is recorded port-level for the runner's value layer
-                        # only (like data_arcs); the scheduler never reads it. A literal
-                        # on an Object-bearing port names no Object to move, so there is
-                        # nothing to record for it.
-                        if not object_bearing:
-                            self.data_literals[Endpoint(path, port)] = producer.value
-                        continue
-                    if isinstance(producer, _EntryInput):
-                        # A workflow entry input: no in-body producer, so no arc /
-                        # precedence. An Object-bearing port records the boundary
-                        # connection; a Pure Data one carries no spot but its port-level
-                        # boundary is recorded for the runner (D26-0) so it can seed the
-                        # value that enters here.
-                        if object_bearing:
-                            self.entry_inputs[producer.name] = Endpoint(path, port)
-                        else:
-                            # A Pure Data entry input consumed at this atomic. Unlike an
-                            # Object, one Pure Data entry input may feed any number of
-                            # atomics, so each consumer gets a data arc of its own whose
-                            # source is the boundary node `()` -- the same convention as
-                            # the plan's boundary arcs. `data_entry_inputs` maps a port to
-                            # ONE consumer and so can hold only the last of them; it is
-                            # kept for callers that read it, but `data_arcs` is complete.
-                            self.data_arcs.append(
-                                Arc(Endpoint((), producer.name), Endpoint(path, port))
-                            )
-                            self.data_entry_inputs[producer.name] = Endpoint(path, port)
-                        continue
-                    self.precedence.append((producer.path, path))
-                    if object_bearing:
-                        self.arcs.append(
-                            Arc(Endpoint(producer.path, producer.port), Endpoint(path, port))
-                        )
-                    else:
-                        # Pure Data: a precedence edge for the solver (added above), plus
-                        # the port-level arc for the runner's value routing (D26-0). The
-                        # scheduler does not read `data_arcs`.
-                        self.data_arcs.append(
-                            Arc(Endpoint(producer.path, producer.port), Endpoint(path, port))
-                        )
+            items = [
+                (port, section,
+                 self._resolve(_parse_ref(binding), prefix, inputs_env, siblings, stack))
+                for section in ("state", "bind")
+                for port, binding in (node.get(section) or {}).items()
+            ]
+            self._invoke_atomic(path, pname, items)
         elif child_kind == "composite":
             # A composite invocation is structural: resolve its input bindings here,
             # then expand its body one level deeper with those producers in scope.
@@ -725,12 +733,332 @@ class _Expander:
                 f"node {node_id!r} invokes process {pname!r} of unsupported kind {child_kind!r}",
             )
 
+    def _invoke_atomic(self, path: NodePath, pname: str, items: list) -> None:
+        """One atomic invocation at `path`: a processing activity, with each input
+        wired to its source. `items` is `(port, section, resolved value)` per bound
+        input; the section is consulted only for a port the process does not declare.
+
+        An Object-bearing port gets an Object arc (a transport) and a precedence edge,
+        a Pure Data port a precedence edge and a data arc."""
+        if not self._plannable(pname):
+            return
+        self.activities.append(NodeInvocation(path, pname))
+        sig = self.atomic[pname]
+        self.used[pname] = sig
+        # 🔴 Whether a binding moves an Object is the target **port's type**, never
+        # the section it is written under. The spec pairs the two (`state` for
+        # Object-bearing ports, `bind` for Pure Data, v0 §11), but this reader does
+        # not run the validator, and a section that disagrees with the port is a
+        # document to diagnose upstream, not one to mis-plan: read by section, a Pure
+        # Data entry input written under `state` became an Object boundary input the
+        # interface was then required to place on a spot, and a literal under
+        # `state` was dropped. A port the process does not declare (invalid
+        # upstream) falls back to its section, which is all there is to go on.
+        object_ports = {p.name: p.object_bearing for p in sig.inputs}
+        for port, section, value in items:
+            object_bearing = object_ports.get(port, section == "state")
+            if value is None:
+                continue  # an unconnected workflow input
+            dst = Endpoint(path, port)
+            # The runner's one record of where this input's value comes from, whatever
+            # kind of source it is (see `model.Source`). The per-kind records below
+            # are kept alongside it.
+            source = _source_of(value)
+            if source is not None:
+                self.input_sources[dst] = source
+            if isinstance(value, _Literal):
+                # A static literal: no producer, no precedence, no arc. A Pure Data one
+                # is recorded port-level for the runner's value layer only (like
+                # data_arcs); the scheduler never reads it. A literal on an
+                # Object-bearing port names no Object to move, so there is nothing to
+                # record for it.
+                if not object_bearing:
+                    self.data_literals[dst] = value.value
+                continue
+            if isinstance(value, _EntryInput):
+                # A workflow entry input -- or one element of it: no in-body producer,
+                # so no precedence. An Object-bearing port records the boundary
+                # connection the planner places (an element of an Array on an arc of
+                # its own); a Pure Data one carries no spot but its port-level boundary
+                # is recorded for the runner (D26-0) so it can seed the value.
+                boundary = Endpoint((), value.name, value.index)
+                if object_bearing:
+                    self.entry_arcs.append(Arc(boundary, dst))
+                    if not value.index:
+                        self.entry_inputs[value.name] = dst
+                else:
+                    # Unlike an Object, one Pure Data entry input may feed any number
+                    # of atomics, so each consumer gets a data arc of its own whose
+                    # source is the boundary node `()` -- the same convention as the
+                    # plan's boundary arcs. `data_entry_inputs` maps a port to ONE
+                    # consumer and so can hold only the last of them; it is kept for
+                    # callers that read it, but `data_arcs` is complete.
+                    self.data_arcs.append(Arc(boundary, dst))
+                    if not value.index:
+                        self.data_entry_inputs[value.name] = dst
+                continue
+            if isinstance(value, _Gathered):
+                # An Array assembled from several invocations, read whole (a Pure Data
+                # port: an Object-bearing Array port is refused above). It waits for
+                # every one of them; where its value comes from is `input_sources`,
+                # which no per-port arc could say.
+                for _index, leaf in _leaves(value):
+                    if isinstance(leaf, _Producer):
+                        self.precedence.append((leaf.path, path))
+                continue
+            self.precedence.append((value.path, path))
+            arc = Arc(Endpoint(value.path, value.port, value.index), dst)
+            if object_bearing:
+                self.arcs.append(arc)
+            else:
+                # Pure Data: a precedence edge for the solver (added above), plus the
+                # port-level arc for the runner's value routing (D26-0). The scheduler
+                # does not read `data_arcs`.
+                self.data_arcs.append(arc)
+
+    def _plannable(self, pname: str) -> bool:
+        """Whether an atomic process can be planned in this stage (design.md D57): not
+        if any of its ports is an Array of Objects. Each element of such an Array is an
+        Object on a spot of its own, and a mode that maps a port to one spot cannot
+        place them; the modes that could are not defined yet. Reported once per
+        process."""
+        proc = self.procs.get(pname) or {}
+        arrays = [
+            f"{side}.{port}"
+            for side in ("inputs", "outputs")
+            for port, spec in (proc.get(side) or {}).items()
+            if isinstance(spec, dict)
+            and _array_rank(spec.get("type", "")) > 0
+            and _object_bearing(str(spec.get("type", "")), self.domains)
+        ]
+        if not arrays:
+            return True
+        if pname not in self.refused:
+            self.refused.add(pname)
+            self.diags.error(
+                errors.UNSUPPORTED_FEATURE,
+                f"atomic process {pname!r} has Object-bearing Array port(s) {arrays}: each "
+                "element is an Object on a spot of its own, which a mode cannot place yet; "
+                "traverse the Array with a map or fold instead",
+            )
+        return False
+
+    def _structured_outputs(
+        self, node: dict, prefix: NodePath, inputs_env: dict, siblings: dict, stack: tuple[str, ...]
+    ) -> dict:
+        """Expand a `map` / `fold` node once and return its outputs (port -> value)."""
+        node_id = node["id"]
+        path = prefix + (node_id,)
+        if path in self.structured:
+            return self.structured[path]
+        self.structured[path] = {}  # a reference back into itself finds nothing
+        kind = node.get("kind")
+        pname = node.get("process")
+        if pname not in self.procs:
+            self.diags.error(
+                errors.PROCESS_NOT_DEFINED,
+                f"node {node_id!r} invokes undefined process {pname!r}",
+            )
+            return {}
+        if pname in stack:
+            self.diags.error(
+                errors.RECURSIVE_COMPOSITE,
+                f"composite {pname!r} is recursively defined (via node {node_id!r})",
+            )
+            return {}
+
+        def resolved(section: str) -> dict:
+            return {
+                port: self._resolve(_parse_ref(binding), prefix, inputs_env, siblings, stack)
+                for port, binding in (node.get(section) or {}).items()
+            }
+
+        each, bind = resolved("each"), resolved("bind")
+        length = self._traversal_length(path, kind, each)
+        if length is None:
+            return {}
+        self.iterations[path] = length
+        if kind == "map":
+            outputs = self._expand_map(path, pname, each, bind, length, stack)
+        else:
+            outputs = self._expand_fold(path, node, pname, resolved("carry"), each, bind,
+                                        length, stack)
+        self.structured[path] = outputs
+        return outputs
+
+    def _expand_map(self, path, pname, each, bind, length, stack) -> dict:
+        """`map` (§17): invocation `i` gets element `i` of every `each` source and the
+        whole of every `bind`; no invocation depends on another, so none is ordered
+        after another. Every target output `p` is exposed as the Array of the
+        invocations' `p`, in invocation order."""
+        out_ports = list((self.procs[pname].get("outputs") or {}).keys())
+        collected: dict[str, list] = {p: [] for p in out_ports}
+        for i in range(length):
+            env = {**bind, **{port: _element(value, i) for port, value in each.items()}}
+            outs = self._invoke(pname, path + (i,), env, stack)
+            for p in out_ports:
+                collected[p].append(outs.get(p))
+        return {p: _Gathered(tuple(values)) for p, values in collected.items()}
+
+    def _expand_fold(self, path, node, pname, carry, each, bind, length, stack) -> dict:
+        """`fold` (§18): as `map`, plus the carry -- invocation `i + 1` gets invocation
+        `i`'s carry outputs, the first gets the node's `carry` bindings. That data
+        dependency is the whole of the ordering between invocations (design.md D57):
+        the parts of one invocation that do not read the carry are not held back by
+        the previous one. Outputs by mode (§18.1): `carry` is the last invocation's
+        value (the initial one if there are none), `collect` the Array of every
+        invocation's, `drop` nothing."""
+        target_outputs = self.procs[pname].get("outputs") or {}
+        modes = self._fold_modes(path, node, set(carry), target_outputs)
+        if modes is None:
+            return {}
+        state = dict(carry)
+        collected: dict[str, list] = {p: [] for p, mode in modes.items() if mode == "collect"}
+        for i in range(length):
+            env = {**bind, **{port: _element(value, i) for port, value in each.items()}, **state}
+            outs = self._invoke(pname, path + (i,), env, stack)
+            for port in carry:
+                state[port] = outs.get(port)
+            for port, values in collected.items():
+                values.append(outs.get(port))
+        result: dict = {}
+        for port, mode in modes.items():
+            if mode == "carry":
+                result[port] = state.get(port)
+            elif mode == "collect":
+                result[port] = _Gathered(tuple(collected[port]))
+        return result
+
+    def _fold_modes(self, path, node, carry: set, target_outputs: dict) -> dict | None:
+        """Each target output's mode (§18.1). An `outputs` section is explicit and
+        complete; without one (§18.2) a carry output is `carry`, a Pure Data one is
+        dropped, and an Object-bearing one makes the section required -- a document
+        without it is not valid v0, and guessing a mode for an Object would plan it to
+        go somewhere the document never said."""
+        section = node.get("outputs")
+        if isinstance(section, dict):
+            return {
+                port: str((spec or {}).get("mode", "drop")) if isinstance(spec, dict) else "drop"
+                for port, spec in section.items()
+            }
+        modes: dict[str, str] = {}
+        for port, spec in target_outputs.items():
+            if port in carry:
+                modes[port] = "carry"
+            elif _object_bearing(str((spec or {}).get("type", "")), self.domains):
+                self.diags.error(
+                    errors.WRONG_TYPE,
+                    f"fold node {format_node_path(path)!r} has no outputs section, but its "
+                    f"target's output {port!r} is Object-bearing and not carried; v0 "
+                    "requires the section then (§18.2)",
+                )
+                return None
+            else:
+                modes[port] = "drop"
+        return modes
+
+    def _invoke(self, pname: str, path: NodePath, env: dict, stack: tuple[str, ...]) -> dict:
+        """One invocation of a structured node's target at `path`, its inputs already
+        resolved (`env`: port -> value). Returns its outputs (port -> value)."""
+        kind = self.procs[pname].get("kind")
+        if kind == "atomic":
+            self._invoke_atomic(path, pname, [(port, "each", v) for port, v in env.items()])
+            return {p.name: _Producer(path, p.name) for p in self.atomic[pname].outputs}
+        if kind == "composite":
+            cproc = self.procs[pname]
+            self.expand(cproc, path, env, stack + (pname,))
+            self._record_composite(pname, path, env, stack)
+            body = _body_nodes(cproc)
+            return {
+                out: self._resolve(_parse_ref(source), path, env, body, stack + (pname,))
+                for out, source in _returns(cproc).items()
+            }
+        self.diags.error(
+            errors.UNSUPPORTED_FEATURE,
+            f"{format_node_path(path)!r} invokes process {pname!r} of unsupported kind {kind!r}",
+        )
+        return {}
+
+    def _traversal_length(self, path: NodePath, kind, each: dict) -> int | None:
+        """L, the common length of the `each` sources (§17, §18 -- zip-equal), or None
+        where it cannot be known before the run (reported).
+
+        A source whose length the scheduler can see -- an Array of Objects bound in
+        `interface`, a literal, another `map` / `fold`'s output -- decides it, and two
+        such sources disagreeing is the error spec §6.2 makes it. A source whose
+        length is a value only the run has -- a Pure Data entry input, an atomic's
+        output -- is planned at that L and recorded for the runner to check
+        (`LengthCheck`); one of those alone decides nothing (design.md D57)."""
+        where = f"{kind} node {format_node_path(path)!r}"
+        if not each:
+            self.diags.error(
+                errors.ARRAY_LENGTH_UNKNOWN,
+                f"{where} has no each source, so nothing says how many invocations it makes",
+            )
+            return None
+        known: dict[str, int] = {}
+        for port, value in each.items():
+            length = self._length(value)
+            if length is not None:
+                known[port] = length
+                continue
+            if (
+                isinstance(value, _EntryInput)
+                and self.entry_ports.get(value.name)
+                and value.name not in self.entry_bindings
+            ):
+                self.diags.error(
+                    errors.INTERFACE_INPUT_MISSING,
+                    f"entry input {value.name!r} is an Array of Objects traversed by {where}; "
+                    "its length is the length of its interface.inputs binding, a list of "
+                    "spots, and it has none",
+                )
+                return None
+        if not known:
+            self.diags.error(
+                errors.ARRAY_LENGTH_UNKNOWN,
+                f"{where}: none of its each sources {sorted(each)} has a length known before "
+                "the run (an Array of Objects bound in interface, a literal, or a map or "
+                "fold output)",
+            )
+            return None
+        if len(set(known.values())) > 1:
+            self.diags.error(
+                errors.EACH_LENGTH_MISMATCH,
+                f"{where} traverses each sources of different lengths {known}; they are "
+                "zipped and must be equal",
+            )
+            return None
+        length = next(iter(known.values()))
+        for port, value in each.items():
+            if port in known or value is None:
+                continue
+            source = _source_of(value)
+            if source is not None:
+                self.length_checks.append(LengthCheck(path, port, source, length))
+        return length
+
+    def _length(self, value) -> int | None:
+        """The length of an Array value, where it is known before the run."""
+        if isinstance(value, _Gathered):
+            return len(value.items)
+        if isinstance(value, _Literal):
+            return len(value.value) if isinstance(value.value, list) else None
+        if isinstance(value, _EntryInput):
+            if not self.entry_ports.get(value.name):
+                return None  # Pure Data: a value the scheduler is not given (D57)
+            binding = self.entry_bindings.get(value.name)
+            for i in value.index:
+                binding = binding[i] if isinstance(binding, list) and i < len(binding) else None
+            return len(binding) if isinstance(binding, list) else None
+        return None  # an atomic's output: its length is a run-time value
+
     def _resolve_inputs(
         self, node: dict, prefix: NodePath, inputs_env: dict, siblings: dict, stack: tuple[str, ...]
     ) -> dict:
         """Resolve every input binding of a composite invocation to its producer, so
         the child body's `inputs.*` references can be resolved against it."""
-        env: dict[str, _Producer | None] = {}
+        env: dict = {}
         for section in ("state", "bind"):
             for port, binding in (node.get(section) or {}).items():
                 env[port] = self._resolve(_parse_ref(binding), prefix, inputs_env, siblings, stack)
@@ -778,10 +1106,12 @@ class _Expander:
         """Classify a resolved producer into a value source: a producing atomic
         `Endpoint`, the workflow boundary `Endpoint((), name)` for an entry input, or a
         static literal value. An unconnected source (None) records nothing -- no value
-        flows into that port, so a contract referencing it never becomes ready."""
-        if isinstance(producer, _Producer):
+        flows into that port, so a contract referencing it never becomes ready. An
+        element of an Array, or an Array gathered from several invocations, is not a
+        value-store key at all; only `CompositeIO.*_sources` can say it."""
+        if isinstance(producer, _Producer) and not producer.index:
             endpoints[port] = Endpoint(producer.path, producer.port)
-        elif isinstance(producer, _EntryInput):
+        elif isinstance(producer, _EntryInput) and not producer.index:
             endpoints[port] = Endpoint((), producer.name)  # boundary value-store key
         elif isinstance(producer, _Literal):
             literals[port] = producer.value
@@ -790,8 +1120,8 @@ class _Expander:
         self, ref, prefix: NodePath, inputs_env: dict, siblings: dict, stack: tuple[str, ...]
     ):
         """Resolve a body dataflow reference to the atomic that produces it (a
-        `_Producer`), a boundary marker (`_EntryInput` / `_Literal`), or None for an
-        unconnected source."""
+        `_Producer`), a boundary marker (`_EntryInput` / `_Literal`), the Array a
+        `map` / `fold` assembles (`_Gathered`), or None for an unconnected source."""
         if ref is None:
             return None
         kind, left, right = ref
@@ -807,6 +1137,12 @@ class _Expander:
         child = siblings.get(left)
         if child is None:
             return None  # dangling reference; a valid v0 workflow has none
+        child_kind = child.get("kind")
+        if child_kind in ("map", "fold"):
+            # Expanded on first reach, in this scope, and read thereafter.
+            return self._structured_outputs(child, prefix, inputs_env, siblings, stack).get(right)
+        if child_kind is not None:
+            return None  # a structured node this stage does not expand (reported)
         pname = child.get("process")
         cproc = self.procs.get(pname)
         if cproc is None:
@@ -831,19 +1167,53 @@ class _Expander:
                 _body_nodes(cproc),
                 stack + (pname,),
             )
-        return None  # a structured or unknown child output cannot be a scheduler source
+        return None  # an unknown child kind cannot be a scheduler source
+
+
+def _element(value, i: int):
+    """Element `i` of an Array value: the `i`-th item of a gathered Array or of a
+    literal list, or a reference to element `i` of a producer's / entry input's
+    Array. None where there is no such element."""
+    if isinstance(value, _Gathered):
+        return value.items[i] if i < len(value.items) else None
+    if isinstance(value, _Producer):
+        return _Producer(value.path, value.port, (*value.index, i))
+    if isinstance(value, _EntryInput):
+        return _EntryInput(value.name, (*value.index, i))
+    if isinstance(value, _Literal):
+        items = value.value
+        return _Literal(items[i]) if isinstance(items, list) and i < len(items) else None
+    return None
+
+
+def _leaves(value, index: tuple[int, ...] = ()):
+    """Every (element index, value) a value is made of: itself at `()`, or -- for a
+    gathered Array, recursively -- each element under its index."""
+    if value is None:
+        return
+    if isinstance(value, _Gathered):
+        for i, item in enumerate(value.items):
+            yield from _leaves(item, (*index, i))
+    else:
+        yield index, value
 
 
 def _source_of(producer) -> Source | None:
     """A resolved reference as a `Source`: a producing atomic output or the workflow
-    boundary `()` (where entry inputs are seeded) as a reference, a static literal as
-    itself, and an unconnected source (None) as nothing."""
+    boundary `()` (where entry inputs are seeded) as a reference -- to one element
+    where it names one --, a static literal as itself, a gathered Array as the
+    sequence of its elements' sources, and an unconnected source (None) as nothing."""
     if isinstance(producer, _Producer):
-        return SourceRef(producer.path, producer.port)
+        return SourceRef(producer.path, producer.port, producer.index)
     if isinstance(producer, _EntryInput):
-        return SourceRef((), producer.name)
+        return SourceRef((), producer.name, producer.index)
     if isinstance(producer, _Literal):
         return SourceLiteral(producer.value)
+    if isinstance(producer, _Gathered):
+        items = [_source_of(item) for item in producer.items]
+        if any(item is None for item in items):
+            return None  # an element with no source: nothing whole to say
+        return SourceSeq(tuple(item for item in items if item is not None))
     return None
 
 
