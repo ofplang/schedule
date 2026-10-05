@@ -66,6 +66,9 @@ _COMMITTED_PLANS = [
     "shared_bay",
     # A joint plan with a stopped job and the tray it is still holding (§6.2, §6.12).
     "stopped_job",
+    # Expanded map / fold invocations (iteration indices in node paths, §6.3) and an
+    # Array of plates at the boundary (element indices on arcs, §6.4).
+    "dispense_read",
 ]
 
 

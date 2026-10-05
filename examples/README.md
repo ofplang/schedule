@@ -150,6 +150,41 @@ ofp-schedule schedule interface_load.workflow.yaml --env interface_load.env.yaml
 An Object-bearing entry input with no `interface` binding is an error
 (`interface_input_missing`), so `--document` is required here.
 
+## `dispense_read` — a fold and a map over an Array of plates
+
+- `dispense_read.workflow.yaml` — `main` takes a reagent container and
+  `plates: Array<Plate>`. A **`fold`** (`Dispense`) dispenses the container into each
+  plate in turn: the container is one Object every invocation shares, so it is
+  carried from one invocation to the next. A **`map`** (`Read`) then reads every plate;
+  the reads are independent of one another.
+- `dispense_read.env.yaml` — plates wait in a three-slot `hotel`, the container on a
+  `shelf`; one `dispenser`, two plate readers (the second slower), a three-slot `rack`
+  for the read plates, one arm.
+- `dispense_read.document.yaml` — the interface. `plates` is an Array of Objects, so
+  it is bound to a **list of spots, one per plate in element order** (SPEC §6.8):
+  `[hotel.a, hotel.b, hotel.c]`, and the read plates come back to
+  `[rack.a, rack.b, rack.c]`.
+
+The scheduler expands both nodes into their invocations before planning — the plan's
+activities are `Dispense/0`, `Dispense/1`, `Dispense/2`, `Read/0`, … (`node:
+[Dispense, 1]`, SPEC §6.3) — and how many there are is the length of the `plates`
+list. Give it four spots and the same workflow is four of each; give it none (`[]`)
+and there is nothing to plan. Each plate enters and leaves on a boundary transport of
+its own, whose arc names the element (`{node: [], port: plates, index: [1]}`, §6.4).
+
+```sh
+ofp-schedule schedule dispense_read.workflow.yaml --env dispense_read.env.yaml \
+    --document dispense_read.document.yaml
+```
+
+- `outputs/dispense_read.plan.yaml` (makespan 59), with `outputs/dispense_read.device.svg`
+  and `outputs/dispense_read.lane.svg`.
+
+What the plan shows is that the fold's invocations are ordered by the carried container
+and nothing else: plate 0 is read on `reader_1` from 13 to 33, while plates 1 and 2 are
+still being dispensed (16–21, 26–31). Nothing in the workflow says to wait for the
+whole fold before reading, so the plan does not.
+
 ## `stopped_job` — one job stops, and what it left behind is still there
 
 The example for a failure that is not the end of the world (SPEC §6.2) and for the

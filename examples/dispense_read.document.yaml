@@ -1,0 +1,15 @@
+# Execution document for dispense_read.workflow.yaml: where the boundary material is.
+#
+# `plates` is an Array of Objects, so it is bound to a list of spots, one per plate in
+# element order (SPEC §6.8): plate 0 starts on hotel.a, plate 1 on hotel.b, plate 2 on
+# hotel.c. The list's length is the number of plates, and with it how many invocations
+# the fold and the map are expanded into. The read plates come back to the rack in
+# the same order. The container goes back to the shelf it came from.
+interface:
+  inputs:
+    reagent: shelf.r
+    plates: [hotel.a, hotel.b, hotel.c]
+  outputs:
+    reagent: shelf.r
+    plates: [rack.a, rack.b, rack.c]
+activities: []

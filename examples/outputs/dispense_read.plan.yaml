@@ -1,0 +1,329 @@
+time:
+  unit: second
+interface:
+  inputs:
+    reagent: shelf.r
+    plates:
+    - hotel.a
+    - hotel.b
+    - hotel.c
+  outputs:
+    reagent: shelf.r
+    plates:
+    - rack.a
+    - rack.b
+    - rack.c
+outcome: optimal
+objective:
+  kind: makespan
+  value: 59
+activities:
+- kind: transport
+  start: 0
+  end: 3
+  from_spot: shelf.r
+  to_spot: dispenser.reagent
+  transporter: arm
+  arc:
+    from:
+      node: []
+      port: reagent
+    to:
+      node:
+      - Dispense
+      - 0
+      port: reagent
+- kind: transport
+  start: 3
+  end: 6
+  from_spot: hotel.a
+  to_spot: dispenser.stage
+  transporter: arm
+  arc:
+    from:
+      node: []
+      port: plates
+      index:
+      - 0
+    to:
+      node:
+      - Dispense
+      - 0
+      port: plate
+- kind: processing
+  start: 6
+  end: 11
+  process: dispense
+  mode: '0'
+  node:
+  - Dispense
+  - 0
+  devices:
+  - dispenser
+  input_spots:
+    plate: dispenser.stage
+    reagent: dispenser.reagent
+  output_spots:
+    plate: dispenser.stage
+    reagent: dispenser.reagent
+- kind: transport
+  start: 11
+  end: 11
+  from_spot: dispenser.reagent
+  to_spot: dispenser.reagent
+  arc:
+    from:
+      node:
+      - Dispense
+      - 0
+      port: reagent
+    to:
+      node:
+      - Dispense
+      - 1
+      port: reagent
+- kind: transport
+  start: 11
+  end: 13
+  from_spot: dispenser.stage
+  to_spot: reader_1.stage
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Dispense
+      - 0
+      port: plate
+    to:
+      node:
+      - Read
+      - 0
+      port: plate
+- kind: transport
+  start: 13
+  end: 16
+  from_spot: hotel.b
+  to_spot: dispenser.stage
+  transporter: arm
+  arc:
+    from:
+      node: []
+      port: plates
+      index:
+      - 1
+    to:
+      node:
+      - Dispense
+      - 1
+      port: plate
+- kind: processing
+  start: 13
+  end: 33
+  process: read
+  mode: '0'
+  node:
+  - Read
+  - 0
+  devices:
+  - reader_1
+  input_spots:
+    plate: reader_1.stage
+  output_spots:
+    plate: reader_1.stage
+- kind: processing
+  start: 16
+  end: 21
+  process: dispense
+  mode: '0'
+  node:
+  - Dispense
+  - 1
+  devices:
+  - dispenser
+  input_spots:
+    plate: dispenser.stage
+    reagent: dispenser.reagent
+  output_spots:
+    plate: dispenser.stage
+    reagent: dispenser.reagent
+- kind: transport
+  start: 21
+  end: 21
+  from_spot: dispenser.reagent
+  to_spot: dispenser.reagent
+  arc:
+    from:
+      node:
+      - Dispense
+      - 1
+      port: reagent
+    to:
+      node:
+      - Dispense
+      - 2
+      port: reagent
+- kind: transport
+  start: 21
+  end: 23
+  from_spot: dispenser.stage
+  to_spot: reader_2.stage
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Dispense
+      - 1
+      port: plate
+    to:
+      node:
+      - Read
+      - 1
+      port: plate
+- kind: transport
+  start: 23
+  end: 26
+  from_spot: hotel.c
+  to_spot: dispenser.stage
+  transporter: arm
+  arc:
+    from:
+      node: []
+      port: plates
+      index:
+      - 2
+    to:
+      node:
+      - Dispense
+      - 2
+      port: plate
+- kind: processing
+  start: 23
+  end: 48
+  process: read
+  mode: '1'
+  node:
+  - Read
+  - 1
+  devices:
+  - reader_2
+  input_spots:
+    plate: reader_2.stage
+  output_spots:
+    plate: reader_2.stage
+- kind: processing
+  start: 26
+  end: 31
+  process: dispense
+  mode: '0'
+  node:
+  - Dispense
+  - 2
+  devices:
+  - dispenser
+  input_spots:
+    plate: dispenser.stage
+    reagent: dispenser.reagent
+  output_spots:
+    plate: dispenser.stage
+    reagent: dispenser.reagent
+- kind: transport
+  start: 33
+  end: 35
+  from_spot: reader_1.stage
+  to_spot: rack.a
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Read
+      - 0
+      port: plate
+    to:
+      node: []
+      port: plates
+      index:
+      - 0
+- kind: transport
+  start: 35
+  end: 37
+  from_spot: dispenser.stage
+  to_spot: reader_1.stage
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Dispense
+      - 2
+      port: plate
+    to:
+      node:
+      - Read
+      - 2
+      port: plate
+- kind: transport
+  start: 37
+  end: 40
+  from_spot: dispenser.reagent
+  to_spot: shelf.r
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Dispense
+      - 2
+      port: reagent
+    to:
+      node: []
+      port: reagent
+- kind: processing
+  start: 37
+  end: 57
+  process: read
+  mode: '0'
+  node:
+  - Read
+  - 2
+  devices:
+  - reader_1
+  input_spots:
+    plate: reader_1.stage
+  output_spots:
+    plate: reader_1.stage
+- kind: transport
+  start: 48
+  end: 50
+  from_spot: reader_2.stage
+  to_spot: rack.b
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Read
+      - 1
+      port: plate
+    to:
+      node: []
+      port: plates
+      index:
+      - 1
+- kind: transport
+  start: 57
+  end: 59
+  from_spot: reader_1.stage
+  to_spot: rack.c
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Read
+      - 2
+      port: plate
+    to:
+      node: []
+      port: plates
+      index:
+      - 2
+meta:
+  workflow: examples/dispense_read.workflow.yaml
+  environment: examples/dispense_read.env.yaml
+  status: examples/dispense_read.document.yaml

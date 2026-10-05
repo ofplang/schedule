@@ -188,9 +188,35 @@ def _uncovered(wf: Workflow) -> list[str]:
     return missing
 
 
+def _uncovered_sources(wf: Workflow) -> list[str]:
+    """The same invariant on the `Source` trees, which -- unlike the per-kind fields --
+    can say where a gathered Array or one element of an Array comes from."""
+    missing = [
+        f"{'/'.join(map(str, a.path))}.{p.name}"
+        for a in wf.activities
+        for p in wf.processes[a.process].inputs
+        if Endpoint(a.path, p.name) not in wf.input_sources
+    ]
+    missing += [
+        f"output {name}"
+        for name, object_bearing in wf.exit_output_ports.items()
+        if name not in wf.output_sources and not object_bearing
+    ]
+    return missing
+
+
+def _example_interface(path: Path):
+    """The example's own `interface`, where it has a document: a workflow that
+    traverses an Array of Objects at its boundary takes its length from there."""
+    document = path.with_name(path.name.replace(".workflow.yaml", ".document.yaml"))
+    if not document.is_file():
+        return None
+    return (yaml.safe_load(document.read_text(encoding="utf-8")) or {}).get("interface")
+
+
 def test_every_port_has_a_source(tmp_path):
     workflows = {
-        path.name: parse_workflow(path)[0]
+        path.name: parse_workflow(path, interface=_example_interface(path))[0]
         for path in [*sorted(EXAMPLES.glob("*.workflow.yaml")),
                      EXAMPLES / "outputs" / "plate_batch.workflow.yaml"]
     }
@@ -198,4 +224,8 @@ def test_every_port_has_a_source(tmp_path):
     workflows["single_atomic"] = _parse(tmp_path, _SINGLE_ATOMIC, "single_atomic.yaml")
     for name, wf in workflows.items():
         assert wf is not None, name
-        assert _uncovered(wf) == [], name
+        # The Source trees are the complete record for every workflow. The per-kind
+        # fields are too, wherever no map / fold gathered an Array they cannot hold.
+        assert _uncovered_sources(wf) == [], name
+        if not wf.iterations:
+            assert _uncovered(wf) == [], name

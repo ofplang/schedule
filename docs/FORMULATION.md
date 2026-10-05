@@ -54,6 +54,15 @@ are scheduled together:
 - **Processing activity** — one per atomic process invocation.
 - **Transport activity** — one per Object-bearing arc; moves an Object from a
   source spot to a destination spot.
+
+The invocations are those of the workflow **after expansion**: nested composites are
+flattened into their atomic invocations, and a `map` / `fold` node into one
+invocation of its target per element it traverses (SPEC §2). Nothing below sees a
+structured node. A `fold`'s carry is an ordinary arc (an Object) or precedence (a
+value) from one invocation to the next, a `map`'s invocations have none between them,
+and every expanded invocation is an activity like any other. So the model is
+unchanged by expansion; what changes is only how large the instance is, which is
+L times the target for each traversal.
 - **Replenishment activity** — refills the consumable resources of one device
   (SPEC §4.7.1). Unlike the other two it is **not** given by the workflow: the set
   of candidates is constructed by the model (§10) and how many run is decided by
@@ -76,6 +85,12 @@ final outputs) is handled by synthetic **boundary nodes**:
   including the producing spot itself). Each occupies **no device**, its start
   follows its incoming transport(s) like any activity, and its end is pinned to the
   **makespan** (the delivered result holds its spot until the schedule ends).
+
+Where a boundary port is an Array of Objects, read "port" above as "element": each
+element is an Object on a spot of its own (SPEC §6.8), so the input node places every
+element at the spot its binding lists for it, the bound output node every bound
+element, and an unbound Array output takes one activity per element. Each element
+crosses the boundary on an arc of its own.
 
 An unbound port takes an activity of its own rather than more modes on the shared
 node, because a mode of that node fixes every one of its ports at once: folding the

@@ -171,7 +171,19 @@ def test_a_structured_node_is_still_reported_as_unsupported() -> None:
     "path", sorted(EXAMPLES.glob("*.workflow.yaml")), ids=lambda p: p.stem
 )
 def test_the_examples_still_parse_without_a_diagnostic(path: Path) -> None:
-    """The guards must reject nothing that was read before."""
-    workflow, diags = parse_workflow(yaml.safe_load(path.read_text(encoding="utf-8")))
+    """The guards must reject nothing that was read before.
+
+    Read with the example's own `interface` where it has a document: a workflow that
+    traverses an Array of Objects at its boundary takes its length from there, and
+    without it is rightly refused (`interface_input_missing`)."""
+    document = path.with_name(path.name.replace(".workflow.yaml", ".document.yaml"))
+    interface = (
+        (yaml.safe_load(document.read_text(encoding="utf-8")) or {}).get("interface")
+        if document.is_file()
+        else None
+    )
+    workflow, diags = parse_workflow(
+        yaml.safe_load(path.read_text(encoding="utf-8")), interface=interface
+    )
     assert workflow is not None
     assert not diags.items

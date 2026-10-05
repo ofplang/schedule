@@ -84,6 +84,17 @@ CASES = [
         None,
         400,
     ),
+    # dispense_read: a fold dispensing one container into three plates in turn, then a
+    # map reading them on two readers (design.md D57). 59 with the reads overlapping
+    # the dispensing still to come: the fold's invocations are ordered by the carried
+    # container alone, so plate 0 is read while plates 1 and 2 are being dispensed.
+    (
+        "dispense_read",
+        EXAMPLES / "dispense_read.workflow.yaml",
+        EXAMPLES / "dispense_read.env.yaml",
+        EXAMPLES / "dispense_read.document.yaml",
+        59,
+    ),
 ]
 
 
