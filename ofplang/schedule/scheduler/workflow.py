@@ -1021,6 +1021,13 @@ class _Expander:
         output -- is planned at that L and recorded for the runner to check
         (`LengthCheck`); one of those alone decides nothing (design.md D57)."""
         where = f"{kind} node {format_node_path(path)!r}"
+        if any(value is None for value in each.values()) and any(
+            d.severity == "error" for d in self.diags.items
+        ):
+            # A source that resolved to nothing after something upstream was already
+            # refused -- a traversal over a map / fold that could not be expanded. Its
+            # length is that refusal's consequence, not a second mistake to report.
+            return None
         if not each:
             self.diags.error(
                 errors.ARRAY_LENGTH_UNKNOWN,
