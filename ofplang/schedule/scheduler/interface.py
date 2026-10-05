@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
+from ofplang.schedule.core.identifiers import format_element
+
 
 def binding_matches(value, rank: int) -> bool:
     """Whether `value` has the shape a port nesting Arrays `rank` deep takes: a spot
@@ -47,5 +49,5 @@ def binding_elements(value, index: tuple[int, ...] = ()) -> Iterator[tuple[tuple
 
 def element_label(port: str, index: tuple[int, ...]) -> str:
     """How one element of a binding is named in a message: `plates[2]`, or the port
-    itself for a scalar one."""
-    return port + "".join(f"[{i}]" for i in index)
+    itself for a scalar one (`identifiers.format_element`, the one spelling)."""
+    return format_element(port, index)

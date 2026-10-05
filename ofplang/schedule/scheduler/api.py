@@ -1410,14 +1410,23 @@ def _run(
     # before any is rejected, so a caller with two broken workflows hears about both.
     workflows: list[Workflow] = []
     for job in jobs:
+        # A named job without a roster binding falls back to the document's own, for
+        # reading only: a joint plan that put its binding at the top level is refused
+        # below for exactly that (`multi_job_interface`), and reading the workflow
+        # without it would instead report the length as missing -- the wrong mistake.
         workflow, wf_diags = parse_workflow(
             job.workflow,
-            interface=job_interfaces.get(job.id) if job.id else top_interface,
+            interface=job_interfaces.get(job.id, top_interface) if job.id else top_interface,
         )
         diagnostics += _attribute(wf_diags.items, job, jobs)
         if workflow is not None and not _has_error(wf_diags.items):
             workflows.append(workflow)
     if len(workflows) != len(jobs):
+        # The workflows were read with the document's bindings before it was validated,
+        # so a reading that failed may be the document's fault (a binding not shaped as
+        # one): what its validation finds is said too, so the actual mistake is named.
+        if document_path is not None:
+            diagnostics += validate_document_node(root).diagnostics
         return ScheduleReport(None, None, None, diagnostics)
 
     # Unified execution-document input (SPEC §6.1). Shape-validate it once, then read

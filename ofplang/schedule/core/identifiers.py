@@ -61,10 +61,18 @@ def format_node_path(path) -> str:
     return "/".join(str(element) for element in path)
 
 
+def format_element(port, index=()) -> str:
+    """A port, or one element of an Array-valued port, as `plates[2]` (`plates[1][0]`
+    nested). The one spelling of an element: a mode's spot key for it
+    (`model.slot_key`), its name in a message, in an `interface` binding's reading
+    and on a chart all use this, so none of them can drift from the others."""
+    return f"{port}" + "".join(f"[{i}]" for i in index)
+
+
 def format_endpoint(node_path, port, index=()) -> str:
     """Render an arc endpoint (`node` path + `port`) as `a/b/c.port`, with the
     element `index` of an Array-valued port, if any, as `a/b/c.port[2][0]`."""
-    return f"{format_node_path(node_path)}.{port}" + "".join(f"[{i}]" for i in index)
+    return f"{format_node_path(node_path)}.{format_element(port, index)}"
 
 
 def parse_qualified_resource(value) -> tuple[str, str] | None:

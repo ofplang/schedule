@@ -616,3 +616,67 @@ def test_each_job_is_expanded_with_its_own_binding():
     again = schedule_jobs(jobs, yaml.safe_load(ENV), document_path=copy.deepcopy(report.plan),
                           random_seed=0)
     assert again.ok, [d.code for d in again.diagnostics]
+
+
+# --- read before the document is validated (code review, 2026-10-05) ------------------
+#
+# A workflow is read with its `interface` before the document is validated, so a
+# binding that is wrong must still come out as the document mistake it is.
+
+
+def test_a_misshapen_interface_does_not_break_the_reading():
+    # `inputs` that is not a mapping: no crash, and the document's own validation says
+    # what is wrong with it.
+    report = schedule(yaml.safe_load(MAP_HEAT), yaml.safe_load(ENV),
+                      document_path={"interface": {"inputs": "loader.a"}, "activities": []})
+    assert not report.ok
+    assert "wrong_type" in {d.code for d in report.diagnostics}
+
+
+def test_one_spot_for_an_array_of_objects_is_a_shape_mismatch():
+    _, errs = _parse(MAP_HEAT, {"inputs": {"plates": "loader.a"}})
+    assert errs == ["interface_shape_mismatch"]
+
+
+def test_a_joint_plan_with_a_top_level_binding_is_told_so():
+    from ofplang.schedule import JobInput, schedule_jobs
+
+    report = schedule_jobs([JobInput("a", yaml.safe_load(MAP_HEAT))], yaml.safe_load(ENV),
+                           document_path={"interface": PLATES3, "activities": []})
+    assert "multi_job_interface" in {d.code for d in report.diagnostics}
+    assert "interface_input_missing" not in {d.code for d in report.diagnostics}
+
+
+def test_a_fold_section_that_drops_an_object_is_refused():
+    # An Object-bearing target output left out, written without a mode, or dropped:
+    # each would plan the plates to vanish (spec 18.1 rules 6, 7, 9).
+    interface = {"inputs": {"reagent": "shelf.r", "plates": ["loader.a"]}}
+    for outputs in (
+        "            reagent: {mode: carry}\n            count: {mode: carry}\n",
+        "            reagent: {mode: carry}\n            count: {mode: carry}\n"
+        "            plate: {}\n",
+        "            reagent: {mode: carry}\n            count: {mode: carry}\n"
+        "            plate: {mode: drop}\n",
+    ):
+        text = FOLD_DISPENSE.replace(
+            "            reagent: {mode: carry}\n            count: {mode: carry}\n"
+            "            plate: {mode: collect}\n",
+            outputs,
+        )
+        assert text != FOLD_DISPENSE
+        _, errs = _parse(text, interface)
+        assert errs == ["wrong_type"], outputs
+
+
+def test_an_array_passed_straight_through_is_out_of_scope_as_a_whole():
+    # A map whose target hands its plate straight back: every element of the output is
+    # a boundary input passed through, which is out of scope as a whole pass-through is.
+    keep = MAP_COMPOSITE.replace(
+        "        - {id: h, process: heat, state: {plate: {from: inputs.plate}}}\n"
+        "        - {id: c, process: cool, state: {plate: {from: h.plate}}}\n"
+        "      returns: {plate: {from: c.plate}}",
+        "        []\n      returns: {plate: {from: inputs.plate}}",
+    ).replace("      nodes:\n        []", "      nodes: []")
+    assert keep != MAP_COMPOSITE
+    wf, errs = _parse(keep, {"inputs": {"plates": ["loader.a", "loader.b"]}})
+    assert errs == [] and wf.exit_arcs == () and "plates" not in wf.output_sources

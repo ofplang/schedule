@@ -26,6 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ofplang.schedule.core import objective as objective_stages
+from ofplang.schedule.core.identifiers import format_element
 
 # Layout constants (px).
 _LEFT = 200          # label gutter width
@@ -703,7 +704,7 @@ def _xfer_label(a: dict) -> str:
     elif to.get("index"):
         # A delivery of one element of an Array output (§6.4): named by the element,
         # since every element's delivery would otherwise read "transport" alike.
-        where = str(to.get("port", "")) + "".join(f"[{i}]" for i in to["index"])
+        where = format_element(to.get("port", ""), to["index"])
     else:
         where = "transport"
     # ASCII prefix (">") keeps output printable on any console encoding.

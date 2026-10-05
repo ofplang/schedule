@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from ofplang.schedule.core.identifiers import format_element
+
 # A node path (SPECIFICATIONS.md §6.3): node ids from the entry composite's body
 # down to the atomic invocation. Single-level workflows yield a one-tuple. It is
 # the stable identity of a processing activity. Inside a `map` / `fold` node the
@@ -183,7 +185,7 @@ def slot_key(endpoint: Endpoint) -> str:
     modes map whole ports. A port name is an identifier and cannot contain `[`, so an
     element key never collides with a port. Every lookup of an arc endpoint's spot
     goes through here, so a whole-port endpoint finds exactly what it always did."""
-    return endpoint.port + "".join(f"[{i}]" for i in endpoint.index)
+    return format_element(endpoint.port, endpoint.index)
 
 
 @dataclass(frozen=True)

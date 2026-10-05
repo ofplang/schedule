@@ -220,8 +220,9 @@ def build_instance(
         if si is None or di is None:
             diags.error(
                 errors.PROCESS_NOT_DEFINED,
-                f"arc references an unknown node: {format_endpoint(arc.src.node, arc.src.port)}"
-                f" -> {format_endpoint(arc.dst.node, arc.dst.port)}",
+                "arc references an unknown node: "
+                f"{format_endpoint(arc.src.node, arc.src.port, arc.src.index)}"
+                f" -> {format_endpoint(arc.dst.node, arc.dst.port, arc.dst.index)}",
             )
             continue
         options = transport_options(
@@ -230,8 +231,9 @@ def build_instance(
         if not options and check_reachability:
             diags.error(
                 errors.ARC_UNREACHABLE,
-                f"no route can serve the arc {format_endpoint(arc.src.node, arc.src.port)}"
-                f" -> {format_endpoint(arc.dst.node, arc.dst.port)}",
+                "no route can serve the arc "
+                f"{format_endpoint(arc.src.node, arc.src.port, arc.src.index)}"
+                f" -> {format_endpoint(arc.dst.node, arc.dst.port, arc.dst.index)}",
             )
         arcs.append(ArcInstance(arc, si, di, tuple(options)))
 
@@ -568,8 +570,8 @@ def report_unreachable(instance: Instance, fixed_arc_indices: set[int], diags: D
         diags.error(
             errors.ARC_UNREACHABLE,
             f"no route can serve the arc "
-            f"{format_endpoint(arc.arc.src.node, arc.arc.src.port)} -> "
-            f"{format_endpoint(arc.arc.dst.node, arc.arc.dst.port)}{leg}",
+            f"{format_endpoint(arc.arc.src.node, arc.arc.src.port, arc.arc.src.index)} -> "
+            f"{format_endpoint(arc.arc.dst.node, arc.arc.dst.port, arc.arc.dst.index)}{leg}",
         )
 
 

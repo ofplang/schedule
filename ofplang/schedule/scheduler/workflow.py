@@ -145,7 +145,10 @@ def fingerprint(workflow: Workflow) -> str:
     """
     # An arc that carries one element of an Array port adds its two element indices.
     # A whole-port arc adds nothing, so the digest of a workflow without Arrays of
-    # Objects is the one it always had.
+    # Objects is the one it always had. In this stage no interior arc carries an index
+    # (an atomic's Object-bearing Array port is refused), so the branch is for the
+    # stage that plans one element by element. The boundary's element arcs are not
+    # read here: they follow from the activities and the boundary ports, which are.
     def arc_entry(arc: Arc) -> tuple:
         entry: tuple = (list(arc.src.node), arc.src.port, list(arc.dst.node), arc.dst.port)
         if arc.src.index or arc.dst.index:
@@ -499,16 +502,19 @@ def _expand_body(entry_name, entry_proc, procs, atomic, in_ports, exit_object_be
             exp.exit_literals[out_name] = value.value
         leaves = list(_leaves(value))
         if object_bearing:
+            # An Array output any element of which is a boundary input passed straight
+            # through is out of scope as a whole, as a whole pass-through is: modelling
+            # the other elements alone would leave the port half-planned, and its
+            # binding (or its unbound warning) speaking of only some of its elements.
+            if any(isinstance(leaf, _EntryInput) for _, leaf in leaves):
+                continue
             # The planner's exit: one arc per Object, the element index on the
-            # boundary end. An element that is itself a boundary input passed through
-            # is out of scope, as a whole pass-through is.
+            # boundary end.
             for index, leaf in leaves:
                 if isinstance(leaf, _Producer) and not leaf.index:
                     exp.exit_arcs.append(
                         Arc(Endpoint(leaf.path, leaf.port), Endpoint((), out_name, index))
                     )
-            if any(isinstance(leaf, _EntryInput) for _, leaf in leaves):
-                continue
         if (resolved := _source_of(value)) is not None:
             exp.output_sources[out_name] = resolved
 
@@ -620,7 +626,11 @@ class _Expander:
         # bindings of its inputs: an Array of Objects at the boundary has as many
         # elements as its binding has spots (§6.8), which is where L comes from.
         self.entry_ports = entry_ports or {}
-        self.entry_bindings = dict((interface or {}).get("inputs") or {})
+        # Read leniently: the document has not been validated yet when a workflow is
+        # read (`api` parses first), so a section that is not shaped as a mapping is no
+        # bindings here and is the document validation's to report.
+        inputs = interface.get("inputs") if isinstance(interface, dict) else None
+        self.entry_bindings = dict(inputs) if isinstance(inputs, dict) else {}
         self.activities: list[NodeInvocation] = []
         self.arcs: list[Arc] = []
         self.precedence: list[tuple[NodePath, NodePath]] = []
@@ -663,8 +673,8 @@ class _Expander:
         self.length_checks: list[LengthCheck] = []
         # `map` / `fold` node path -> its outputs, once expanded (see the class doc).
         self.structured: dict[NodePath, dict] = {}
-        # Atomic processes already reported for an Object-bearing Array port.
-        self.refused: set[str] = set()
+        # Atomic process -> whether it can be planned (see `_plannable`), decided once.
+        self.plannable: dict[str, bool] = {}
 
     def expand(
         self, comp: dict, prefix: NodePath, inputs_env: dict, stack: tuple[str, ...]
@@ -820,8 +830,10 @@ class _Expander:
         """Whether an atomic process can be planned in this stage (design.md D57): not
         if any of its ports is an Array of Objects. Each element of such an Array is an
         Object on a spot of its own, and a mode that maps a port to one spot cannot
-        place them; the modes that could are not defined yet. Reported once per
-        process."""
+        place them; the modes that could are not defined yet. Decided -- and reported --
+        once per process, however many invocations a traversal makes of it."""
+        if pname in self.plannable:
+            return self.plannable[pname]
         proc = self.procs.get(pname) or {}
         arrays = [
             f"{side}.{port}"
@@ -831,17 +843,15 @@ class _Expander:
             and _array_rank(spec.get("type", "")) > 0
             and _object_bearing(str(spec.get("type", "")), self.domains)
         ]
-        if not arrays:
-            return True
-        if pname not in self.refused:
-            self.refused.add(pname)
+        self.plannable[pname] = not arrays
+        if arrays:
             self.diags.error(
                 errors.UNSUPPORTED_FEATURE,
                 f"atomic process {pname!r} has Object-bearing Array port(s) {arrays}: each "
                 "element is an Object on a spot of its own, which a mode cannot place yet; "
                 "traverse the Array with a map or fold instead",
             )
-        return False
+        return not arrays
 
     def _structured_outputs(
         self, node: dict, prefix: NodePath, inputs_env: dict, siblings: dict, stack: tuple[str, ...]
@@ -934,23 +944,44 @@ class _Expander:
         complete; without one (§18.2) a carry output is `carry`, a Pure Data one is
         dropped, and an Object-bearing one makes the section required -- a document
         without it is not valid v0, and guessing a mode for an Object would plan it to
-        go somewhere the document never said."""
+        go somewhere the document never said.
+
+        The same holds of a section that is there but does not say what an Object does:
+        an Object-bearing output left out of it, written without a mode, or dropped
+        (§18.1 rules 6, 7, 9). Reading any of those as `drop` would plan the Objects to
+        vanish without a word, so each is refused as the invalid document it is."""
+        where = f"fold node {format_node_path(path)!r}"
         section = node.get("outputs")
         if isinstance(section, dict):
-            return {
-                port: str((spec or {}).get("mode", "drop")) if isinstance(spec, dict) else "drop"
-                for port, spec in section.items()
-            }
-        modes: dict[str, str] = {}
+            modes = {}
+            for port, spec in section.items():
+                mode = spec.get("mode") if isinstance(spec, dict) else None
+                if mode not in ("carry", "collect", "drop"):
+                    self.diags.error(
+                        errors.WRONG_TYPE,
+                        f"{where}: output {port!r} has no mode carry, collect or drop (§18.1)",
+                    )
+                    return None
+                modes[port] = mode
+            for port, spec in target_outputs.items():
+                object_bearing = _object_bearing(str((spec or {}).get("type", "")), self.domains)
+                if object_bearing and modes.get(port, "drop") == "drop":
+                    self.diags.error(
+                        errors.WRONG_TYPE,
+                        f"{where}: its target's output {port!r} is Object-bearing, so the "
+                        "outputs section must expose it as carry or collect (§18.1)",
+                    )
+                    return None
+            return modes
+        modes = {}
         for port, spec in target_outputs.items():
             if port in carry:
                 modes[port] = "carry"
             elif _object_bearing(str((spec or {}).get("type", "")), self.domains):
                 self.diags.error(
                     errors.WRONG_TYPE,
-                    f"fold node {format_node_path(path)!r} has no outputs section, but its "
-                    f"target's output {port!r} is Object-bearing and not carried; v0 "
-                    "requires the section then (§18.2)",
+                    f"{where} has no outputs section, but its target's output {port!r} is "
+                    "Object-bearing and not carried; v0 requires the section then (§18.2)",
                 )
                 return None
             else:
@@ -1002,17 +1033,23 @@ class _Expander:
             if length is not None:
                 known[port] = length
                 continue
-            if (
-                isinstance(value, _EntryInput)
-                and self.entry_ports.get(value.name)
-                and value.name not in self.entry_bindings
-            ):
-                self.diags.error(
-                    errors.INTERFACE_INPUT_MISSING,
-                    f"entry input {value.name!r} is an Array of Objects traversed by {where}; "
-                    "its length is the length of its interface.inputs binding, a list of "
-                    "spots, and it has none",
-                )
+            if isinstance(value, _EntryInput) and self.entry_ports.get(value.name):
+                # An Array of Objects at the boundary whose binding gave no length: say
+                # what is wrong with the binding rather than that no length is known.
+                if value.name not in self.entry_bindings:
+                    self.diags.error(
+                        errors.INTERFACE_INPUT_MISSING,
+                        f"entry input {value.name!r} is an Array of Objects traversed by "
+                        f"{where}; its length is the length of its interface.inputs binding, "
+                        "a list of spots, and it has none",
+                    )
+                else:
+                    self.diags.error(
+                        errors.INTERFACE_SHAPE_MISMATCH,
+                        f"entry input {value.name!r} is an Array of Objects traversed by "
+                        f"{where}; its interface.inputs binding must be a list of spots, one "
+                        "per element, and is not one at this depth",
+                    )
                 return None
         if not known:
             self.diags.error(
