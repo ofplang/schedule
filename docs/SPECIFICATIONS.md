@@ -1395,7 +1395,10 @@ Each entry carries:
   scheduler. On a replan the workflow handed over under that id must match it
   (`job_workflow_mismatch`, §10.4): the ids of two jobs given in the other order match
   as a set, so nothing else catches the swap. Two copies of one workflow share a
-  digest, and swapping *those* changes nothing — they are interchangeable.
+  digest, and swapping *those* changes nothing — they are interchangeable. The digest
+  is of the workflow as this job's `interface` expands it (§2): two jobs of one
+  workflow that traverses an Array of plates, bound to lists of different lengths,
+  are different graphs with different digests, and are not interchangeable.
 - `interface` (optional, §6.8) — where this job's boundary material sits. Exactly the
   section a single-workflow document carries at the top level, one per job, because it
   binds *one* workflow's ports: two jobs of the same workflow bind the same port names

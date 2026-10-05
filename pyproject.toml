@@ -26,9 +26,12 @@ classifiers = [
 ]
 # `ofplang-validate` is imported only by the CLI front door (cli.py) to validate a
 # workflow once before scheduling; the scheduler library never calls it, so
-# library users take no validation overhead. The `>=0.1.3` floor is required: the
-# front door expands `$import` itself (`validate(..., expand=True)`) and hands the
-# scheduler the expanded document, which validate exposes only from 0.1.3.
+# library users take no validation overhead. The `>=0.3` floor is required: 0.3 is
+# where validate implements specification revision 0.4, and the `dispense_read`
+# example -- the one with a map and a fold -- declares `spec_version: "0.4"`, which an
+# older validator refuses outright as a later revision than it knows. (Before it, the
+# floor was 0.1.3: the front door expands `$import` itself, `validate(...,
+# expand=True)`, which validate exposes only from 0.1.3.)
 # ortools >= 9.15: the inventory constraint (FORMULATION Sec 11) needs a reservoir
 # whose level *changes* are decision variables, not constants. The API's type hints
 # accept a LinearExpr there and 9.15 enforces it correctly, but its docstring still
@@ -43,7 +46,7 @@ classifiers = [
 # would pick up the next such sibling and start refusing its own examples. The
 # bounds cannot protect what is already on PyPI without one, which is why they go
 # in now rather than at the first breakage.
-dependencies = ["PyYAML>=6.0", "ortools>=9.15", "ofplang-validate>=0.2,<0.3"]
+dependencies = ["PyYAML>=6.0", "ortools>=9.15", "ofplang-validate>=0.3,<0.4"]
 
 [project.urls]
 Homepage = "https://github.com/ofplang/schedule"

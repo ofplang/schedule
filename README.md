@@ -23,7 +23,10 @@ status. The design is documented in [docs/SPECIFICATIONS.md](docs/SPECIFICATIONS
 > re-optimising the rest at or after `now`. Several workflows can be planned
 > **together** against one environment as separate **jobs** (spec §6.11), so they
 > compete for the same machines and share the same stocks — a refill neither needs
-> alone is then planned once for both. A `visualize` command renders a plan as
+> alone is then planned once for both. A **`map` / `fold`** over an Array — of plates
+> at the boundary, of a literal's values, of another traversal's results — is
+> expanded into one invocation per element before planning, so a protocol repeated
+> over every plate is written once (spec §2). A `visualize` command renders a plan as
 > a self-contained SVG/HTML Gantt chart. The model is documented in
 > [docs/FORMULATION.md](docs/FORMULATION.md).
 
@@ -84,7 +87,9 @@ another job needs that spot, is not the job's work and does not move its complet
 A `--document` (execution document, §6) supplies the `interface` boundary
 constraint (§6.8, where a workflow's entry inputs / final outputs sit — an entry
 input has to be bound, while a final output left unbound comes to rest wherever the
-schedule finds room, so bind the ones whose destination matters), the
+schedule finds room, so bind the ones whose destination matters; an `Array<Plate>`
+port is bound to a list of spots, one per plate, and that list's length is how many
+plates a `map` / `fold` over it traverses), the
 `inventories` levels as of a moment it names (§6.10) where devices hold
 consumables, the
 `objective` (§6.1, now its only declaration site), the `jobs` roster (§6.11) and the
@@ -351,8 +356,9 @@ asking is anybody's.
 
 [`examples/`](examples/README.md) holds complete workflow + environment pairs used
 to drive and eyeball the scheduler: a minimal source → target, a workflow with
-boundary material pinned by an `interface`, two jobs on a two-transporter fleet, a
-plate-reformatting DAG, and a parametric generator that scales the instance up.
+boundary material pinned by an `interface`, a `fold` and a `map` over an Array of
+plates, two jobs on a two-transporter fleet, a plate-reformatting DAG, and a
+parametric generator that scales the instance up.
 Each comes with its solved plan and a rendered chart under `examples/outputs/`.
 
 ## Tests
