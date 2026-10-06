@@ -373,23 +373,6 @@ def _read_workflow(
         entry, entry_proc, procs, atomic, in_ports, out_ports, interface, domains, diags
     )
 
-    # scheduling_policies (§23) / object policies (§24) are best-effort preferences
-    # this scheduler does not honor; a composite's `scheduling` section is dropped
-    # when the composite is flattened. Warn (not an error, §23) once per used
-    # composite that carries one, so the ignored feature is visible rather than
-    # silently discarded.
-    used_composites = {entry: entry_proc}
-    for io in exp.composites.values():
-        cp = procs.get(io.process)
-        if cp is not None:
-            used_composites.setdefault(io.process, cp)
-    for cname, cproc in used_composites.items():
-        if (cproc or {}).get("scheduling") is not None:
-            diags.warning(
-                errors.SCHEDULING_POLICIES_IGNORED,
-                f"scheduling policies on composite {cname!r} are not supported and are ignored",
-                f"processes.{cname}.scheduling",
-            )
     return (
         Workflow(
             tuple(exp.activities), tuple(exp.arcs), tuple(precedence), exp.used,

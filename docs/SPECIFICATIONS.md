@@ -46,9 +46,6 @@ initial versions:
 - **An atomic process with an Object-bearing Array port** — each element is an
   Object on a spot of its own, and a mode maps a port to one spot; traverse the
   Array with a `map` / `fold` instead.
-- **Scheduling policies** — `scheduling_policies` (both scheduling and Object
-  policy targets). Documents that declare the feature or carry a `scheduling`
-  section are accepted, but the policies are **ignored** (not applied).
 - **Contracts / constraints** — a graph-time and runtime verification concern,
   ignored here.
 
@@ -2278,7 +2275,6 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `literal_on_object_port` | a literal bound to an Object-bearing port: it names no Object to move (§9) |
 | `missing_each_source` | a `map` / `fold` with no `each` source (§9) |
 | `output_not_returned`, `return_port_not_found` | a composite's `returns` and its output ports do not correspond one to one (v0 12.3, revision 0.5): an output with no entry, an entry naming no output (§9) |
-| `scheduling_policies_ignored` | a composite carries a `scheduling` section; the policies are best-effort preferences this scheduler does not implement (§2), so the section is dropped when the composite is flattened (*warning*) |
 | `no_entry_process` | the workflow has no resolvable entry process |
 | `process_not_defined` | a node invokes, or an arc references, a process/node not defined in the workflow |
 | `recursive_composite` | a composite is (transitively) defined in terms of itself; v0 forbids recursion |

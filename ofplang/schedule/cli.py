@@ -481,8 +481,8 @@ def _cmd_schedule(args) -> int:
         print(f"ofp-schedule: cannot parse input: {exc}", file=sys.stderr)
         return EXIT_USAGE
     # Warnings go out whether or not a plan came of it. They say a feature was
-    # accepted and then not applied -- `scheduling_policies_ignored`,
-    # `resources_ignored` -- which changes what the plan means, and a *successful*
+    # accepted and then not applied -- `resources_ignored` -- which changes what
+    # the plan means, and a *successful*
     # schedule is precisely the case where nothing else would ever mention it.
     for diag in report.diagnostics:
         if diag.severity == ERROR:

@@ -167,11 +167,9 @@ RELEASE_AFTER_HISTORY = "release_after_history"
 # document (§6.1) and carries the refills it decided on, so refusing one handed back
 # unexecuted made a plan unusable as the input it is defined to be (§6.9).
 
-# Warning (not an error): a composite carries a `scheduling` section, but this
-# scheduler does not implement scheduling_policies (§23) / object policies (§24) --
-# best-effort preferences an implementation may ignore -- so the section is dropped
-# when the composite is flattened. Emitted so the ignored feature is visible.
-SCHEDULING_POLICIES_IGNORED = "scheduling_policies_ignored"
+# `scheduling_policies_ignored` was here, a warning that a composite's `scheduling`
+# section was dropped unapplied. v0 revision 0.5 removed the section: it is now an
+# unknown key, which ofp-validate refuses at the front door.
 # Warning (not an error): the resource model was switched off (§4.7.3) on an
 # environment whose modes do consume, so consumption, the starting levels and every
 # check over them were left unapplied. Emitted only where the model would otherwise
@@ -373,8 +371,8 @@ STATUS_INVENTORY_INCONSISTENT = "status_inventory_inconsistent"
 PLAN_INVENTORY_INCONSISTENT = "plan_inventory_inconsistent"
 
 # The schema validators' one warning; every other code they emit is an error.
-# (`scheduling_policies_ignored` and `resources_ignored` are warnings too, but the
-# execution layer raises them, not a schema validator, so they are outside the two
+# (`resources_ignored` is a warning too, but the
+# execution layer raises it, not a schema validator, so they are outside the two
 # sets below -- which exist to bound what a conformance case may name.)
 WARNING_CODES = frozenset({CROSS_KIND_ID_COINCIDENCE})
 
