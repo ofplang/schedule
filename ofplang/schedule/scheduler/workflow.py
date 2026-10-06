@@ -162,6 +162,11 @@ def fingerprint(workflow: Workflow) -> str:
         sorted(workflow.entry_input_ports.items()),
         sorted(workflow.exit_output_ports.items()),
     ]
+    # An Object returned untouched (D60) is told apart by which input goes to which
+    # output -- two workflows differing only in that are different jobs. Added only
+    # where there is one, so every digest written before stays what it was.
+    if workflow.through_arcs:
+        parts.append(sorted((arc_entry(arc) for arc in workflow.through_arcs), key=_typed))
     # A separator-free, unambiguous encoding: JSON with sorted keys, so the digest
     # depends on the structure above and not on how Python happens to repr it.
     payload = json.dumps(parts, sort_keys=True, separators=(",", ":"))
@@ -399,6 +404,7 @@ def _read_workflow(
             # The Object-bearing boundary as the planner reads it, an arc per Object.
             entry_arcs=tuple(exp.entry_arcs),
             exit_arcs=tuple(exp.exit_arcs),
+            through_arcs=tuple(exp.through_arcs),
             # How many invocations each map / fold made, and the lengths the runner
             # has to check (D57); the scheduler does not read these either.
             iterations=exp.iterations,
@@ -478,9 +484,9 @@ def _expand_body(entry_name, entry_proc, procs, atomic, in_ports, exit_object_be
     #    resolves to an `_EntryInput` marker -- a pass-through. A Pure Data one is
     #    recorded with the boundary node `()` as its producer, which is where the
     #    runner seeds entry inputs, so the value it returns is the one that came in.
-    #    An Object-bearing one stays out of `exit_outputs`: a pass-through Object has
-    #    no activity to deliver it, and is out of scope (an `interface` binding of it
-    #    is diagnosed in `instance`).
+    #    An Object-bearing one crosses the boundary twice and nothing in between: it
+    #    is a *through arc*, entry boundary -> exit boundary, one per Object (D60).
+    #    The planner moves it where the output is bound, or leaves it where it is.
     #  - a nested composite that returns a literal-bound input resolves to a
     #    `_Literal`; it has no producer at all, so it is kept apart in `exit_literals`.
     #  - a `map` / `fold` output is an Array gathered from the invocations
@@ -494,26 +500,23 @@ def _expand_body(entry_name, entry_proc, procs, atomic, in_ports, exit_object_be
         object_bearing = exit_object_bearing.get(out_name, True)
         if isinstance(value, _Producer) and not value.index:
             exp.exit_outputs[out_name] = Endpoint(value.path, value.port)
-        elif isinstance(value, _EntryInput) and not value.index:
-            if object_bearing:
-                continue  # an Object pass-through: out of scope, so no Source either
+        elif isinstance(value, _EntryInput) and not value.index and not object_bearing:
             exp.exit_outputs[out_name] = Endpoint((), value.name)
         elif isinstance(value, _Literal):
             exp.exit_literals[out_name] = value.value
-        leaves = list(_leaves(value))
         if object_bearing:
-            # An Array output any element of which is a boundary input passed straight
-            # through is out of scope as a whole, as a whole pass-through is: modelling
-            # the other elements alone would leave the port half-planned, and its
-            # binding (or its unbound warning) speaking of only some of its elements.
-            if any(isinstance(leaf, _EntryInput) for _, leaf in leaves):
-                continue
             # The planner's exit: one arc per Object, the element index on the
-            # boundary end.
-            for index, leaf in leaves:
+            # boundary end -- from the activity that produced it, or, for an Object
+            # that came in at the boundary and was returned untouched, from the entry
+            # boundary itself (a through arc). An Array may mix the two, element by
+            # element: each Object is placed on its own.
+            for index, leaf in _leaves(value):
+                exit_end = Endpoint((), out_name, index)
                 if isinstance(leaf, _Producer) and not leaf.index:
-                    exp.exit_arcs.append(
-                        Arc(Endpoint(leaf.path, leaf.port), Endpoint((), out_name, index))
+                    exp.exit_arcs.append(Arc(Endpoint(leaf.path, leaf.port), exit_end))
+                elif isinstance(leaf, _EntryInput):
+                    exp.through_arcs.append(
+                        Arc(Endpoint((), leaf.name, leaf.index), exit_end)
                     )
         if (resolved := _source_of(value)) is not None:
             exp.output_sources[out_name] = resolved
@@ -656,6 +659,8 @@ class _Expander:
         self.exit_outputs: dict[str, Endpoint] = {}
         self.entry_arcs: list[Arc] = []
         self.exit_arcs: list[Arc] = []
+        # An Object returned exactly as it came in: entry boundary -> exit boundary.
+        self.through_arcs: list[Arc] = []
         # Main output port -> a static literal it returns (see `Workflow.exit_literals`).
         self.exit_literals: dict[str, object] = {}
         # The same dataflow as `Source` trees, for the runner (see `Workflow`):

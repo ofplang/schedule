@@ -342,7 +342,8 @@ class Workflow:
     # Data entry input returned verbatim (a pass-through) is recorded with the
     # boundary `Endpoint((), <entry input name>)` as its producer -- not an activity,
     # so the planning code reads only the Object-bearing entries here. An
-    # Object-bearing pass-through is absent (out of scope).
+    # Object-bearing pass-through is not here: the planner reads it from
+    # `through_arcs`, the runner from `output_sources`.
     exit_outputs: dict[str, Endpoint] = field(default_factory=dict)
     # every main input / output port name -> whether it is Object-bearing (used to
     # classify an `interface` binding: unknown port vs Pure Data vs pass-through).
@@ -356,6 +357,11 @@ class Workflow:
     # say for an Array's elements; those two maps stay for the runner.
     entry_arcs: tuple[Arc, ...] = ()
     exit_arcs: tuple[Arc, ...] = ()
+    # An Object that crosses the boundary in and straight back out, untouched by any
+    # activity (an entry input returned as it came, or an element of one): one arc per
+    # Object, `Endpoint((), input, index)` -> `Endpoint((), output, index)` (D60). The
+    # planner moves it to the output's spot, or leaves it where it came in.
+    through_arcs: tuple[Arc, ...] = ()
     # Every main input / output port -> how deeply its type nests Arrays (0 for a
     # scalar, 2 for `Array<Array<Plate>>`), which is the shape its `interface`
     # binding has to have: a spot, or lists of spots that deep.
@@ -428,8 +434,8 @@ class Workflow:
     # consuming atomic input Endpoint -> its Source (Object and Pure Data alike; an
     # input with no source at all is absent).
     input_sources: dict[Endpoint, Source] = field(default_factory=dict)
-    # main output port -> its Source. An Object-bearing pass-through is absent, as it
-    # is from `exit_outputs` (out of scope).
+    # main output port -> its Source; every output has one (an Object-bearing
+    # pass-through is `SourceRef((), input)`, or one element of it).
     output_sources: dict[str, Source] = field(default_factory=dict)
     # `map` / `fold` node path -> its invocation count L, the length the plan was
     # built on. Recorded because L = 0 leaves no iteration path behind to count.

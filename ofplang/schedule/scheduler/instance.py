@@ -243,8 +243,10 @@ def build_instance(
     # and no interface is rejected rather than silently unconstrained.
     bound_inputs = set((interface or {}).get("inputs") or {})
     # Every port some Object enters through, once each (an Array port has an arc per
-    # element), in the workflow's order.
-    for name in dict.fromkeys(arc.src.port for arc in workflow.entry_arcs):
+    # element), in the workflow's order -- including one that is only passed through:
+    # it is somewhere when the run starts, and the plan has to know where.
+    entering = (*workflow.entry_arcs, *workflow.through_arcs)
+    for name in dict.fromkeys(arc.src.port for arc in entering):
         if name not in bound_inputs:
             diags.error(
                 errors.INTERFACE_INPUT_MISSING,
@@ -257,12 +259,16 @@ def build_instance(
     # spot the *scheduler* chooses, which is not something the document has to mention
     # -- and a workflow that creates its material internally and returns it has a final
     # output with no reason to carry an `interface` section at all.
+    # An Object passed straight through (D60) enters on the input node and leaves on an
+    # output node, so the input side hands the output side where each one sits.
+    entered: dict[Endpoint, tuple[int, str]] = {}
     if interface:
-        _add_boundary_inputs(
+        entered = _add_boundary_inputs(
             workflow, env, interface, activities, arcs, index_by_node, check_reachability, diags
         )
     _add_boundary_outputs(
-        workflow, env, interface or {}, activities, arcs, index_by_node, check_reachability, diags
+        workflow, env, interface or {}, activities, arcs, index_by_node, check_reachability,
+        diags, entered,
     )
 
     precedence = tuple(
@@ -584,19 +590,28 @@ def _add_boundary_inputs(
     index_by_node: dict[NodePath, int],
     check_reachability: bool,
     diags: Diagnostics,
-) -> None:
+) -> dict[Endpoint, tuple[int, str]]:
     """Append the input boundary node and one boundary arc per bound entry input.
 
     Each valid binding contributes an output port on the single input node (its
     mode places that port at the interface spot) and an arc from the input node to
     the consuming activity. Invalid bindings are diagnosed and skipped (SPEC §9.3):
-    an unknown / wrong-side / pass-through port, a Pure Data port, a duplicate spot,
-    or a spot the environment does not define.
+    an unknown / wrong-side port, a Pure Data port, a duplicate spot, or a spot the
+    environment does not define.
+
+    An Object passed straight through to a final output (a through arc, D60) is placed
+    on the input node like any other, but its arc goes to an *output* node, which does
+    not exist yet: the output side draws it. Returned for that: each such entry
+    endpoint -> (the input node's index, the spot it is bound to).
     """
     inputs = interface.get("inputs") or {}
     # Who consumes each Object crossing the boundary: (port, element index) -> the
-    # consuming atomic input. One per Object -- an Object is linear.
-    consumers = {(arc.src.port, arc.src.index): arc.dst for arc in workflow.entry_arcs}
+    # consuming atomic input, or the exit endpoint it is returned on. One per Object --
+    # an Object is linear.
+    consumers = {
+        (arc.src.port, arc.src.index): arc.dst
+        for arc in (*workflow.entry_arcs, *workflow.through_arcs)
+    }
     # (boundary endpoint, spot, consumer endpoint)
     valid: list[tuple[Endpoint, str, Endpoint]] = []
     spot_owner: dict[str, str] = {}
@@ -629,7 +644,7 @@ def _add_boundary_inputs(
             valid.append((Endpoint((), name, index), spot, consumer))
 
     if not valid:
-        return
+        return {}
 
     # A single input node: one mode placing every bound entry input -- every element
     # of a bound Array, each under its own key -- at its spot, no device (it holds
@@ -644,7 +659,12 @@ def _add_boundary_inputs(
     node_index = len(activities)
     activities.append(ActivityInstance((), "", (mode,), boundary=BoundaryInfo("input")))
 
-    for boundary, _spot, consumer in valid:
+    passed_through: dict[Endpoint, tuple[int, str]] = {}
+    for boundary, spot, consumer in valid:
+        if consumer.node == ():
+            # Returned untouched: its arc ends on an output node (see the docstring).
+            passed_through[boundary] = (node_index, spot)
+            continue
         di = index_by_node.get(consumer.node)
         if di is None:
             # a consumer that is not a scheduled activity; cannot happen for a valid workflow
@@ -660,6 +680,7 @@ def _add_boundary_inputs(
                 f"{format_endpoint(consumer.node, consumer.port, consumer.index)}",
             )
         arcs.append(ArcInstance(Arc(boundary, consumer), node_index, di, tuple(options)))
+    return passed_through
 
 
 def _bound_elements(
@@ -677,13 +698,14 @@ def _bound_elements(
 
     `side` is "input" or "output", `port_kinds` / `ranks` that side's port tables,
     and `crossing` the Objects of this port that cross the boundary, by element index
-    (`()` for a scalar port) -> the atomic endpoint at the other end.
+    (`()` for a scalar port) -> the endpoint at the other end: an activity's, or -- for
+    an Object returned untouched (D60) -- the boundary's other side.
 
     Checked in the order the reader can act on, each stopping the binding: every spot
     named exists; the port is a boundary port of this side and Object-bearing; the
     binding's shape is the port's (a spot, or lists of spots as deep as its Arrays
-    nest); something crosses the boundary through it at all (not a pass-through);
-    and it binds exactly the elements that cross. Duplicate spots are the caller's,
+    nest); something crosses the boundary through it at all; and it binds exactly the
+    elements that cross. Duplicate spots are the caller's,
     since they are judged across every binding of the side.
     """
     named = list(binding_elements(binding))
@@ -717,15 +739,12 @@ def _bound_elements(
         )
         return []
     if not crossing and named:
-        # Nothing crosses the boundary through this port: an entry input no activity
-        # consumes, or a final output returned straight from the boundary.
+        # Nothing crosses the boundary through this port -- no activity consumes or
+        # produces it and it is not returned untouched either. A valid v0 workflow
+        # gives every Object a fate and a provenance, so this is one that is not.
         diags.error(
             errors.INTERFACE_UNKNOWN_PORT,
-            f"interface input {name!r} is a pass-through entry input with no consuming"
-            f" activity (out of scope)"
-            if entry_side
-            else f"interface output {name!r} is a pass-through entry input returned"
-            f" directly (out of scope)",
+            f"interface {side} {name!r} binds a port no Object crosses the boundary through",
         )
         return []
     bound = {index for index, _ in named}
@@ -755,9 +774,16 @@ def _add_boundary_outputs(
     index_by_node: dict[NodePath, int],
     check_reachability: bool,
     diags: Diagnostics,
+    entered: dict[Endpoint, tuple[int, str]],
 ) -> None:
     """Append the output boundary node(s) and one boundary arc per final output
     (the mirror of `_add_boundary_inputs`).
+
+    An Object returned untouched (a through arc, D60) leaves from the input node:
+    `entered` says where it came in (the node, the spot). Bound, it is moved to its
+    output spot like any other output -- a same-spot move is a no-op. Unbound, it stays
+    where it came in: nothing moves it, so its node's one mode is that spot, and there
+    is nothing to warn about, the input's binding having said where it is.
 
     A **bound** output is delivered to the spot the document names, and the bound ones
     share a node: a single mode placing each at its spot. An **unbound** output is
@@ -774,14 +800,17 @@ def _add_boundary_outputs(
 
     Either way the node's end is pinned to the makespan by the solver, so a delivered
     Object holds its spot to the end. Invalid bindings are diagnosed and skipped: an
-    unknown / Pure Data / pass-through port, a duplicate spot (within outputs), or a
-    spot the environment does not define.
+    unknown / Pure Data port, a duplicate spot (within outputs), or a spot the
+    environment does not define.
     """
     outputs = interface.get("outputs") or {}
     # Who produces each Object crossing the boundary: (port, element index) -> the
-    # producing atomic output. Pure Data returns and pass-throughs are not here: they
-    # occupy no spot the planner could place.
-    producers = {(arc.dst.port, arc.dst.index): arc.src for arc in workflow.exit_arcs}
+    # producing atomic output, or the entry endpoint of one returned untouched. Pure
+    # Data returns are not here: they occupy no spot the planner could place.
+    producers = {
+        (arc.dst.port, arc.dst.index): arc.src
+        for arc in (*workflow.exit_arcs, *workflow.through_arcs)
+    }
     # (boundary endpoint, spot, producer endpoint)
     valid: list[tuple[Endpoint, str, Endpoint]] = []
     spot_owner: dict[str, str] = {}
@@ -809,7 +838,14 @@ def _add_boundary_outputs(
         it. An unbound output can always be served -- staying put is among its
         candidates and a same-spot move is a no-op (§5.4) -- so the reachability error
         below is reached only by a binding naming somewhere unreachable."""
-        si = index_by_node.get(producer.node)
+        if producer.node == ():
+            # Returned untouched: it leaves from the input node. Absent when its input
+            # binding was missing or refused, which has been diagnosed already.
+            if producer not in entered:
+                return
+            si = entered[producer][0]
+        else:
+            si = index_by_node.get(producer.node)
         if si is None:
             # a producer that is not a scheduled activity; cannot happen for a valid workflow
             return
@@ -878,6 +914,24 @@ def _add_boundary_outputs(
         node_index = len(activities)
         activities.append(ActivityInstance((), "", modes, boundary=BoundaryInfo("output")))
         add_arc(node_index, boundary, producer)
+
+    # An unbound Object returned untouched stays where it came in (see the docstring):
+    # a node whose one mode is that spot, reached by a same-spot no-op, and no warning.
+    for arc in workflow.through_arcs:
+        entry, boundary = arc.src, arc.dst
+        if boundary.port in outputs or entry not in entered:
+            continue  # bound above (or diagnosed there); or its input binding failed
+        spot = entered[entry][1]
+        mode = Mode(
+            id=f"interface_out:{spot}",
+            devices=(),
+            duration=0,
+            input_spots={slot_key(boundary): spot},
+            output_spots={},
+        )
+        node_index = len(activities)
+        activities.append(ActivityInstance((), "", (mode,), boundary=BoundaryInfo("output")))
+        add_arc(node_index, boundary, entry)
 
 
 def _resting_spots(producer: ActivityInstance, port: str, env: Environment) -> list[str]:

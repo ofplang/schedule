@@ -582,6 +582,13 @@ def test_an_empty_fold_hands_its_carry_through():
     assert errs == [] and wf.activities == ()
     # Nothing was invoked: the count is the literal it started as.
     assert wf.output_sources["count"] == SourceLiteral(0)
+    # ... and the container is the one that came in, returned untouched (D60): it used
+    # to be out of scope, and a plan with no plates was refused for it.
+    assert wf.output_sources["reagent"] == SourceRef((), "reagent")
+    assert wf.through_arcs == (Arc(Endpoint((), "reagent"), Endpoint((), "reagent")),)
+    report = _schedule(FOLD_DISPENSE, {"inputs": {"reagent": "shelf.r", "plates": []},
+                                       "outputs": {"reagent": "shelf.r"}})
+    assert report.ok, [d.code for d in report.diagnostics]
 
 
 # --- refused ----------------------------------------------------------------------------
@@ -668,9 +675,9 @@ def test_a_fold_section_that_drops_an_object_is_refused():
         assert errs == ["wrong_type"], outputs
 
 
-def test_an_array_passed_straight_through_is_out_of_scope_as_a_whole():
+def test_an_array_passed_straight_through_is_one_through_arc_per_element():
     # A map whose target hands its plate straight back: every element of the output is
-    # a boundary input passed through, which is out of scope as a whole pass-through is.
+    # the boundary input's element, untouched -- one through arc each (D60), in order.
     keep = MAP_COMPOSITE.replace(
         "        - {id: h, process: heat, state: {plate: {from: inputs.plate}}}\n"
         "        - {id: c, process: cool, state: {plate: {from: h.plate}}}\n"
@@ -679,4 +686,10 @@ def test_an_array_passed_straight_through_is_out_of_scope_as_a_whole():
     ).replace("      nodes:\n        []", "      nodes: []")
     assert keep != MAP_COMPOSITE
     wf, errs = _parse(keep, {"inputs": {"plates": ["loader.a", "loader.b"]}})
-    assert errs == [] and wf.exit_arcs == () and "plates" not in wf.output_sources
+    assert errs == [] and wf.exit_arcs == () and wf.activities == ()
+    assert wf.through_arcs == tuple(
+        Arc(Endpoint((), "plates", (i,)), Endpoint((), "plates", (i,))) for i in range(2)
+    )
+    assert wf.output_sources["plates"] == SourceSeq(
+        (SourceRef((), "plates", (0,)), SourceRef((), "plates", (1,)))
+    )
