@@ -476,7 +476,7 @@ def test_no_binding_is_no_length():
 def test_a_literal_gives_the_length():
     wf, errs = _parse(MAP_LITERAL)
     assert errs == [] and [a.path for a in wf.activities] == [("Make", i) for i in range(3)]
-    assert wf.data_literals[Endpoint(("Make", 2), "label")] == "c"
+    assert wf.input_sources[Endpoint(("Make", 2), "label")] == SourceLiteral("c")
     report = _schedule(MAP_LITERAL, {"outputs": {"cups": ["output.a", "output.b", "output.c"]}})
     assert report.ok and report.outcome == "optimal", [d.code for d in report.diagnostics]
 
@@ -492,7 +492,7 @@ def test_a_zipped_run_phase_list_is_left_for_the_runner_to_check():
     assert errs == [] and len(wf.activities) == 2
     assert wf.length_checks == (LengthCheck(("Heat",), "t", SourceRef((), "temps"), 2),)
     # Element i of the temperatures reaches invocation i, from the boundary.
-    assert Arc(Endpoint((), "temps", (1,)), Endpoint(("Heat", 1), "t")) in wf.data_arcs
+    assert wf.input_sources[Endpoint(("Heat", 1), "t")] == SourceRef((), "temps", (1,))
 
 
 def test_known_lengths_that_disagree_are_refused():
@@ -567,9 +567,11 @@ def test_a_fold_threads_its_carry_and_collects():
     ]
     assert Arc(Endpoint(run[2], "reagent"), Endpoint((), "reagent")) in wf.exit_arcs
     assert Arc(Endpoint(run[1], "plate"), Endpoint((), "plates", (1,))) in wf.exit_arcs
-    # The count is carried as data: a chain of data arcs and the ordering it implies.
-    assert wf.data_literals[Endpoint(run[0], "count")] == 0
-    assert Arc(Endpoint(run[0], "count"), Endpoint(run[1], "count")) in wf.data_arcs
+    # The count is carried as data: each invocation reads the last one's, and is
+    # ordered after it.
+    assert wf.input_sources[Endpoint(run[0], "count")] == SourceLiteral(0)
+    assert wf.input_sources[Endpoint(run[1], "count")] == SourceRef(run[0], "count")
+    assert (run[0], run[1]) in wf.precedence
     assert wf.output_sources["count"] == SourceRef(run[2], "count")
     report = _schedule(FOLD_DISPENSE, {**interface, "outputs": {
         "reagent": "shelf.r", "plates": ["output.a", "output.b", "output.c"]}})

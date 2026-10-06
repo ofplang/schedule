@@ -90,10 +90,11 @@ def test_workflow_captures_boundary_bindings(tmp_path):
     wf, _, _ = _write(tmp_path)
     workflow, diags = parse_workflow(wf)
     assert not diags.items
-    assert set(workflow.entry_inputs) == {"sample"}
-    assert workflow.entry_inputs["sample"].node == ("Heat",)
-    assert workflow.entry_inputs["sample"].port == "plate"
-    assert workflow.exit_outputs["result"].node == ("Heat",)
+    (entry,) = workflow.entry_arcs
+    assert entry.src.port == "sample"
+    assert (entry.dst.node, entry.dst.port) == (("Heat",), "plate")
+    (exit_,) = workflow.exit_arcs
+    assert (exit_.src.node, exit_.dst.port) == (("Heat",), "result")
 
 
 def test_interface_input_required(tmp_path):
@@ -145,8 +146,8 @@ def test_interface_constrains_mode_to_slot_b(tmp_path):
 
 
 def test_a_pure_data_pass_through_leaves_the_plan_alone(tmp_path):
-    # A Pure Data entry input returned verbatim is recorded in `exit_outputs` with the
-    # boundary node `()` as its producer, for the runner. It occupies no spot and has
+    # A Pure Data entry input returned verbatim reads the boundary node `()`, for the
+    # runner (its `output_sources`). It occupies no spot and has
     # no activity behind it, so the plan must be exactly the plan without it: no
     # extra boundary node, no transport, no unbound-output warning.
     with_pass_through = WORKFLOW.replace(
@@ -168,7 +169,7 @@ def test_a_pure_data_pass_through_leaves_the_plan_alone(tmp_path):
         tmp_path / "pass", workflow=with_pass_through, document=_iface("rack.slot_a")
     )
     workflow, _ = parse_workflow(wf)
-    assert workflow.exit_outputs["t_echo"].node == ()
+    assert workflow.output_sources["t_echo"].node == ()
     report = schedule(wf, ev, document_path=doc)
 
     assert report.ok and plain.ok

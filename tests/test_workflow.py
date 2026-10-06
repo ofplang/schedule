@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ofplang.schedule.core.diagnostics import ERROR
-from ofplang.schedule.scheduler.model import Arc, Endpoint
+from ofplang.schedule.scheduler.model import Arc, Endpoint, SourceLiteral, SourceRef
 from ofplang.schedule.scheduler.workflow import parse_workflow
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
@@ -151,10 +151,10 @@ def test_nested_composite_is_flattened(tmp_path):
 # --- Pure Data port-level dataflow (D26-0, for the ofplang-run runner) ---------
 #
 # `bind` bindings are Pure Data: the scheduler keeps only a node-level precedence
-# edge, but the flattener also records the port-level output->input mapping in
-# `data_arcs` / `data_entry_inputs` for the runner to route Pure Data values
-# along. These must not affect the Object-bearing `arcs` / `entry_inputs` or the
-# plan; they are additive metadata only.
+# edge, but the flattener also records which output feeds which input, as the
+# consuming port's `Source`, for the runner to route Pure Data values along. That
+# must not affect the Object-bearing `arcs` / `entry_arcs` or the plan; it is
+# additive metadata only.
 
 _PURE_DATA = """\
 spec_version: "0.0"
@@ -198,19 +198,15 @@ def test_pure_data_arcs_are_recorded_separately(tmp_path):
     assert not _errors(diags)
     assert wf is not None
 
-    # The Pure Data `bind` from M.reading -> A.reading is a port-level data arc,
-    # NOT an Object-bearing `arc` (which stays empty: sample enters as a boundary
-    # input, so there is no in-body Object arc here). The entry input `config` bound
-    # into A.cfg is a data arc too, from the boundary node `()`.
-    assert wf.data_arcs == (
-        Arc(Endpoint(("M",), "reading"), Endpoint(("A",), "reading")),
-        Arc(Endpoint((), "config"), Endpoint(("A",), "cfg")),
-    )
+    # The Pure Data `bind` from M.reading -> A.reading is a source, NOT an
+    # Object-bearing `arc` (which stays empty: sample enters as a boundary input, so
+    # there is no in-body Object arc here). The entry input `config` bound into A.cfg
+    # reads the boundary node `()`.
+    assert wf.input_sources[Endpoint(("A",), "reading")] == SourceRef(("M",), "reading")
+    assert wf.input_sources[Endpoint(("A",), "cfg")] == SourceRef((), "config")
     assert wf.arcs == ()
-    # A Pure Data entry input (config) bound into A.cfg is recorded as a Pure Data
-    # boundary, kept apart from the Object-bearing `entry_inputs` (sample -> M.plate).
-    assert wf.data_entry_inputs == {"config": Endpoint(("A",), "cfg")}
-    assert wf.entry_inputs == {"sample": Endpoint(("M",), "plate")}
+    # Only the Object-bearing entry input is a boundary connection the planner places.
+    assert wf.entry_arcs == (Arc(Endpoint((), "sample"), Endpoint(("M",), "plate")),)
     # The precedence edge still exists (the solver's view of the same dependency).
     assert (("M",), ("A",)) in wf.precedence
 
@@ -262,19 +258,17 @@ def test_pure_data_arc_spliced_across_composite_boundary(tmp_path):
     assert not _errors(diags)
     assert wf is not None
 
-    # The inner atomic gains a qualified path; the Pure Data arc is spliced across
-    # the analyzer boundary from M straight to Az/A.
+    # The inner atomic gains a qualified path; its source is spliced across the
+    # analyzer boundary, from M straight to Az/A.
     assert {a.path for a in wf.activities} == {("M",), ("Az", "A")}
-    assert wf.data_arcs == (
-        Arc(Endpoint(("M",), "reading"), Endpoint(("Az", "A"), "reading")),
-    )
+    assert wf.input_sources[Endpoint(("Az", "A"), "reading")] == SourceRef(("M",), "reading")
     assert (("M",), ("Az", "A")) in wf.precedence
 
 
 # Static literal `bind` values (`bind: {port: {value: ...}}`, §11) are Pure Data
-# constants with no in-body producer. The flattener records them in `data_literals`
-# (keyed by the consuming atomic input) for the runner to seed; they add no arc,
-# data_arc, or precedence, and the scheduler never reads them.
+# constants with no in-body producer. The flattener records each as the consuming
+# atomic input's source for the runner to seed; it adds no arc or precedence, and the
+# scheduler never reads it.
 
 _LITERAL = """\
 spec_version: "0.0"
@@ -313,12 +307,12 @@ def test_static_literal_is_recorded_separately(tmp_path):
     assert not _errors(diags)
     assert wf is not None
 
-    # The literal `cfg: {value: 3}` is recorded against the consuming atomic input.
-    assert wf.data_literals == {Endpoint(("A",), "cfg"): 3}
-    # It adds no data_arc (that is only for producer->consumer bindings) and no
-    # precedence edge (a constant imposes no ordering). The `from` bind still does.
-    assert wf.data_arcs == (Arc(Endpoint(("S",), "reading"), Endpoint(("A",), "reading")),)
-    assert (("S",), ("A",)) in wf.precedence
+    # The literal `cfg: {value: 3}` is the consuming atomic input's source.
+    assert wf.input_sources[Endpoint(("A",), "cfg")] == SourceLiteral(3)
+    # It adds no precedence edge (a constant imposes no ordering). The `from` bind
+    # still does, and reads its producer.
+    assert wf.input_sources[Endpoint(("A",), "reading")] == SourceRef(("S",), "reading")
+    assert wf.precedence == ((("S",), ("A",)),)
     assert wf.arcs == ()
 
 
@@ -361,8 +355,8 @@ def test_static_literal_spliced_across_composite_boundary(tmp_path):
     # The literal supplied to the composite's `w_in` reaches the inner atomic's `cfg`
     # at its qualified path -- the marker propagated across the composite boundary.
     assert {a.path for a in wf.activities} == {("W", "A")}
-    assert wf.data_literals == {Endpoint(("W", "A"), "cfg"): 7}
-    assert wf.data_arcs == ()
+    assert wf.input_sources == {Endpoint(("W", "A"), "cfg"): SourceLiteral(7)}
+    assert wf.precedence == ()
 
 
 # The Pure Data boundary shapes that used to vanish from what the runner was handed:
@@ -371,8 +365,7 @@ def test_static_literal_spliced_across_composite_boundary(tmp_path):
 #  - `t_echo` returns `t` verbatim, and `t_wrapped` returns it through a composite
 #    that passes it straight back -- both pass-throughs with no producing activity;
 #  - `k` returns the literal a nested composite was bound to.
-# `p_echo` is the Object-bearing counterpart of the pass-through, which stays out of
-# scope and so out of `exit_outputs`.
+# `p_echo` is the Object-bearing counterpart of the pass-through, a through arc (D60).
 _PURE_DATA_BOUNDARY = """\
 spec_version: "0.0"
 types:
@@ -443,17 +436,12 @@ def test_pure_data_entry_input_reaches_every_consumer(tmp_path):
     assert not _errors(diags)
     assert wf is not None
 
-    # One boundary data arc per consuming atomic, including the one reached through
-    # a composite. A runner that inverts `data_arcs` finds a source for every one.
-    boundary_arcs = {arc for arc in wf.data_arcs if arc.src == Endpoint((), "t")}
-    assert boundary_arcs == {
-        Arc(Endpoint((), "t"), Endpoint(("A",), "t")),
-        Arc(Endpoint((), "t"), Endpoint(("B",), "t")),
-        Arc(Endpoint((), "t"), Endpoint(("W", "inner"), "t")),
+    # Every consuming atomic reads the boundary, including the one reached through a
+    # composite -- not just the last of them, as a one-consumer map once could hold.
+    fed = {dst for dst, source in wf.input_sources.items() if source == SourceRef((), "t")}
+    assert fed == {
+        Endpoint(("A",), "t"), Endpoint(("B",), "t"), Endpoint(("W", "inner"), "t")
     }
-    # The one-consumer map is kept as it was, for its existing readers: it can name
-    # only one of the three.
-    assert wf.data_entry_inputs["t"] in {arc.dst for arc in boundary_arcs}
 
 
 def test_pure_data_pass_through_and_literal_returns_are_recorded(tmp_path):
@@ -464,16 +452,15 @@ def test_pure_data_pass_through_and_literal_returns_are_recorded(tmp_path):
     assert wf is not None
 
     # A Pure Data pass-through -- direct, or through a composite that returns its
-    # input -- is produced by the boundary node `()`, where the entry input is seeded.
-    assert wf.exit_outputs["t_echo"] == Endpoint((), "t")
-    assert wf.exit_outputs["t_wrapped"] == Endpoint((), "t")
+    # input -- reads the boundary node `()`, where the entry input is seeded.
+    assert wf.output_sources["t_echo"] == SourceRef((), "t")
+    assert wf.output_sources["t_wrapped"] == SourceRef((), "t")
     # A return with no producer at all: the literal a nested composite was bound to.
-    assert wf.exit_literals == {"k": 3.0}
-    assert "k" not in wf.exit_outputs
-    # The ordinary returns are unchanged, and an Object pass-through stays out.
-    assert wf.exit_outputs["p"] == Endpoint(("B",), "plate")
-    assert wf.exit_outputs["r"] == Endpoint(("W", "inner"), "r")
-    assert "p_echo" not in wf.exit_outputs
+    assert wf.output_sources["k"] == SourceLiteral(3.0)
+    # The ordinary returns, and the Object pass-through as its own entry input (D60).
+    assert wf.output_sources["p"] == SourceRef(("B",), "plate")
+    assert wf.output_sources["r"] == SourceRef(("W", "inner"), "r")
+    assert wf.output_sources["p_echo"] == SourceRef((), "q")
 
 
 def test_recursive_composite_is_reported(tmp_path):
@@ -611,11 +598,9 @@ def test_nested_composite_boundary_is_recorded(tmp_path):
     io = wf.composites[("W",)]
     assert io.process == "wrap"
     # `base` comes from the workflow boundary input `a`; `cfg` is a static literal.
-    assert io.inputs == {"base": Endpoint((), "a")}
-    assert io.input_literals == {"cfg": 5}
+    assert io.input_sources == {"base": SourceRef((), "a"), "cfg": SourceLiteral(5)}
     # `out` is produced by the inner atomic `A` (path matches the plan's activity).
-    assert io.outputs == {"out": Endpoint(("W", "A"), "s")}
-    assert io.output_literals == {}
+    assert io.output_sources == {"out": SourceRef(("W", "A"), "s")}
     # The recorded output endpoint is an actual activity path.
     assert ("W", "A") in {a.path for a in wf.activities}
 
@@ -671,8 +656,8 @@ def test_a_unit_annotated_port_is_pure_data(tmp_path):
     # The Object-bearing boundary is the Sample alone: neither Float[s] nor
     # Array<Float[uL]> is Object-bearing (§5.2), so the unit-annotated entry
     # input is recorded as Pure Data.
-    assert wf.entry_inputs == {"sample": Endpoint(("M",), "plate")}
-    assert wf.data_entry_inputs == {"t": Endpoint(("M",), "duration")}
+    assert wf.entry_arcs == (Arc(Endpoint((), "sample"), Endpoint(("M",), "plate")),)
+    assert wf.input_sources[Endpoint(("M",), "duration")] == SourceRef((), "t")
 
 
 def test_object_bearing_reads_a_unit_annotated_type_as_pure_data():

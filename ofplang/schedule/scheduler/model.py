@@ -201,12 +201,10 @@ class Arc:
 # Where a value comes from (for the `ofplang-run` runner, D57)
 # --------------------------------------------------------------------------
 #
-# A `Source` says where the value of one port comes from, as a small tree. The
-# runner-facing maps below were each built for one shape -- an arc from one
-# producer, a literal, a boundary input -- and an Array gathered from several
-# producers (the collected output of a `map`), or one element taken out of a
-# producer's Array (a `map` traversing it), fits none of them. A Source covers all
-# of these with three cases:
+# A `Source` says where the value of one port comes from, as a small tree. One
+# shape covers an arc from one producer, a literal, a boundary input, an Array
+# gathered from several producers (the collected output of a `map`) and one
+# element taken out of a producer's Array (a `map` traversing it), in three cases:
 #
 #   SourceRef(node, port, index)  the value recorded at (node, port) -- or, with an
 #                                 `index`, one element of it. `node == ()` is the
@@ -216,9 +214,9 @@ class Arc:
 #                                 its own Source; `SourceSeq(())` is the empty Array.
 #
 # A whole value that one producer recorded is one SourceRef, not a SourceSeq of its
-# elements: the tree is only as deep as the value is actually assembled. Like
-# `data_arcs`, these are additive metadata the scheduler MUST NOT read for planning,
-# and their node paths are the plan's.
+# elements: the tree is only as deep as the value is actually assembled. These are
+# additive metadata the scheduler MUST NOT read for planning, and their node paths
+# are the plan's (see `Workflow.input_sources`).
 
 
 @dataclass(frozen=True)
@@ -267,23 +265,13 @@ class CompositeIO:
     only (the sibling `ofplang-run` runner's composite contract checks, D34).
 
     A composite is flattened away in the schedulable graph -- only atomic activities
-    remain -- so the port-level mapping of a composite invocation's own inputs and
-    outputs to the concrete values that flow across its boundary is otherwise lost.
-    This records it: each input / output port maps either to the value-store key
-    (an atomic output `Endpoint`, or the workflow boundary `Endpoint((), name)`) that
-    supplies it, or -- when a port is bound to / returns a static literal -- to that
-    literal value. Same INVARIANTS as `data_arcs` (see `Workflow`): additive metadata
-    the scheduler MUST NOT read for planning, with plan-matching node paths."""
+    remain -- so where the values crossing a composite invocation's own ports come from
+    is otherwise lost. This records it, as `Source` trees: each input / output port ->
+    the value it reads (an atomic's output, the workflow boundary, a literal, an Array
+    assembled element by element). Runner-only, under the INVARIANTS stated with
+    `Workflow.input_sources`."""
 
     process: str
-    inputs: dict[str, Endpoint] = field(default_factory=dict)
-    input_literals: dict[str, object] = field(default_factory=dict)
-    outputs: dict[str, Endpoint] = field(default_factory=dict)
-    output_literals: dict[str, object] = field(default_factory=dict)
-    # The same boundary as `Source` trees: port -> where its value comes from. These
-    # can say what the four maps above cannot (an Array gathered from several
-    # producers, one element of another's Array) and are meant to replace them; the
-    # maps stay, unchanged, for the readers they already have.
     input_sources: dict[str, Source] = field(default_factory=dict)
     output_sources: dict[str, Source] = field(default_factory=dict)
 
@@ -325,36 +313,23 @@ class Workflow:
     precedence edges (a superset of arcs, covering Pure Data dependencies too),
     and the atomic process signatures referenced by the activities.
 
-    `entry_inputs` / `exit_outputs` are the workflow's Object-bearing boundary
-    connections (SPEC §6.8): each maps a main (entry composite) port name to the
-    atomic endpoint that consumes that entry input, or produces that final output.
-    These have no in-body producer/consumer, so they carry no arc here; the
-    scheduler attaches them to synthetic boundary nodes when an `interface`
-    constraint pins their spots (see `instance`)."""
+    The workflow's Object-bearing boundary (SPEC §6.8) is `entry_arcs` / `exit_arcs` /
+    `through_arcs`: one arc per Object crossing it, with an empty-path endpoint on the
+    boundary side. They have no in-body producer or consumer, so the scheduler attaches
+    them to synthetic boundary nodes (see `instance`)."""
 
     activities: tuple[NodeInvocation, ...]
     arcs: tuple[Arc, ...]
     precedence: tuple[tuple[NodePath, NodePath], ...]
     processes: dict[str, AtomicProcess]
-    # main input port name -> the atomic input Endpoint that consumes it.
-    entry_inputs: dict[str, Endpoint] = field(default_factory=dict)
-    # main output port name -> the atomic output Endpoint that produces it. A Pure
-    # Data entry input returned verbatim (a pass-through) is recorded with the
-    # boundary `Endpoint((), <entry input name>)` as its producer -- not an activity,
-    # so the planning code reads only the Object-bearing entries here. An
-    # Object-bearing pass-through is not here: the planner reads it from
-    # `through_arcs`, the runner from `output_sources`.
-    exit_outputs: dict[str, Endpoint] = field(default_factory=dict)
     # every main input / output port name -> whether it is Object-bearing (used to
-    # classify an `interface` binding: unknown port vs Pure Data vs pass-through).
+    # classify an `interface` binding: unknown port vs Pure Data vs Object-bearing).
     entry_input_ports: dict[str, bool] = field(default_factory=dict)
     exit_output_ports: dict[str, bool] = field(default_factory=dict)
     # The Object-bearing boundary as the planner reads it (§6.8): one arc per Object
     # that crosses it -- `Endpoint((), port)` -> consumer for an entry input, producer
     # -> `Endpoint((), port)` for a final output, with the element `index` where the
-    # port is an Array and each element is an Object on a spot of its own. This is
-    # what `entry_inputs` / `exit_outputs` say for a whole port, and what they cannot
-    # say for an Array's elements; those two maps stay for the runner.
+    # port is an Array and each element is an Object on a spot of its own.
     entry_arcs: tuple[Arc, ...] = ()
     exit_arcs: tuple[Arc, ...] = ()
     # An Object that crosses the boundary in and straight back out, untouched by any
@@ -368,71 +343,34 @@ class Workflow:
     entry_input_ranks: dict[str, int] = field(default_factory=dict)
     exit_output_ranks: dict[str, int] = field(default_factory=dict)
 
-    # -- Pure Data port-level dataflow, for external consumers only (D26-0) --------
+    # -- The dataflow, for the runner only (D26-0, D57) ----------------------------
     #
-    # WHAT: the port-level producer->consumer mapping of Pure Data (`bind`)
-    # bindings, plus the Pure Data input boundary. The scheduler already carries the
-    # Object-bearing (`state`) equivalent in `arcs` / `entry_inputs`; these two
-    # fields are the Pure Data counterparts.
+    # WHAT: for every input port of every atomic activity, and for every final output,
+    # where its value comes from, as a `Source` tree -- Object-bearing and Pure Data
+    # alike, an Array gathered from a `map`'s invocations and one element of another's
+    # Array included.
     #
-    # WHY (this exists solely for the sibling `ofplang-run` runner): the runner
-    # propagates Pure Data *values* from each producer output port to the consumer
-    # input port it feeds. The scheduler compiles a `bind` down to a node-level
-    # `precedence` edge only (a Pure Data value affects ordering but not timing or
-    # resources), which *discards* which output port feeds which input port. That
-    # mapping cannot be recovered from `precedence` (it is ambiguous when a producer
-    # has several Pure Data outputs), so the flattener records it here for the runner.
+    # WHY (this exists solely for the sibling `ofplang-run` runner): the runner routes
+    # *values* from each producer to each consumer. The scheduler compiles a Pure Data
+    # binding down to a node-level `precedence` edge (a value affects ordering, not
+    # timing or resources), which discards which output port feeds which input port,
+    # so the flattener records it here.
     #
     # INVARIANT -- do not break these, or the runner mis-routes values silently:
-    #  1. These are additive metadata for an external consumer. The scheduler MUST
-    #     NOT use them for planning: the solver model, objective, and rendered plan
-    #     must be byte-for-byte identical whether or not these are populated. Do not
-    #     fold them into `arcs` / `precedence` / `entry_inputs` (which the solver
-    #     does read) -- keep them separate.
-    #  2. Endpoints here use the SAME node-path convention as `arcs` and the rendered
-    #     plan's `node` paths (`prefix + (node_id,)`, entry body prefixed by `()`).
-    #     The runner keys its value store by these paths, so changing the node-path
-    #     naming silently breaks the runner -- see `scheduler/workflow.py` and
-    #     coordinate any change with ofplang-run (its dev-notes design.md D26).
+    #  1. Additive metadata for an external consumer. The scheduler MUST NOT use it for
+    #     planning: the solver model, objective and rendered plan are byte-for-byte the
+    #     same whether or not it is populated. Do not fold it into `arcs` /
+    #     `precedence` / the boundary arcs, which the solver does read.
+    #  2. Node paths here use the SAME convention as `arcs` and the rendered plan's
+    #     `node` paths (`prefix + (node_id,)`, an iteration index after an expanded
+    #     node). The runner keys its value store by them, so changing the naming
+    #     silently breaks the runner -- coordinate any change with ofplang-run.
     #
-    # (Pure Data final outputs are in `exit_outputs`: the runner reads it together
-    # with `exit_output_ports` to recover every return, Object or Pure Data. The one
-    # return with no producer at all -- a literal -- is in `exit_literals` below.)
+    # (Through 0.13.1 the same dataflow was also given per kind -- `data_arcs`,
+    # `data_entry_inputs`, `data_literals`, `entry_inputs`, `exit_outputs`,
+    # `exit_literals` -- for readers from before the trees. None was left.)
     #
-    # Pure Data connection: producer output Endpoint -> consumer input Endpoint. A
-    # source of `Endpoint((), name)` is the workflow's Pure Data entry input `name`
-    # (the boundary node, as in the plan's boundary arcs): there is one such arc per
-    # consuming atomic, so an entry input bound to several atomics reaches them all.
-    data_arcs: tuple[Arc, ...] = ()
-    # main Pure Data input port name -> ONE atomic input Endpoint that consumes it.
-    # 🔴 Incomplete when the port feeds several atomics: each entry holds one consumer,
-    # and the last one wins. The boundary arcs in `data_arcs` are the complete
-    # record; this map is kept only so that existing readers keep working.
-    data_entry_inputs: dict[str, Endpoint] = field(default_factory=dict)
-    # Static literal bindings (`bind: {port: {value: ...}}`, §11): the consuming
-    # atomic input Endpoint -> the literal value. Like `data_arcs`, this is additive
-    # metadata for the runner only (same INVARIANTS above -- the scheduler MUST NOT
-    # read it for planning, and its node paths match the plan's). The runner seeds
-    # these as the input values of the ports they bind, in place of a typed default.
-    data_literals: dict[Endpoint, object] = field(default_factory=dict)
-    # main output port name -> a static literal it returns. `returns` itself names only
-    # dataflow references, so this arises from one shape alone: a nested composite that
-    # returns an input the caller bound to a literal. Such an output has no producing
-    # activity and no boundary input either, so neither `exit_outputs` nor anything
-    # else can carry it. Runner-only, with the same INVARIANTS as `data_arcs`.
-    exit_literals: dict[str, object] = field(default_factory=dict)
-
-    # -- The same dataflow as `Source` trees, for the runner (D57) ------------------
-    #
-    # Everything the runner-facing fields above say, said one way: for every input
-    # port of every atomic activity, and for every final output, where its value comes
-    # from. Unlike those fields these can hold what expanding a `map` / `fold`
-    # produces -- an Array gathered from the invocations, one element of an Array --
-    # and they are what the runner is meant to move to; the fields above stay as they
-    # are until it has. Same INVARIANTS as `data_arcs`.
-    #
-    # consuming atomic input Endpoint -> its Source (Object and Pure Data alike; an
-    # input with no source at all is absent).
+    # consuming atomic input Endpoint -> its Source.
     input_sources: dict[Endpoint, Source] = field(default_factory=dict)
     # main output port -> its Source; every output has one (an Object-bearing
     # pass-through is `SourceRef((), input)`, or one element of it).
@@ -443,10 +381,8 @@ class Workflow:
     # Lengths the plan assumed but the runner has to check (see `LengthCheck`).
     length_checks: tuple[LengthCheck, ...] = ()
     # Nested composite invocation boundaries, keyed by the composite's node path ->
-    # its `CompositeIO` (port -> value-store key / literal). For the runner's composite
-    # contract checks only (D34); same INVARIANTS as `data_arcs` (the scheduler MUST
-    # NOT read this, and its node paths match the plan's). The top-level entry
-    # composite `()` is omitted -- the runner checks it via its whole-workflow
-    # boundary handles (D33); only nested composites need this. The runner uses only
-    # those with contracts.
+    # its `CompositeIO`. For the runner's composite contract checks only (D34), under
+    # the same INVARIANTS. The top-level entry composite `()` is omitted -- the runner
+    # checks it via its whole-workflow boundary handles (D33); only nested composites
+    # need this. The runner uses only those with contracts.
     composites: dict[NodePath, CompositeIO] = field(default_factory=dict)

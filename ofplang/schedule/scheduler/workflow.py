@@ -308,18 +308,13 @@ def _read_workflow(
     if entry_proc.get("kind") != "composite":
         # A degenerate single-atomic entry: one activity, no arcs. Its own ports are
         # the workflow's boundary connections. The Object-bearing ones are the ones
-        # the planner places; the Pure Data ones are recorded for the runner exactly
-        # as a composite entry's are (a boundary data arc per input, the activity's
-        # output for each output) -- leaving them out handed the runner a typed
-        # default for every Pure Data input and dropped every Pure Data output.
+        # the planner places; every one, Pure Data included, is a source for the
+        # runner, exactly as a composite entry's are.
         if entry in atomic:
             if not _Expander(procs, atomic, diags, domains)._plannable(entry):
                 return None, diags  # an Object-bearing Array port (reported there)
             sig = atomic[entry]
             path = (entry,)
-            entry_inputs = {p.name: Endpoint(path, p.name) for p in sig.inputs if p.object_bearing}
-            exit_outputs = {p.name: Endpoint(path, p.name) for p in sig.outputs}
-            data_inputs = [p.name for p in sig.inputs if not p.object_bearing]
             in_ports = {p.name: p.object_bearing for p in sig.inputs}
             out_ports = {p.name: p.object_bearing for p in sig.outputs}
             # As Source trees every port is said, Pure Data ones included: each input is
@@ -334,16 +329,13 @@ def _read_workflow(
             return (
                 Workflow(
                     (NodeInvocation(path, entry),), (), (), {entry: sig},
-                    entry_inputs, exit_outputs, in_ports, out_ports,
-                    data_arcs=tuple(
-                        Arc(Endpoint((), name), Endpoint(path, name)) for name in data_inputs
-                    ),
-                    data_entry_inputs={name: Endpoint(path, name) for name in data_inputs},
+                    entry_input_ports=in_ports, exit_output_ports=out_ports,
                     input_sources=input_sources, output_sources=output_sources,
                     # The planner's boundary: one arc per Object-bearing port, each
                     # one Object (an Array port was refused above).
                     entry_arcs=tuple(
-                        Arc(Endpoint((), name), consumer) for name, consumer in entry_inputs.items()
+                        Arc(Endpoint((), p.name), Endpoint(path, p.name))
+                        for p in sig.inputs if p.object_bearing
                     ),
                     exit_arcs=tuple(
                         Arc(Endpoint(path, p.name), Endpoint((), p.name))
@@ -376,11 +368,9 @@ def _read_workflow(
     return (
         Workflow(
             tuple(exp.activities), tuple(exp.arcs), tuple(precedence), exp.used,
-            exp.entry_inputs, exp.exit_outputs, in_ports, out_ports,
-            # Pure Data port-level dataflow for the runner (D26-0); the scheduler
+            entry_input_ports=in_ports, exit_output_ports=out_ports,
+            # Where every value comes from, for the runner (D26-0, D57); the scheduler
             # does not read these, so the plan is unaffected.
-            data_arcs=tuple(exp.data_arcs), data_entry_inputs=exp.data_entry_inputs,
-            data_literals=exp.data_literals, exit_literals=exp.exit_literals,
             input_sources=exp.input_sources, output_sources=exp.output_sources,
             # Nested composite invocation boundaries for the runner's contract checks
             # (D34); value-independent, so the plan is unaffected.
@@ -453,8 +443,8 @@ def _expand_body(entry_name, entry_proc, procs, atomic, in_ports, exit_object_be
 
     `in_ports` / `exit_object_bearing` are the entry's `{port: object_bearing}`
     tables: the first says which entry inputs are Arrays of Objects whose length the
-    `interface` gives, the second tells a Pure Data pass-through return (recorded in
-    `exit_outputs`) from an Object one (a through arc, D60)."""
+    `interface` gives, the second tells a Pure Data return from an Object-bearing one
+    (which the planner places: an exit arc, or a through arc, D60)."""
     exp = _Expander(procs, atomic, diags, domains, interface, in_ports)
     # The entry's own inputs are the workflow's boundary inputs: seed the entry
     # scope so `inputs.X` resolves to an `_EntryInput(X)` marker, which propagates
@@ -465,29 +455,24 @@ def _expand_body(entry_name, entry_proc, procs, atomic, in_ports, exit_object_be
     # The entry's `returns` are the workflow's boundary outputs: resolve each to the
     # atomic that produces it. Other sources reach here too:
     #  - an entry input returned verbatim (directly, or through nested composites)
-    #    resolves to an `_EntryInput` marker -- a pass-through. A Pure Data one is
-    #    recorded with the boundary node `()` as its producer, which is where the
-    #    runner seeds entry inputs, so the value it returns is the one that came in.
-    #    An Object-bearing one crosses the boundary twice and nothing in between: it
-    #    is a *through arc*, entry boundary -> exit boundary, one per Object (D60).
-    #    The planner moves it where the output is bound, or leaves it where it is.
+    #    resolves to an `_EntryInput` marker -- a pass-through. A Pure Data one reads
+    #    the boundary `()`, where the runner seeds entry inputs, so the value it
+    #    returns is the one that came in. An Object-bearing one crosses the boundary
+    #    twice and nothing in between: it is a *through arc*, entry boundary -> exit
+    #    boundary, one per Object (D60). The planner moves it where the output is
+    #    bound, or leaves it where it is.
     #  - a nested composite that returns a literal-bound input resolves to a
-    #    `_Literal`; it has no producer at all, so it is kept apart in `exit_literals`.
+    #    `_Literal`, a value with no producer at all.
     #  - a `map` / `fold` output is an Array gathered from the invocations
     #    (`_Gathered`): its Objects cross the boundary one element at a time, each on
-    #    an exit arc of its own, and the runner reads the whole from `output_sources`.
+    #    an exit arc of its own.
+    # Every one has a `Source` in `output_sources`, which is what the runner reads.
     siblings = _body_nodes(entry_proc)
     for out_name, source in _returns(entry_proc).items():
         value = exp._resolve(_parse_ref(source), (), entry_env, siblings, (entry_name,))
         # An undeclared port (invalid upstream) counts as Object-bearing, so that
         # nothing is recorded for it as Pure Data.
         object_bearing = exit_object_bearing.get(out_name, True)
-        if isinstance(value, _Producer) and not value.index:
-            exp.exit_outputs[out_name] = Endpoint(value.path, value.port)
-        elif isinstance(value, _EntryInput) and not value.index and not object_bearing:
-            exp.exit_outputs[out_name] = Endpoint((), value.name)
-        elif isinstance(value, _Literal):
-            exp.exit_literals[out_name] = value.value
         if object_bearing:
             # The planner's exit: one arc per Object, the element index on the
             # boundary end -- from the activity that produced it, or, for an Object
@@ -533,7 +518,8 @@ class _EntryInput:
     """A reference that resolves to one of the *workflow's* own entry inputs, i.e.
     a `main`-level input port with no in-body producer. Carried (instead of a
     `_Producer`) so the atomic that ultimately consumes it can be recorded as a
-    boundary connection (`Workflow.entry_inputs`); the name survives nesting because
+    boundary connection (`Workflow.entry_arcs`, and its `input_sources`); the name
+    survives nesting because
     the marker propagates through composite input environments. `index` selects one
     element of an Array entry input, as `_Producer.index` does."""
 
@@ -545,10 +531,10 @@ class _EntryInput:
 class _Literal:
     """A binding to a static literal value (`bind: {port: {value: ...}}`, §11), which
     has no in-body producer. Carried like `_EntryInput` so the atomic that ultimately
-    consumes it can be recorded (`Workflow.data_literals`); the value survives nesting
-    because the marker propagates through composite input environments. Literals are
-    Pure Data and, like `data_arcs`, are recorded for the sibling `ofplang-run` runner
-    alone -- the scheduler never reads them."""
+    consumes it can be given it as its source (`Workflow.input_sources`); the value
+    survives nesting because the marker propagates through composite input
+    environments. Recorded for the sibling `ofplang-run` runner alone -- the scheduler
+    never reads it."""
 
     value: object
 
@@ -622,38 +608,19 @@ class _Expander:
         self.arcs: list[Arc] = []
         self.precedence: list[tuple[NodePath, NodePath]] = []
         self.used: dict[str, AtomicProcess] = {}
-        # Pure Data (`bind`) port-level dataflow, recorded for the sibling
-        # `ofplang-run` runner only (D26-0; see `model.Workflow.data_arcs`). The
-        # scheduler itself never reads these -- they are the Pure Data mirror of
-        # `arcs` / `entry_inputs`, capturing the output-port -> input-port mapping
-        # that a node-level `precedence` edge would otherwise throw away, so the
-        # runner can route Pure Data *values* along it. Populating them must not
-        # change the plan the solver produces.
-        self.data_arcs: list[Arc] = []
-        self.data_entry_inputs: dict[str, Endpoint] = {}
-        # Static literal bindings (`bind: {port: {value: ...}}`, §11) keyed by the
-        # consuming atomic input endpoint. Recorded for the runner's value layer only
-        # (like data_arcs); the scheduler never reads them.
-        self.data_literals: dict[Endpoint, object] = {}
-        # Boundary connections (SPEC §6.8): main input port -> consuming atomic
-        # endpoint, and main output port -> producing atomic endpoint (from the
-        # entry's `returns`), for a whole port. The planner reads `entry_arcs` /
-        # `exit_arcs` instead, which also hold one arc per element of an Array.
-        self.entry_inputs: dict[str, Endpoint] = {}
-        self.exit_outputs: dict[str, Endpoint] = {}
+        # The Object-bearing boundary (SPEC §6.8), one arc per Object crossing it.
         self.entry_arcs: list[Arc] = []
         self.exit_arcs: list[Arc] = []
         # An Object returned exactly as it came in: entry boundary -> exit boundary.
         self.through_arcs: list[Arc] = []
-        # Main output port -> a static literal it returns (see `Workflow.exit_literals`).
-        self.exit_literals: dict[str, object] = {}
-        # The same dataflow as `Source` trees, for the runner (see `Workflow`):
-        # consuming atomic input -> its source, and main output -> its source.
+        # Where every value comes from, for the runner only (see `Workflow`):
+        # consuming atomic input -> its source, and main output -> its source. Never
+        # read for planning, and populating it must not change the plan.
         self.input_sources: dict[Endpoint, Source] = {}
         self.output_sources: dict[str, Source] = {}
         # Nested composite invocation boundaries (D34), keyed by the composite's node
         # path -> CompositeIO. Recorded for the runner's composite contract checks
-        # only; the scheduler never reads them (like data_arcs). The entry composite
+        # only; the scheduler never reads them. The entry composite
         # `()` is omitted (the runner checks it via its whole-workflow handles, D33).
         self.composites: dict[NodePath, CompositeIO] = {}
         # `map` / `fold` node path -> its invocation count, and the lengths the plan
@@ -750,7 +717,7 @@ class _Expander:
         input; the section is consulted only for a port the process does not declare.
 
         An Object-bearing port gets an Object arc (a transport) and a precedence edge,
-        a Pure Data port a precedence edge and a data arc."""
+        a Pure Data port a precedence edge; every port gets its `Source`."""
         if not self._plannable(pname):
             return
         self.activities.append(NodeInvocation(path, pname))
@@ -771,42 +738,22 @@ class _Expander:
             if value is None:
                 continue  # an unconnected workflow input
             dst = Endpoint(path, port)
-            # The runner's one record of where this input's value comes from, whatever
-            # kind of source it is (see `model.Source`). The per-kind records below
-            # are kept alongside it.
+            # The runner's record of where this input's value comes from, whatever kind
+            # of source it is (see `model.Source`).
             source = _source_of(value)
             if source is not None:
                 self.input_sources[dst] = source
             if isinstance(value, _Literal):
-                # A static literal: no producer, no precedence, no arc. A Pure Data one
-                # is recorded port-level for the runner's value layer only (like
-                # data_arcs); the scheduler never reads it. A literal on an
-                # Object-bearing port names no Object to move, so there is nothing to
-                # record for it.
-                if not object_bearing:
-                    self.data_literals[dst] = value.value
+                # A static literal: no producer, no precedence, no arc -- its source is
+                # all there is. (One on an Object-bearing port is refused by the guards.)
                 continue
             if isinstance(value, _EntryInput):
                 # A workflow entry input -- or one element of it: no in-body producer,
-                # so no precedence. An Object-bearing port records the boundary
-                # connection the planner places (an element of an Array on an arc of
-                # its own); a Pure Data one carries no spot but its port-level boundary
-                # is recorded for the runner (D26-0) so it can seed the value.
-                boundary = Endpoint((), value.name, value.index)
+                # so no precedence. An Object-bearing port is a boundary connection the
+                # planner places (an element of an Array on an arc of its own); a Pure
+                # Data one occupies no spot, and its source is the boundary `()`.
                 if object_bearing:
-                    self.entry_arcs.append(Arc(boundary, dst))
-                    if not value.index:
-                        self.entry_inputs[value.name] = dst
-                else:
-                    # Unlike an Object, one Pure Data entry input may feed any number
-                    # of atomics, so each consumer gets a data arc of its own whose
-                    # source is the boundary node `()` -- the same convention as the
-                    # plan's boundary arcs. `data_entry_inputs` maps a port to ONE
-                    # consumer and so can hold only the last of them; it is kept for
-                    # callers that read it, but `data_arcs` is complete.
-                    self.data_arcs.append(Arc(boundary, dst))
-                    if not value.index:
-                        self.data_entry_inputs[value.name] = dst
+                    self.entry_arcs.append(Arc(Endpoint((), value.name, value.index), dst))
                 continue
             if isinstance(value, _Gathered):
                 # An Array assembled from several invocations, read whole (a Pure Data
@@ -818,14 +765,9 @@ class _Expander:
                         self.precedence.append((leaf.path, path))
                 continue
             self.precedence.append((value.path, path))
-            arc = Arc(Endpoint(value.path, value.port, value.index), dst)
             if object_bearing:
-                self.arcs.append(arc)
-            else:
-                # Pure Data: a precedence edge for the solver (added above), plus the
-                # port-level arc for the runner's value routing (D26-0). The scheduler
-                # does not read `data_arcs`.
-                self.data_arcs.append(arc)
+                self.arcs.append(Arc(Endpoint(value.path, value.port, value.index), dst))
+            # A Pure Data one is the precedence edge above, and its source.
 
     def _plannable(self, pname: str) -> bool:
         """Whether an atomic process can be planned in this stage (design.md D57): not
@@ -1109,22 +1051,14 @@ class _Expander:
         self, pname: str, path: NodePath, child_env: dict, stack: tuple[str, ...]
     ) -> None:
         """Record a composite invocation's value-layer boundary (D34): each input port
-        -> its source (from `child_env`), and each output port -> its source (its
-        `returns` resolved to the producing atomic in the composite's own scope). A
-        source is a producing atomic / boundary `Endpoint` or a static literal value."""
+        -> its `Source` (from `child_env`), and each output port -> its `Source` (its
+        `returns` resolved in the composite's own scope)."""
         cproc = self.procs[pname]
-        inputs: dict[str, Endpoint] = {}
-        input_literals: dict[str, object] = {}
-        for port, producer in child_env.items():
-            self._place_source(producer, port, inputs, input_literals)
-        outputs: dict[str, Endpoint] = {}
-        output_literals: dict[str, object] = {}
         output_sources: dict[str, Source] = {}
         for out_port, source in _returns(cproc).items():
             producer = self._resolve(
                 _parse_ref(source), path, child_env, _body_nodes(cproc), stack + (pname,)
             )
-            self._place_source(producer, out_port, outputs, output_literals)
             if (resolved := _source_of(producer)) is not None:
                 output_sources[out_port] = resolved
         input_sources = {
@@ -1134,28 +1068,9 @@ class _Expander:
         }
         self.composites[path] = CompositeIO(
             process=pname,
-            inputs=inputs,
-            input_literals=input_literals,
-            outputs=outputs,
-            output_literals=output_literals,
             input_sources=input_sources,
             output_sources=output_sources,
         )
-
-    @staticmethod
-    def _place_source(producer, port: str, endpoints: dict, literals: dict) -> None:
-        """Classify a resolved producer into a value source: a producing atomic
-        `Endpoint`, the workflow boundary `Endpoint((), name)` for an entry input, or a
-        static literal value. An unconnected source (None) records nothing -- no value
-        flows into that port, so a contract referencing it never becomes ready. An
-        element of an Array, or an Array gathered from several invocations, is not a
-        value-store key at all; only `CompositeIO.*_sources` can say it."""
-        if isinstance(producer, _Producer) and not producer.index:
-            endpoints[port] = Endpoint(producer.path, producer.port)
-        elif isinstance(producer, _EntryInput) and not producer.index:
-            endpoints[port] = Endpoint((), producer.name)  # boundary value-store key
-        elif isinstance(producer, _Literal):
-            literals[port] = producer.value
 
     def _resolve(
         self, ref, prefix: NodePath, inputs_env: dict, siblings: dict, stack: tuple[str, ...]

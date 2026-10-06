@@ -7,8 +7,8 @@ Valid documents were then planned wrongly or handed to the runner incomplete,
 without a word. These tests pin the type-based reading and the invariant that
 catches the whole class: spec v0 §11 binds every input port exactly once and
 defines no default, so after flattening every input of every atomic activity has a
-source, and so does every final output (an Object-bearing pass-through excepted,
-which is out of scope).
+source, and so does every final output -- an Object returned untouched included, since
+D60 plans it.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from pathlib import Path
 import yaml
 
 from ofplang.schedule import schedule
-from ofplang.schedule.scheduler.model import Arc, Endpoint, Workflow
+from ofplang.schedule.scheduler.model import Arc, Endpoint, SourceLiteral, SourceRef, Workflow
 from ofplang.schedule.scheduler.workflow import parse_workflow
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
@@ -126,15 +126,15 @@ def _parse(tmp_path, text, name="wf.yaml") -> Workflow:
 def test_pure_data_under_state_is_routed_as_pure_data(tmp_path):
     wf = _parse(tmp_path, _STATE_WIRED)
     # The entry input is a Pure Data boundary input, not an Object one.
-    assert "limit" not in wf.entry_inputs
-    assert Arc(Endpoint((), "limit"), Endpoint(("Heat",), "limit")) in wf.data_arcs
-    # The Heat.t -> Cool.t connection is a data arc, not an Object arc (which would
-    # have become a transport), and still orders the two.
-    assert Arc(Endpoint(("Heat",), "t"), Endpoint(("Cool",), "t")) in wf.data_arcs
+    assert all(arc.src.port != "limit" for arc in wf.entry_arcs)
+    assert wf.input_sources[Endpoint(("Heat",), "limit")] == SourceRef((), "limit")
+    # The Heat.t -> Cool.t connection is a source, not an Object arc (which would have
+    # become a transport), and still orders the two.
+    assert wf.input_sources[Endpoint(("Cool",), "t")] == SourceRef(("Heat",), "t")
     assert wf.arcs == (Arc(Endpoint(("Heat",), "plate"), Endpoint(("Cool",), "plate")),)
     assert (("Heat",), ("Cool",)) in wf.precedence
     # The literal is kept, where reading by section used to drop it.
-    assert wf.data_literals == {Endpoint(("Heat",), "k"): 2.5}
+    assert wf.input_sources[Endpoint(("Heat",), "k")] == SourceLiteral(2.5)
 
 
 def test_pure_data_under_state_needs_no_spot(tmp_path):
@@ -158,39 +158,22 @@ def test_pure_data_under_state_needs_no_spot(tmp_path):
 def test_a_single_atomic_entry_records_its_pure_data_ports(tmp_path):
     wf = _parse(tmp_path, _SINGLE_ATOMIC)
     path = ("main",)
-    assert wf.entry_inputs == {"plate": Endpoint(path, "plate")}
-    assert wf.data_arcs == (Arc(Endpoint((), "t"), Endpoint(path, "t")),)
-    assert wf.data_entry_inputs == {"t": Endpoint(path, "t")}
-    assert wf.exit_outputs == {"plate": Endpoint(path, "plate"), "r": Endpoint(path, "r")}
+    assert wf.entry_arcs == (Arc(Endpoint((), "plate"), Endpoint(path, "plate")),)
+    assert wf.input_sources == {
+        Endpoint(path, "plate"): SourceRef((), "plate"),
+        Endpoint(path, "t"): SourceRef((), "t"),
+    }
+    assert wf.output_sources == {
+        "plate": SourceRef(path, "plate"), "r": SourceRef(path, "r")
+    }
 
 
 # --- the invariant ----------------------------------------------------------------------
 
 
 def _uncovered(wf: Workflow) -> list[str]:
-    """Every input port of every activity, and every final output, that the
-    runner-facing fields give no source for (an Object pass-through excepted)."""
-    fed = {arc.dst for arc in wf.arcs + wf.data_arcs}
-    fed.update(wf.entry_inputs.values())
-    fed.update(wf.data_entry_inputs.values())
-    fed.update(wf.data_literals)
-    missing = [
-        f"{'/'.join(map(str, a.path))}.{p.name}"
-        for a in wf.activities
-        for p in wf.processes[a.process].inputs
-        if Endpoint(a.path, p.name) not in fed
-    ]
-    missing += [
-        f"output {name}"
-        for name, object_bearing in wf.exit_output_ports.items()
-        if name not in wf.exit_outputs and name not in wf.exit_literals and not object_bearing
-    ]
-    return missing
-
-
-def _uncovered_sources(wf: Workflow) -> list[str]:
-    """The same invariant on the `Source` trees, which -- unlike the per-kind fields --
-    can say where a gathered Array or one element of an Array comes from."""
+    """Every input port of every activity, and every final output, that the `Source`
+    trees give no source for."""
     missing = [
         f"{'/'.join(map(str, a.path))}.{p.name}"
         for a in wf.activities
@@ -199,8 +182,8 @@ def _uncovered_sources(wf: Workflow) -> list[str]:
     ]
     missing += [
         f"output {name}"
-        for name, object_bearing in wf.exit_output_ports.items()
-        if name not in wf.output_sources and not object_bearing
+        for name in wf.exit_output_ports
+        if name not in wf.output_sources
     ]
     return missing
 
@@ -224,8 +207,4 @@ def test_every_port_has_a_source(tmp_path):
     workflows["single_atomic"] = _parse(tmp_path, _SINGLE_ATOMIC, "single_atomic.yaml")
     for name, wf in workflows.items():
         assert wf is not None, name
-        # The Source trees are the complete record for every workflow. The per-kind
-        # fields are too, wherever no map / fold gathered an Array they cannot hold.
-        assert _uncovered_sources(wf) == [], name
-        if not wf.iterations:
-            assert _uncovered(wf) == [], name
+        assert _uncovered(wf) == [], name

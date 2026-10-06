@@ -1,11 +1,10 @@
-"""The runner-facing `Source` trees (D57) say what the per-kind fields say.
+"""The runner-facing `Source` trees (D57): where every value comes from.
 
-`input_sources` / `output_sources` / `CompositeIO.*_sources` are meant to replace
-`arcs` + `data_arcs` + `entry_inputs` + `data_literals` (and their exit / composite
-counterparts) for the runner. Until a `map` / `fold` is expanded they hold nothing
-those fields cannot, so for every workflow without one the two must agree exactly,
-in both directions: that is what lets the runner move over without a change in
-what it is told.
+`input_sources` / `output_sources` / `CompositeIO.*_sources` are the runner's whole
+account of the dataflow. Until 0.13.1 the same was also given per kind (`data_arcs`,
+`entry_inputs`, `data_literals` and their exit / composite counterparts), and tests
+here held the two to agree while the runner moved over. It has, and the per-kind
+fields are gone; what is pinned now is what each routing shape reads as.
 """
 
 from __future__ import annotations
@@ -16,7 +15,6 @@ from ofplang.schedule.scheduler.model import (
     Endpoint,
     SourceLiteral,
     SourceRef,
-    Workflow,
 )
 from ofplang.schedule.scheduler.workflow import parse_workflow
 
@@ -105,44 +103,6 @@ def _workflows(tmp_path):
         yield path.name, wf
 
 
-def _input_sources_from_old_fields(wf: Workflow) -> dict:
-    """What the per-kind fields say about each atomic input, as Sources."""
-    said: dict = {}
-    for arc in wf.arcs + wf.data_arcs:
-        said[arc.dst] = SourceRef(arc.src.node, arc.src.port)
-    for name, consumer in {**wf.entry_inputs, **wf.data_entry_inputs}.items():
-        said[consumer] = SourceRef((), name)
-    for consumer, value in wf.data_literals.items():
-        said[consumer] = SourceLiteral(value)
-    return said
-
-
-def test_input_sources_say_what_the_per_kind_fields_say(tmp_path):
-    for name, wf in _workflows(tmp_path):
-        assert wf.input_sources == _input_sources_from_old_fields(wf), name
-
-
-def test_output_sources_say_what_exit_outputs_and_exit_literals_say(tmp_path):
-    for name, wf in _workflows(tmp_path):
-        said = {port: SourceRef(ep.node, ep.port) for port, ep in wf.exit_outputs.items()}
-        said.update({port: SourceLiteral(v) for port, v in wf.exit_literals.items()})
-        assert wf.output_sources == said, name
-
-
-def test_composite_sources_say_what_its_four_maps_say(tmp_path):
-    seen = 0
-    for name, wf in _workflows(tmp_path):
-        for path, io in wf.composites.items():
-            seen += 1
-            inputs = {p: SourceRef(ep.node, ep.port) for p, ep in io.inputs.items()}
-            inputs.update({p: SourceLiteral(v) for p, v in io.input_literals.items()})
-            outputs = {p: SourceRef(ep.node, ep.port) for p, ep in io.outputs.items()}
-            outputs.update({p: SourceLiteral(v) for p, v in io.output_literals.items()})
-            assert io.input_sources == inputs, (name, path)
-            assert io.output_sources == outputs, (name, path)
-    assert seen > 0  # the fixture has composites, so this compared something
-
-
 def test_the_every_shape_fixture_reads_as_intended(tmp_path):
     # Spelled out once, so the equivalence above is known to cover each shape rather
     # than to agree on an empty map.
@@ -196,4 +156,3 @@ def test_a_single_atomic_entry_names_every_port(tmp_path):
         "plate": SourceRef(("main",), "plate"),
         "r": SourceRef(("main",), "r"),
     }
-    assert wf.input_sources == _input_sources_from_old_fields(wf)
