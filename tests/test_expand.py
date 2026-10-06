@@ -672,7 +672,11 @@ def test_a_fold_section_that_drops_an_object_is_refused():
         )
         assert text != FOLD_DISPENSE
         _, errs = _parse(text, interface)
-        assert errs == ["wrong_type"], outputs
+        # Refused for the section; and where `plate` is not exposed, the body's return
+        # of `Run.plate` names nothing, which the reader's guards say too (D60 Q2).
+        assert "wrong_type" in errs and set(errs) <= {"wrong_type", "unknown_reference"}, (
+            outputs, errs
+        )
 
 
 def test_an_array_passed_straight_through_is_one_through_arc_per_element():

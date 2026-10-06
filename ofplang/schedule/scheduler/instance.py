@@ -838,6 +838,7 @@ def _add_boundary_outputs(
         it. An unbound output can always be served -- staying put is among its
         candidates and a same-spot move is a no-op (§5.4) -- so the reachability error
         below is reached only by a binding naming somewhere unreachable."""
+        si: int | None
         if producer.node == ():
             # Returned untouched: it leaves from the input node. Absent when its input
             # binding was missing or refused, which has been diagnosed already.

@@ -1238,6 +1238,19 @@ interface:
                                             # omitted, the scheduler picks the spot
 ```
 
+**An Object returned untouched.** A workflow may return an entry Object exactly as it
+came in -- directly (`returns: {b: {from: inputs.b}}`), through a composite, as an
+element of an Array, or as the carry of a `fold` that ran no invocation. It crosses the
+boundary in and straight back out with no activity in between: one boundary transport
+whose `arc` has the empty path at **both** ends (`{ from: { node: [], port: b }, to:
+{ node: [], port: b } }`, element indices where it is one element of an Array). Its
+input binding is required like any other's. Bound as an output to another spot, it is
+moved there; bound to the spot it came in on, the transport is a same-spot no-op.
+**Unbound, it stays where it came in**: nothing moves it, so the output node's one
+candidate is that spot, and -- the input binding having said where it is -- no
+`interface_output_unbound` is reported for it. Until 0.13.1 such a return was out of
+scope: recorded nowhere, and a binding of it refused.
+
 ### 6.9 Replenishment activity
 
 - `kind: replenishment`; plus `status` / `start` / `end` (§6.2).
@@ -1849,10 +1862,25 @@ a property of the document rather than an interpretation of the payload.
 **Execution-layer validation** (§9.3) covers everything that needs the workflow or
 depends on solvability. The execution layer reads the workflow itself with
 `ofplang.schedule`'s own minimal parser — extracting only what it needs (process
-kinds, type domains, per-port Object-bearing-ness) — without depending on
-`ofplang.validate`. Full v0 validation of the workflow is out of scope here and is
-expected to be done separately (by `ofplang.validate`); the scheduler assumes it is
-given a valid v0 workflow.
+kinds, type domains, per-port Object-bearing-ness).
+
+**Who checks what.** Three kinds of check, three owners, across the toolchain:
+
+1. **Is the workflow valid v0** (structure, types, references, linearity, phase) —
+   `ofplang.validate` alone. The CLIs run it once at their front door; the library
+   API (`schedule`, `schedule_jobs`) does not, and `--no-validate` skips it.
+2. **Can this scheduler plan it** (the supported subset §2, lengths known before the
+   run, `interface` bindings, solvability) — this package, §9.3.
+3. **Are the values right at run time** (a value's type, contracts, an `each` length
+   only a value shows) — the runner (`ofplang-run`).
+
+The scheduler reads the workflow **assuming it is valid v0, without assuming it was
+given valid v0**. It does not re-validate. But where its own reading would otherwise
+drop something without a word -- a binding it cannot resolve, an input nothing binds,
+an output never returned -- it refuses instead, and answers with **the code
+`ofplang.validate` gives the same document** (§10.4), so the two never describe one
+mistake in two ways. It checks those points and no others: completeness is
+`ofplang.validate`'s.
 
 ### 9.1 Schema validator — the environment definition (shape only)
 
@@ -2240,8 +2268,16 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | code | meaning |
 | --- | --- |
 | `unsupported_feature` | a workflow feature outside the scheduler's v0 subset (a `do_while` or `branch` node, an atomic process with an Object-bearing Array port, §2) |
-| `array_length_unknown` | a `map` / `fold` none of whose `each` sources has a length known before the run (§2) |
+| `array_length_unknown` | a `map` / `fold` none of whose `each` sources has a length known before the run (§2). One with no `each` source at all is `missing_each_source` (below) |
 | `each_length_mismatch` | a `map` / `fold` whose `each` sources' known lengths differ (they are zipped, §2) |
+| `data_indegree`, `object_input_no_source` | an input port of a node's target that nothing binds (Pure Data / Object-bearing): the reader would have no value to read (§9) |
+| `unknown_reference`, `malformed_reference` | a `from` naming nothing in scope, or not a reference at all (§9) |
+| `binding_source_arity` | a binding with neither or both of `from` / `value` (§9) |
+| `binding_port_not_found` | a binding entry naming no input port of the node's target: the reader would skip it (§9) |
+| `section_not_valid_for_kind` | a binding section the node's kind does not take, which the reader would not read (§9) |
+| `literal_on_object_port` | a literal bound to an Object-bearing port: it names no Object to move (§9) |
+| `missing_each_source` | a `map` / `fold` with no `each` source (§9) |
+| `output_not_returned`, `return_port_not_found` | a composite's `returns` and its output ports do not correspond one to one (v0 12.3, revision 0.5): an output with no entry, an entry naming no output (§9) |
 | `scheduling_policies_ignored` | a composite carries a `scheduling` section; the policies are best-effort preferences this scheduler does not implement (§2), so the section is dropped when the composite is flattened (*warning*) |
 | `no_entry_process` | the workflow has no resolvable entry process |
 | `process_not_defined` | a node invokes, or an arc references, a process/node not defined in the workflow |
@@ -2252,13 +2288,13 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `pure_data_port_mapped` | a mode maps a Pure Data (non-Object-bearing) port to a spot |
 | `mode_ports_incomplete` | a mode does not map every Object-bearing port of its process |
 | `arc_unreachable` | no endpoint-mode pair and route (transporter or transporter-less, §5.4) can serve an Object-bearing arc (interior or boundary, §6.8) |
-| `interface_unknown_port` | an `interface` binding names a port that is not an Object-bearing boundary port on that side (§6.8) |
+| `interface_unknown_port` | an `interface` binding names a port that is not an Object-bearing boundary port on that side, or one no Object crosses the boundary through (§6.8). An Object returned untouched does cross it (§6.8); until 0.13.1 its binding was refused here |
 | `interface_pure_data_port` | an `interface` binding names a Pure Data port (occupies no spot) |
 | `interface_duplicate_spot` | two bindings of one `interface`, on the same side (two inputs, or two outputs), bind the same spot. Across *jobs* the same claim is `interface_simultaneous_input_spot` / `interface_shared_output_spot` (below) |
 | `interface_input_missing` | an Object-bearing entry input has no `interface` binding (§6.8) |
 | `interface_shape_mismatch` | a binding's shape is not its port's: a list for an Object port, a spot for an Array port, or lists nested to a different depth than the port's Arrays (§6.8) |
 | `interface_length_mismatch` | an Array port's binding names elements other than the ones that cross the boundary: one nothing consumes or produces, or one moved that no spot was given for (§6.8) |
-| `interface_output_unbound` | **warning**: an Object-bearing final output has no `interface.outputs` binding (§6.8), so the schedule decides where it comes to rest. Binding every final output is the normal way to write the section |
+| `interface_output_unbound` | **warning**: an Object-bearing final output has no `interface.outputs` binding (§6.8), so the schedule decides where it comes to rest. Binding every final output is the normal way to write the section. Not reported for an Object returned untouched, which stays where its input binding put it (§6.8) |
 | `job_workflow_mismatch` | a job's workflow is not the one its roster entry's `fingerprint` records (§6.11) |
 | `job_bound_relaxed` | **warning**: a job could no longer finish by the completion it was promised, so the promise was re-derived (§6.11) |
 | `job_roster_mismatch` | the workflows given to the scheduler are not the ones the document's `jobs` roster names (§6.11) |

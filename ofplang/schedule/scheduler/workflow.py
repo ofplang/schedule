@@ -29,6 +29,7 @@ import yaml
 
 from ofplang.schedule.core.diagnostics import Diagnostics
 from ofplang.schedule.core.identifiers import format_node_path
+from ofplang.schedule.scheduler.guards import check_body
 from ofplang.schedule.scheduler.model import (
     Arc,
     AtomicProcess,
@@ -469,8 +470,8 @@ def _expand_body(entry_name, entry_proc, procs, atomic, in_ports, exit_object_be
 
     `in_ports` / `exit_object_bearing` are the entry's `{port: object_bearing}`
     tables: the first says which entry inputs are Arrays of Objects whose length the
-    `interface` gives, the second tells a Pure Data pass-through return (recorded)
-    from an Object one (out of scope)."""
+    `interface` gives, the second tells a Pure Data pass-through return (recorded in
+    `exit_outputs`) from an Object one (a through arc, D60)."""
     exp = _Expander(procs, atomic, diags, domains, interface, in_ports)
     # The entry's own inputs are the workflow's boundary inputs: seed the entry
     # scope so `inputs.X` resolves to an `_EntryInput(X)` marker, which propagates
@@ -680,6 +681,8 @@ class _Expander:
         self.structured: dict[NodePath, dict] = {}
         # Atomic process -> whether it can be planned (see `_plannable`), decided once.
         self.plannable: dict[str, bool] = {}
+        # Composites whose body `guards` has checked: once each, however often invoked.
+        self.guarded: set[str] = set()
 
     def expand(
         self, comp: dict, prefix: NodePath, inputs_env: dict, stack: tuple[str, ...]
@@ -688,6 +691,16 @@ class _Expander:
         `prefix`. `inputs_env` maps this composite's input ports to their producer
         (resolved in the enclosing scope); `stack` is the chain of composite process
         names currently open, used to catch recursive definitions."""
+        # What this body binds and returns, checked once per composite before any of it
+        # is read (`guards`): the reading below drops what it cannot resolve, and a
+        # document that would have it drop something is refused instead (D60 Q2).
+        name = stack[-1]
+        if name not in self.guarded:
+            self.guarded.add(name)
+            check_body(
+                name, comp, self.procs,
+                lambda type_expr: _object_bearing(type_expr, self.domains), self.diags,
+            )
         siblings = _body_nodes(comp)
         for node in siblings.values():
             self._expand_node(node, prefix, inputs_env, siblings, stack)
@@ -1034,11 +1047,7 @@ class _Expander:
             # length is that refusal's consequence, not a second mistake to report.
             return None
         if not each:
-            self.diags.error(
-                errors.ARRAY_LENGTH_UNKNOWN,
-                f"{where} has no each source, so nothing says how many invocations it makes",
-            )
-            return None
+            return None  # no each source at all: `guards` reported it (missing_each_source)
         known: dict[str, int] = {}
         for port, value in each.items():
             length = self._length(value)
