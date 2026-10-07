@@ -185,6 +185,36 @@ and nothing else: plate 0 is read on `reader_1` from 13 to 33, while plates 1 an
 still being dispensed (16–21, 26–31). Nothing in the workflow says to wait for the
 whole fold before reading, so the plan does not.
 
+## `labels` — a map over a list of values, as long as `expansion` says
+
+- `labels.workflow.yaml` — `main` takes `labels: Array<String>` and makes one filled
+  cup per label (spec §17's `cup_create_from_label`): a **`map`** (`Make`) over the
+  labels whose target creates a cup on the labeller and fills it.
+- `labels.env.yaml` — one `labeller` with one output spot, one `filler`, a three-slot
+  `rack` for the filled cups, one arm.
+- `labels.document.yaml` — **`expansion`** (SPEC §6.13) states that `labels` has three
+  elements, and `interface` puts the three cups on `[rack.a, rack.b, rack.c]`.
+
+The labels are values, and the scheduler never reads values, so nothing in the
+workflow or on any spot says how many cups there are. `expansion` is where that one
+fact is said: not the labels, only the length the map's expansion needs. A run writes
+it from the list it was given (`ofplang-run` counts every Pure Data Array entry input);
+written by hand, as here, the run still holds the list to it. Without it the workflow
+is refused (`array_length_unknown`) rather than planned at a guessed length.
+
+```sh
+ofp-schedule schedule labels.workflow.yaml --env labels.env.yaml \
+    --document labels.document.yaml
+```
+
+- `outputs/labels.plan.yaml` (makespan 34), with `outputs/labels.device.svg` and
+  `outputs/labels.lane.svg`. The plan echoes `expansion`, so a replan expands the
+  same way.
+
+A new cup cannot be made until the last one has left the labeller's one spot, so the
+cups are made one after another — and each is filled while the next is being made
+(cup 1 is made 6–10 while cup 0 is filled 6–12).
+
 ## `stopped_job` — one job stops, and what it left behind is still there
 
 The example for a failure that is not the end of the world (SPEC §6.2) and for the

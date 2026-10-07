@@ -1,0 +1,73 @@
+# A map over a Pure Data Array: one cup made and filled per label (spec §17's example).
+#
+# `labels` is a list of strings, so nothing on any spot says how many there are: the
+# length is a value, and the scheduler never sees values. The document's `expansion`
+# states it -- written by the runner, which counts the list it was given -- and the
+# map is expanded into that many invocations (`Make, 0`, `Make, 1`, ...) before
+# planning. Each invocation creates a cup on the labeller and fills it.
+#
+#   ofp-schedule schedule labels.workflow.yaml --env labels.env.yaml \
+#       --document labels.document.yaml
+spec_version: "0.4"
+
+types:
+  Cup:
+    domain: object
+
+processes:
+
+  cup_create_from_label:                        # a new cup, labelled
+    kind: atomic
+    inputs:
+      label: { type: String, phase: run }
+    outputs:
+      cup: { type: Cup, phase: data }
+    objects:
+      create: [outputs.cup]
+
+  fill:                                         # one cup, at the filler
+    kind: atomic
+    inputs:
+      cup: { type: Cup, phase: data }
+    outputs:
+      cup: { type: Cup, phase: data }
+    objects:
+      map:
+        outputs.cup: inputs.cup
+
+  make_cup:                                     # one label -> one filled cup
+    kind: composite
+    inputs:
+      label: { type: String, phase: run }
+    outputs:
+      cup: { type: Cup, phase: data }
+    body:
+      nodes:
+        - id: create
+          process: cup_create_from_label
+          bind:
+            label: { from: inputs.label }
+        - id: fill
+          process: fill
+          state:
+            cup: { from: create.cup }
+      returns:
+        cup: { from: fill.cup }
+
+  main:
+    kind: composite
+    inputs:
+      labels: { type: "Array<String>", phase: run }
+    outputs:
+      cups: { type: "Array<Cup>", phase: data }
+    body:
+      nodes:
+        - id: Make
+          kind: map
+          process: make_cup
+          each:
+            label: { from: inputs.labels }
+      returns:
+        cups: { from: Make.cup }
+
+entry: main

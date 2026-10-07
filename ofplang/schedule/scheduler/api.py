@@ -715,6 +715,7 @@ def _job_specs(jobs, workflows, roster: dict[str, dict] | None, now: int) -> lis
                 bound=bound if isinstance(bound, int) else None,
                 fingerprint=fingerprint(workflow),
                 interface=copy.deepcopy(entry.get("interface")),
+                expansion=copy.deepcopy(entry.get("expansion")),
             )
         )
     return specs
@@ -744,20 +745,21 @@ def _check_fingerprints(specs, roster: dict[str, dict]) -> list[Diagnostic]:
     return out
 
 
-def _interfaces_for_parsing(document, root) -> tuple[dict | None, dict[str, dict]]:
-    """The `interface` each workflow is read with: the document's own (a single
-    workflow) and each roster entry's by job id (a joint plan, §6.11).
+def _section_for_parsing(document, root, key: str) -> tuple[dict | None, dict[str, dict]]:
+    """The `interface` or `expansion` each workflow is read with: the document's own (a
+    single workflow) and each roster entry's by job id (a joint plan, §6.11).
 
     Read ahead of the document's validation, for one purpose only -- the lengths an
-    expansion takes from an Array binding -- so it is read leniently: anything not
-    shaped as a mapping is no interface here, and is the validation's to report."""
+    expansion takes from an Array binding (`interface`) or a stated length
+    (`expansion`) -- so it is read leniently: anything not shaped as a mapping is no
+    section here, and is the validation's to report."""
     if isinstance(document, dict):
         plain = document
     elif isinstance(root, YMap):
-        plain = {key: yamlnode.to_plain(root.get(key)) for key in ("interface", "jobs")}
+        plain = {name: yamlnode.to_plain(root.get(name)) for name in (key, "jobs")}
     else:
         return None, {}
-    top = plain.get("interface")
+    top = plain.get(key)
     per_job: dict[str, dict] = {}
     roster = plain.get("jobs")
     if isinstance(roster, list):
@@ -765,9 +767,9 @@ def _interfaces_for_parsing(document, root) -> tuple[dict | None, dict[str, dict
             if (
                 isinstance(entry, dict)
                 and isinstance(entry.get("id"), str)
-                and isinstance(entry.get("interface"), dict)
+                and isinstance(entry.get(key), dict)
             ):
-                per_job[entry["id"]] = entry["interface"]
+                per_job[entry["id"]] = entry[key]
     return (top if isinstance(top, dict) else None), per_job
 
 
@@ -1401,10 +1403,12 @@ def _run(
     # The document is loaded once, here, though it is validated only after the
     # workflows are read (below): a workflow that traverses an Array of Objects at its
     # boundary is expanded into as many invocations as its `interface` binding lists
-    # spots (design.md D57), so each workflow is read with its own job's binding --
-    # the roster entry's in a joint plan, the document's for a single workflow.
+    # spots (design.md D57), and one over a Pure Data Array into as many as `expansion`
+    # states (D62), so each workflow is read with its own job's sections -- the roster
+    # entry's in a joint plan, the document's for a single workflow.
     root = yamlnode.load_source(document_path) if document_path is not None else None
-    top_interface, job_interfaces = _interfaces_for_parsing(document_path, root)
+    top_interface, job_interfaces = _section_for_parsing(document_path, root, "interface")
+    top_expansion, job_expansions = _section_for_parsing(document_path, root, "expansion")
 
     # 2. Workflows: our own minimal parse (D17), one per job. Every job is parsed
     # before any is rejected, so a caller with two broken workflows hears about both.
@@ -1414,9 +1418,11 @@ def _run(
         # reading only: a joint plan that put its binding at the top level is refused
         # below for exactly that (`multi_job_interface`), and reading the workflow
         # without it would instead report the length as missing -- the wrong mistake.
+        # `expansion` falls back the same way, refused the same way.
         workflow, wf_diags = parse_workflow(
             job.workflow,
             interface=job_interfaces.get(job.id, top_interface) if job.id else top_interface,
+            expansion=job_expansions.get(job.id, top_expansion) if job.id else top_expansion,
         )
         diagnostics += _attribute(wf_diags.items, job, jobs)
         if workflow is not None and not _has_error(wf_diags.items):
@@ -1436,6 +1442,7 @@ def _run(
     # whether the output echoes `now`.
     doc_path = document_path
     interface = None
+    expansion = None
     inventories = None
     declared_objective = None
     roster = None
@@ -1453,6 +1460,7 @@ def _run(
         # `interface` is copied before being echoed into the plan (below).
         if isinstance(doc_path, dict):
             interface = copy.deepcopy(doc_path.get("interface"))
+            expansion = copy.deepcopy(doc_path.get("expansion"))
             inventories = copy.deepcopy(doc_path.get("inventories"))
             declared_objective = (doc_path.get("objective") or {}).get("kind")
             roster = copy.deepcopy(doc_path.get("jobs"))
@@ -1462,6 +1470,7 @@ def _run(
             now_value = stated_now if isinstance(stated_now, int) else 0
         elif isinstance(root, YMap):
             interface = yamlnode.to_plain(root.get("interface"))
+            expansion = yamlnode.to_plain(root.get("expansion"))
             inventories = yamlnode.to_plain(root.get("inventories"))
             stated = yamlnode.to_plain(root.get("objective"))
             declared_objective = stated.get("kind") if isinstance(stated, dict) else None
@@ -1526,6 +1535,17 @@ def _run(
                 "interface binds one workflow's boundary ports, so a document that "
                 "lists jobs carries it per job (jobs[].interface), not at the top level",
                 "interface",
+            )
+        )
+        return ScheduleReport(None, None, None, diagnostics)
+    # `expansion` describes one workflow's values, so the same rule holds for it (§6.13).
+    if any(job.id for job in jobs) and expansion:
+        diagnostics.append(
+            Diagnostic(
+                errors.MULTI_JOB_EXPANSION,
+                "expansion describes one workflow's values, so a document that lists jobs "
+                "carries it per job (jobs[].expansion), not at the top level",
+                "expansion",
             )
         )
         return ScheduleReport(None, None, None, diagnostics)
@@ -1807,6 +1827,7 @@ def _run(
         status=_provenance(doc_path, document_source) if root is not None else None,
         now=fixation.now if had_now else None,
         interface=interface,
+        expansion=expansion,
         inventories=carried,
         occupied=(list(occupied or []) + frozen) or None,
         ignore_resources=ignore_resources,

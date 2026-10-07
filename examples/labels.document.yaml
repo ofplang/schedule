@@ -1,0 +1,16 @@
+# Execution document for labels.workflow.yaml.
+#
+# `expansion` (SPEC §6.13) states how long the `labels` list is: three. It is not the
+# labels themselves -- the scheduler never reads values -- only what the map's
+# expansion needs. A run writes it from the list it was given; written by hand, as
+# here, the run still checks it against that list.
+#
+# The cups are Objects, so where each one ends up is `interface` (§6.8): one spot per
+# cup, in element order.
+interface:
+  outputs:
+    cups: [rack.a, rack.b, rack.c]
+expansion:
+  lengths:
+    - { node: [], port: labels, length: 3 }
+activities: []

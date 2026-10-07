@@ -95,6 +95,16 @@ CASES = [
         EXAMPLES / "dispense_read.document.yaml",
         59,
     ),
+    # A map over a Pure Data list, as long as `expansion` says (design.md D62): three
+    # cups made one after another on the one labeller, each filled while the next is
+    # being made, the last fill ending the run.
+    (
+        "labels",
+        EXAMPLES / "labels.workflow.yaml",
+        EXAMPLES / "labels.env.yaml",
+        EXAMPLES / "labels.document.yaml",
+        34,
+    ),
 ]
 
 

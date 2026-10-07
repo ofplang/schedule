@@ -29,15 +29,22 @@ DOC_TOP = {
     "outcome",
     "objective",
     "interface",
+    "expansion",
     "inventories",
     "activities",
     "meta",
 }
 # One entry of the `jobs` roster (§6.11): who the job is (`id`, `fingerprint`), what
-# constrains it (`release`, `bound`), and where its boundary material sits
-# (`interface`) -- the same section a single-workflow document carries at the top
-# level, one per job, because it binds one workflow's ports.
-JOB_KEYS = {"id", "release", "bound", "fingerprint", "interface"}
+# constrains it (`release`, `bound`), where its boundary material sits (`interface`)
+# and what its values say about how its workflow expands (`expansion`) -- the same
+# sections a single-workflow document carries at the top level, one per job, because
+# each describes one workflow.
+JOB_KEYS = {"id", "release", "bound", "fingerprint", "interface", "expansion"}
+# `expansion` (§6.13) and one entry of its `lengths`. An entry names a position the way
+# an arc endpoint does (§6.4) -- `node: []` is the boundary -- and says how long the
+# Array there is.
+EXPANSION_KEYS = {"lengths"}
+LENGTH_KEYS = {"node", "port", "index", "length"}
 # One entry of `occupied` (§6.12): a spot something is sitting on, and since when.
 # Not which job left it: a spot can be held for reasons no document records, and
 # nothing read the attribution where one happened to be known.
@@ -136,6 +143,7 @@ def _check(root: YNode | None, diags: Diagnostics) -> None:
     _check_outcome(root.get("outcome"), diags)
     _check_objective(root.get("objective"), diags)
     _check_interface(root.get("interface"), diags)
+    _check_expansion(root.get("expansion"), diags)
     _check_inventories(root.get("inventories"), diags)
     # The roster comes first because every activity is checked against it: a `job`
     # naming no roster entry is a document that describes work belonging to a job it
@@ -185,6 +193,8 @@ def _check_jobs(root: YMap, diags: Diagnostics) -> set[str] | None:
         shape.nonneg_int(jmap.get("bound"), shape.join(base, "bound"), diags)
         if "interface" in jmap:
             _check_interface(jmap.get("interface"), diags, shape.join(base, "interface"))
+        if "expansion" in jmap:
+            _check_expansion(jmap.get("expansion"), diags, shape.join(base, "expansion"))
         # `fingerprint` says which workflow the job runs. Its content is the
         # scheduler's own (`workflow.fingerprint`), so the schema asks only that it be
         # a string -- a validator that re-derived the digest would need the workflow,
@@ -425,6 +435,92 @@ def _check_binding(node: YNode | None, path: str, diags: Diagnostics) -> None:
             _check_binding(item, f"{path}[{i}]", diags)
         return
     _check_qualified_spot(node, path, diags)
+
+
+def _check_expansion(node: YNode | None, diags: Diagnostics, base: str = "expansion") -> None:
+    """Shape only (§6.13): `expansion` is `{lengths?}`, `lengths` a list of
+    `{node, port, index?, length}`. `node` is a node path that may be empty (the
+    boundary), `port` an identifier, `index` a non-empty list of non-negative integers
+    as on an arc endpoint (§6.4), `length` a non-negative integer. One position is
+    named once (`duplicate_length`).
+
+    Whether the position is a Pure Data Array entry input of the workflow -- and
+    whether this scheduler reads lengths anywhere but there -- needs the workflow, so
+    it is the execution layer's (§9.3). `base` is where it is reported from, as for
+    `interface`: the document's own, or a roster entry's."""
+    emap = shape.as_map(node, base, diags)
+    if emap is None:
+        return
+    shape.unknown_keys(emap, EXPANSION_KEYS, base, diags)
+    lengths_path = shape.join(base, "lengths")
+    seq = shape.as_seq(emap.get("lengths"), lengths_path, diags)
+    if seq is None:
+        return
+    seen: set[tuple] = set()
+    for i, item in enumerate(seq.items):
+        entry_base = f"{lengths_path}[{i}]"
+        lmap = shape.as_map(item, entry_base, diags)
+        if lmap is None:
+            continue
+        shape.unknown_keys(lmap, LENGTH_KEYS, entry_base, diags)
+        # The position, checked part by part so each fault is named; each part is kept
+        # where it is well-formed, to tell a repeated position below.
+        node_key: tuple | None = None
+        path_node = shape.require(lmap, "node", entry_base, diags)
+        node_path = shape.join(entry_base, "node")
+        if isinstance(path_node, YSeq):
+            before = len(diags.items)
+            if path_node.items:
+                _check_node_path(path_node, node_path, diags)
+            if len(diags.items) == before:
+                node_key = tuple(x.value for x in path_node.items if isinstance(x, YScalar))
+        elif path_node is not None:
+            diags.error(errors.WRONG_TYPE, "node must be a list (a node path)", node_path,
+                        at=path_node)
+        port_key: str | None = None
+        port = shape.require(lmap, "port", entry_base, diags)
+        port_path = shape.join(entry_base, "port")
+        if port is None:
+            pass
+        elif not (isinstance(port, YScalar) and port.is_str):
+            diags.error(errors.WRONG_TYPE, "port must be a string", port_path, at=port)
+        elif not is_identifier(port.value):
+            diags.error(errors.INVALID_IDENTIFIER, f"invalid port name {port.value!r}",
+                        port_path, at=port)
+        else:
+            port_key = port.value
+        index_key: tuple | None = ()
+        index = lmap.get("index")
+        if isinstance(index, YSeq) and index.items and all(
+            isinstance(x, YScalar) and is_iteration_index(x.value) for x in index.items
+        ):
+            index_key = tuple(x.value for x in index.items if isinstance(x, YScalar))
+        elif index is not None:
+            diags.error(
+                errors.WRONG_TYPE,
+                "index must be a non-empty list of non-negative integers (omit it for the "
+                "whole port)",
+                shape.join(entry_base, "index"),
+                at=index,
+            )
+            index_key = None
+        length = shape.require(lmap, "length", entry_base, diags)
+        shape.nonneg_int(length, shape.join(entry_base, "length"), diags)
+        # Only a well-formed position can repeat meaningfully; a malformed one is
+        # already an error and comparing it would report the same entry twice.
+        if node_key is None or port_key is None or index_key is None:
+            continue
+        key = (node_key, port_key, index_key)
+        if key in seen:
+            diags.error(
+                errors.DUPLICATE_LENGTH,
+                f"the length of {port_key!r} at node {list(node_key)}"
+                + (f" index {list(index_key)}" if index_key else "")
+                + " is stated more than once",
+                entry_base,
+                at=lmap,
+            )
+        seen.add(key)
 
 
 def _check_activity(

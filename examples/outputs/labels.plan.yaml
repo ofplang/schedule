@@ -1,0 +1,217 @@
+time:
+  unit: second
+interface:
+  outputs:
+    cups:
+    - rack.a
+    - rack.b
+    - rack.c
+expansion:
+  lengths:
+  - node: []
+    port: labels
+    length: 3
+outcome: optimal
+objective:
+  kind: makespan
+  value: 34
+activities:
+- kind: processing
+  start: 0
+  end: 4
+  process: cup_create_from_label
+  mode: '0'
+  node:
+  - Make
+  - 0
+  - create
+  devices:
+  - labeller
+  output_spots:
+    cup: labeller.out
+- kind: transport
+  start: 4
+  end: 6
+  from_spot: labeller.out
+  to_spot: filler.stage
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Make
+      - 0
+      - create
+      port: cup
+    to:
+      node:
+      - Make
+      - 0
+      - fill
+      port: cup
+- kind: processing
+  start: 6
+  end: 10
+  process: cup_create_from_label
+  mode: '0'
+  node:
+  - Make
+  - 1
+  - create
+  devices:
+  - labeller
+  output_spots:
+    cup: labeller.out
+- kind: processing
+  start: 6
+  end: 12
+  process: fill
+  mode: '0'
+  node:
+  - Make
+  - 0
+  - fill
+  devices:
+  - filler
+  input_spots:
+    cup: filler.stage
+  output_spots:
+    cup: filler.stage
+- kind: transport
+  start: 12
+  end: 14
+  from_spot: filler.stage
+  to_spot: rack.a
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Make
+      - 0
+      - fill
+      port: cup
+    to:
+      node: []
+      port: cups
+      index:
+      - 0
+- kind: transport
+  start: 14
+  end: 16
+  from_spot: labeller.out
+  to_spot: filler.stage
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Make
+      - 1
+      - create
+      port: cup
+    to:
+      node:
+      - Make
+      - 1
+      - fill
+      port: cup
+- kind: processing
+  start: 16
+  end: 20
+  process: cup_create_from_label
+  mode: '0'
+  node:
+  - Make
+  - 2
+  - create
+  devices:
+  - labeller
+  output_spots:
+    cup: labeller.out
+- kind: processing
+  start: 16
+  end: 22
+  process: fill
+  mode: '0'
+  node:
+  - Make
+  - 1
+  - fill
+  devices:
+  - filler
+  input_spots:
+    cup: filler.stage
+  output_spots:
+    cup: filler.stage
+- kind: transport
+  start: 22
+  end: 24
+  from_spot: filler.stage
+  to_spot: rack.b
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Make
+      - 1
+      - fill
+      port: cup
+    to:
+      node: []
+      port: cups
+      index:
+      - 1
+- kind: transport
+  start: 24
+  end: 26
+  from_spot: labeller.out
+  to_spot: filler.stage
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Make
+      - 2
+      - create
+      port: cup
+    to:
+      node:
+      - Make
+      - 2
+      - fill
+      port: cup
+- kind: processing
+  start: 26
+  end: 32
+  process: fill
+  mode: '0'
+  node:
+  - Make
+  - 2
+  - fill
+  devices:
+  - filler
+  input_spots:
+    cup: filler.stage
+  output_spots:
+    cup: filler.stage
+- kind: transport
+  start: 32
+  end: 34
+  from_spot: filler.stage
+  to_spot: rack.c
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Make
+      - 2
+      - fill
+      port: cup
+    to:
+      node: []
+      port: cups
+      index:
+      - 2
+meta:
+  workflow: examples/labels.workflow.yaml
+  environment: examples/labels.env.yaml
+  status: examples/labels.document.yaml

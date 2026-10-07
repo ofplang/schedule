@@ -231,6 +231,22 @@ ARRAY_LENGTH_UNKNOWN = "array_length_unknown"
 # lengths (spec 17, 18: zipped, so equal). Known before the run, this is the run-start
 # error spec 6.2 makes it.
 EACH_LENGTH_MISMATCH = "each_length_mismatch"
+# `expansion.lengths` (§6.13) states the length of a Pure Data Array the run was given,
+# so a `map` / `fold` over it can be expanded before the run (design.md D62).
+# An entry names a port that is not a Pure Data Array entry input of the workflow: no
+# entry input of that name, or one whose type is not an Array.
+LENGTH_UNKNOWN_PORT = "length_unknown_port"
+# An entry names an Array of Objects. Its length is the length of its `interface`
+# binding -- one spot per element (§6.8) -- so a second statement of it could only
+# agree or contradict.
+LENGTH_ON_OBJECT_PORT = "length_on_object_port"
+# Two entries of `expansion.lengths` name the same position. Not `duplicate_key`,
+# which is a mapping key written twice: the entries are list items, and which of the
+# two lengths was meant is a question the document leaves open either way.
+DUPLICATE_LENGTH = "duplicate_length"
+# A joint plan (§6.11) was given a document carrying a top-level `expansion`. Like
+# `interface`, it describes one workflow's values, so a joint plan carries it per job.
+MULTI_JOB_EXPANSION = "multi_job_expansion"
 # A warning: an Object-bearing final output has no `interface.outputs` binding (§6.8).
 # Not an error -- an unbound output is bound to a spot the *scheduler* chooses, and is
 # treated exactly like a bound one otherwise, so nothing about it is unaccounted for.
@@ -451,6 +467,10 @@ ERROR_CODES = frozenset(
         INTERFACE_LENGTH_MISMATCH,
         ARRAY_LENGTH_UNKNOWN,
         EACH_LENGTH_MISMATCH,
+        LENGTH_UNKNOWN_PORT,
+        LENGTH_ON_OBJECT_PORT,
+        DUPLICATE_LENGTH,
+        MULTI_JOB_EXPANSION,
         INTERFACE_OUTPUT_UNBOUND,
         OCCUPIED_DUPLICATE_SPOT,
         OCCUPIED_ALREADY_DERIVED,

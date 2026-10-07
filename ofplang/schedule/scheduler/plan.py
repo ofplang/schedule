@@ -31,6 +31,7 @@ def render_plan(
     status: str | None = None,
     now: int | None = None,
     interface: dict | None = None,
+    expansion: dict | None = None,
     inventories: dict | None = None,
     occupied: list | None = None,
     ignore_resources: bool = False,
@@ -199,6 +200,11 @@ def render_plan(
     # plan can be fed back as the next document.
     if interface:
         doc["interface"] = interface
+    # What the run's values say about how the workflow expands (§6.13). Echoed for the
+    # same reason: a replan has to expand the workflow the same way, or its history
+    # would be matched against a different graph.
+    if expansion:
+        doc["expansion"] = expansion
     # `inventories` says what the run started with, so it does not change from one
     # replan to the next (§6.10). Echoed verbatim for the same reason `interface` is:
     # the plan has to be usable as the next document, and levels are replayed from
@@ -257,6 +263,8 @@ def _job_entry(job: JobSpec, stopped: frozenset[str] = frozenset()) -> dict:
     # own planning input, and a plan that dropped it could not be the next one's.
     if job.interface:
         entry["interface"] = job.interface
+    if job.expansion:
+        entry["expansion"] = job.expansion
     return entry
 
 

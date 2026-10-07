@@ -298,6 +298,9 @@ class JobSpec:
       section a single-workflow document carries at the top level. It is per job
       because it binds one workflow's ports, and two jobs of the same workflow bind
       the same port names to different spots.
+    - `expansion` is what this job's values say about how its workflow expands
+      (§6.13), per job for the same reason: two jobs of one workflow are given
+      different values.
     """
 
     id: str
@@ -305,6 +308,7 @@ class JobSpec:
     bound: int | None = None
     fingerprint: str | None = None
     interface: dict | None = None
+    expansion: dict | None = None
 
 
 @dataclass(frozen=True)

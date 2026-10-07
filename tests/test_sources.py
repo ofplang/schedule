@@ -104,8 +104,8 @@ def _workflows(tmp_path):
 
 
 def test_the_every_shape_fixture_reads_as_intended(tmp_path):
-    # Spelled out once, so the equivalence above is known to cover each shape rather
-    # than to agree on an empty map.
+    # Spelled out once, so each routing shape is known to be read as intended rather
+    # than merely to parse.
     (wf,) = [wf for name, wf in _workflows(tmp_path) if name == "every_shape.yaml"]
     assert wf.input_sources[Endpoint(("A",), "plate")] == SourceRef((), "p")
     assert wf.input_sources[Endpoint(("B",), "plate")] == SourceRef(("A",), "plate")

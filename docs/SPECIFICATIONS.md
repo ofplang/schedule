@@ -59,12 +59,15 @@ In scope:
   Invocation `i` of a node `N` is under the node path `N, i` (§6.3). How many
   invocations there are — L, the common length of the node's `each` sources — has
   to be known before the run: from an Array of Objects at the boundary (as many
-  elements as its `interface` binding lists spots, §6.8), from a literal, or from
+  elements as its `interface` binding lists spots, §6.8), from a Pure Data Array at
+  the boundary whose length `expansion` states (§6.13), from a literal, or from
   another `map` / `fold`'s output. An `each` source whose length is a value only the
-  run has — a Pure Data entry input, an atomic's output — is planned at the L the
-  others give and left for the runner to check; one of those alone gives no L
-  (`array_length_unknown`), and known lengths that differ are refused
-  (`each_length_mismatch`). A `map`'s invocations are independent and ordered by
+  run has — an atomic's output, a Pure Data entry input with no stated length — is
+  planned at the L the others give and left for the runner to check; one of those
+  alone gives no L (`array_length_unknown`), and known lengths that differ are refused
+  (`each_length_mismatch`). Only the outermost length of an entry input can be stated
+  so far: a `map` / `fold` over an inner Array of a nested one, or over an atomic's
+  output, still has no L before the run. A `map`'s invocations are independent and ordered by
   nothing; a `fold`'s are ordered by its carry alone — invocation `i + 1` reads
   invocation `i`'s carry outputs — so the parts of one invocation that do not read
   the carry are not held back by the previous one. The same workflow with a longer
@@ -101,6 +104,15 @@ reason: how much stock is on hand is a property of the run, not of the machine, 
 the environment declares only each resource's `capacity` (§5.2). Levels at any later
 moment are derived from the history rather than supplied (§4.7.2), which is what
 keeps the environment definition free of anything that changes as a run proceeds.
+
+**The scheduler does not read values.** A Pure Data value — a temperature, a label —
+orders work but occupies nothing, so no plan depends on what it is; the workflow's
+values are the run's, and the scheduler is never given them. What a plan can depend
+on is the **shape** a value gives the workflow: a `map` over a list of labels is as
+many invocations as there are labels. That much, and no more, is given in the
+`expansion` section of the execution document (§6.13) — the length, not the labels —
+written by the run from the values it holds, and carried through replans so the same
+workflow expands the same way each time.
 
 ## 4. Scheduling model
 
@@ -756,6 +768,10 @@ environment.
   inputs and final outputs (a planning constraint, §3). **Required** for every
   Object-bearing entry input; optional per output. Supplied for the initial plan
   and carried through replans; echoed in the plan output.
+- `expansion` (§6.13) — what the run's values say about how the workflow expands:
+  so far, the lengths of Pure Data Arrays given at the boundary. Written by the run,
+  not by the person running it; supplied for the initial plan, carried through
+  replans and echoed in the plan output, like `interface`.
 - `inventories` (§6.10) — consumable resource levels as of one moment it names (a
   planning constraint, §3, like `interface`). **Required** whenever the resource model is in
   effect (§9.3, `missing_inventories`); forbidden nowhere. Supplied for the initial
@@ -1406,20 +1422,24 @@ Each entry carries:
   (`job_workflow_mismatch`, §10.4): the ids of two jobs given in the other order match
   as a set, so nothing else catches the swap. Two copies of one workflow share a
   digest, and swapping *those* changes nothing — they are interchangeable. The digest
-  is of the workflow as this job's `interface` expands it (§2): two jobs of one
-  workflow that traverses an Array of plates, bound to lists of different lengths,
-  are different graphs with different digests, and are not interchangeable.
+  is of the workflow as this job's `interface` and `expansion` expand it (§2): two
+  jobs of one workflow that traverses an Array of plates, bound to lists of different
+  lengths, are different graphs with different digests, and are not interchangeable.
 - `interface` (optional, §6.8) — where this job's boundary material sits. Exactly the
   section a single-workflow document carries at the top level, one per job, because it
   binds *one* workflow's ports: two jobs of the same workflow bind the same port names
   to different spots. Supplied for the job's first plan and echoed thereafter.
+- `expansion` (optional, §6.13) — what this job's values say about how its workflow
+  expands. Per job for the same reason: two jobs of one workflow are given different
+  values. Supplied for the job's first plan and echoed thereafter.
 
-**Where `interface` goes.** A document that names jobs carries it per job and **not**
-at the top level (`multi_job_interface`, §10.4); a document for a single unnamed
-workflow carries it at the top level, as it always has. One rule, and it follows what
-the scheduler was asked to plan rather than what the document happens to list — an
-initial joint plan is given a document with no roster yet, and sharing one boundary
-across its jobs is exactly the ambiguity being refused.
+**Where `interface` and `expansion` go.** A document that names jobs carries them per
+job and **not** at the top level (`multi_job_interface`, `multi_job_expansion`,
+§10.4); a document for a single unnamed workflow carries them at the top level, as it
+always has. One rule, and it follows what the scheduler was asked to plan rather than
+what the document happens to list — an initial joint plan is given a document with no
+roster yet, and sharing one boundary across its jobs is exactly the ambiguity being
+refused.
 
 **What two jobs may share.** One question decides it: is there a moment at which both
 bindings claim the spot? Two Objects cannot be in one place, so where the answer is
@@ -1738,13 +1758,75 @@ The usual writer is whatever reports a failure: a job stops (§6.2), and what it
 holding stays where it is until somebody clears it. How a writer works out which spots
 those are is its own affair — this section fixes what is said, not how it is found.
 
+### 6.13 Expansion
+
+```yaml
+expansion:
+  lengths:
+    - node: []              # required: a node path; [] is the workflow boundary
+      port: labels          # required: the port at that node
+      length: 3             # required: how many elements its Array has
+      # index: [0]          # optional: one element of a nested Array, as on an arc (§6.4)
+```
+
+A `map` / `fold` is expanded into its invocations before planning (§2), so how many
+there are has to be known then. Where the Array traversed is a Pure Data value — a list
+of labels, a list of volumes — nothing the scheduler is given says: the values are the
+run's, and the scheduler does not read values (§3). This section is where the run says
+the one thing about them that the plan depends on.
+
+**What it holds is not the values.** A length says what the expansion needs and
+nothing else; the labels themselves stay with the run. The section is limited to
+information of that kind — what the run's values decide about the **shape** of the
+workflow — so it is not where the laboratory's state goes (that is `occupied`, §6.12),
+and not where a person states an input (that is `interface`, §6.8). A later stage that
+expands on what the run produces as it goes, rather than on what it was given, states
+those facts here too.
+
+**Who writes it.** The run: it holds the values and counts them. `ofplang-run` states
+the length of every Pure Data Array entry input it was given, whether or not anything
+traverses it — which ones are traversed is known only once the workflow is expanded,
+and that is the scheduler's to do. A length nothing traverses is therefore not an
+error, and not remarked on. A Pure Data Array that no length is stated for, and that
+nothing traverses, is not remarked on either: a length is needed only to expand a
+traversal. Written by hand — to plan a workflow before there is a run — it is held to
+the same rules, and the run still checks every length against the value it is run
+with.
+
+**Where it applies, so far.** Only an entry input's outermost length is read: an entry
+with `node: []`, no `index`, and a `port` that is a **Pure Data Array** entry input of
+the workflow. Anything else is refused rather than ignored, since a statement that was
+made and then not read would let a document believe it had said something:
+
+- a port that is not an entry input of the workflow, or whose type is not an Array —
+  `length_unknown_port`;
+- an Array of Objects — `length_on_object_port`: its length is its `interface`
+  binding's, one spot per element (§6.8), so a second statement could only agree or
+  contradict;
+- a non-empty `node` (a value made during the run) or an `index` (an inner Array of a
+  nested one) — `unsupported_feature`. The form is fixed now so that the stage that
+  reads them needs no new one; a `map` over an inner Array has no length before the run
+  until then (`array_length_unknown`).
+
+A length takes part in the expansion like any other known length: two `each` sources
+of one node whose known lengths differ are refused before the run
+(`each_length_mismatch`, §10.4), so a list of three labels zipped with two plates is a
+document that cannot be run, and is said to be one before anything moves. A position is
+stated once (`duplicate_length`).
+
+**It is the graph.** The same workflow with a longer list is a different graph, with a
+different fingerprint (§6.11), exactly as a longer `interface` list is. So the section
+is carried through replans and echoed in the plan output, like `interface`: a replan
+has to expand the workflow the same way, or its history would be matched against a
+different graph. In a joint plan it is per job (§6.11).
+
 ## 7. Execution status
 
 The execution status is the replanning input. It is the **same document as the
 execution plan (§6)**, used with `now` set (the replan discriminator, required for
 a replanning input, §9.3), a `status` on each started activity, and the
-`interface` boundary constraint (§6.8) and `inventories` starting levels (§6.10)
-carried through unchanged; see §6, and the status example in §6.7. Entries that are
+`interface` boundary constraint (§6.8), the `expansion` lengths (§6.13) and the
+`inventories` starting levels (§6.10) carried through unchanged; see §6, and the status example in §6.7. Entries that are
 `pending` or carry no `status` are ignored and re-derived from the workflow, so a
 prior plan can be fed back verbatim (§6.2).
 
@@ -1925,7 +2007,7 @@ or a status. Cross-document checks (that a `node` / `arc` / `process` exists in 
 workflow, or that a spot exists in the environment) are execution-layer (§9.3).
 
 - Top level: `activities` is required; `time` / `now` / `jobs` / `outcome` /
-  `objective` / `interface` / `inventories` / `meta` are optional. Unknown or extra keys are
+  `objective` / `interface` / `expansion` / `inventories` / `meta` are optional. Unknown or extra keys are
   errors, except reserved `x-` extension keys (§9.4), which are ignored. (That
   `inventories` is *required* when the resource model is in effect depends on the
   environment, so it is execution-layer, §9.3.)
@@ -1944,7 +2026,8 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
 - `jobs` (if present): a list of mappings, each carrying a required `id` that is an
   identifier (§8.1) and unique in the list (`duplicate_job_id`); optional `release` and
   `bound`, non-negative integers; an optional `fingerprint`, a string; and an optional
-  `interface`, checked exactly as the top-level one is (§6.8). No other key is accepted. Whether the workflows the scheduler was given are the ones named here,
+  `interface` and `expansion`, each checked exactly as the top-level one is (§6.8,
+  §6.13). No other key is accepted. Whether the workflows the scheduler was given are the ones named here,
   and whether each matches its fingerprint, are execution-layer (§9.3,
   `job_roster_mismatch` / `job_workflow_mismatch`) — they need the caller's inputs, not
   just the document.
@@ -1958,6 +2041,13 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
   (`<device>.<spot>`, exactly one `.`). (That a port is an Object-bearing boundary
   port, that the nesting is the port's, and input-completeness / spot uniqueness /
   spot existence, are execution-layer, §9.3.)
+- `expansion` (if present): `lengths` (optional) is a list of mappings, each with a
+  required `node` (a node path, which may be empty — the boundary), a required `port`
+  (an identifier), an optional `index` (a non-empty list of non-negative integers, as
+  on an arc endpoint, §6.4) and a required `length` (a non-negative integer). No other
+  key is accepted, and no position (`node`, `port`, `index`) is named twice
+  (`duplicate_length`). (That the position is a Pure Data Array entry input of the
+  workflow is execution-layer, §9.3.)
 - Each activity: `kind` is required and is `processing`, `transport`, `relay`, or
   `replenishment`; `job` (if present) is an identifier (§6.11) naming an entry of the
   `jobs` roster (`unknown_job`, which also covers a `job` in a document with no
@@ -2056,6 +2146,12 @@ environment for processes the workflow never invokes are not checked.
   omitted one is reported (`interface_output_unbound`, a warning): the output is then
   bound to a spot the scheduler chooses, so the section is checked and applied whether
   or not the document carries it (§6.8).
+- **Expansion** (§6.13): each length names a Pure Data Array entry input of the
+  workflow at `node: []` (`length_unknown_port` if no entry input has that name, or
+  its type is not an Array; `length_on_object_port` if it is an Array of Objects);
+  a `node` inside the workflow or an `index` is `unsupported_feature`. A length that
+  nothing traverses is not reported, and neither is an Array with no length that
+  nothing traverses.
 - **Inventories** (§6.10): the resource model is in effect, unless it has been
   disabled (§4.7.3), when **some mode of some invoked process declares
   `consumption`**. Declaring `resources` on a device is not enough on its own: a
@@ -2133,7 +2229,8 @@ leg is pinned like any committed leg; a pending one is re-derived).
   a history against the wrong workflow would pin it onto activities that never ran
   it. A top-level `interface` is refused when the call names jobs
   (`multi_job_interface`): it binds one workflow's ports, and a joint plan carries
-  one per job. Across jobs, a shared **entry** spot is a warning where the releases
+  one per job. So is a top-level `expansion` (`multi_job_expansion`), for the same
+  reason. Across jobs, a shared **entry** spot is a warning where the releases
   differ (`interface_shared_input_spot`) — whether they leave the first job's material
   time to be collected is the solver's to decide — and an error where they coincide
   (`interface_simultaneous_input_spot`), both samples being on the spot at that instant
@@ -2165,7 +2262,7 @@ Extension keys are admitted only at **closed mapping positions** — the same
 positions where the schema otherwise enforces a fixed key set: the environment
 top level and its `time` / device / transporter / transport / process / mode
 mappings (§9.1); and the execution-document top level and its `time` /
-`objective` / `interface` / activity mappings (§9.2). They are **not** interpreted
+`objective` / `interface` / `expansion` / length-entry / activity mappings (§9.2). They are **not** interpreted
 inside the open name/port maps whose keys are user-chosen — `processes`,
 `input_spots` / `output_spots`, `interface.inputs` / `outputs`, a device's
 `resources`, a mode's `consumption`, `inventories.levels` and the per-device maps
@@ -2246,6 +2343,7 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `occupied_duplicate_spot` | two entries of `occupied` name the same spot (§6.12) |
 | `occupied_already_derived` | an `occupied` entry names a spot a stopped job's own history already holds (§6.12): the claim is made twice, and the half that is derived does not appear in the document |
 | `occupied_spot_in_use` | an `occupied` entry names a spot a `running` activity is using (§6.12); the section is for a hold the plan does not otherwise account for |
+| `duplicate_length` | two entries of `expansion.lengths` name the same position (§6.13). Not `duplicate_key`: the entries are list items, not mapping keys |
 | `duplicate_job_id` | two entries of the `jobs` roster share an `id` (§6.11) |
 | `unknown_job` | an activity's `job` names no roster entry, or the document has no roster (§6.11) |
 
@@ -2264,9 +2362,11 @@ building the solver instance. Severity is `error` unless marked *warning*.
 
 | code | meaning |
 | --- | --- |
-| `unsupported_feature` | a workflow feature outside the scheduler's v0 subset (a `do_while` or `branch` node, an atomic process with an Object-bearing Array port, §2) |
+| `unsupported_feature` | a workflow feature outside the scheduler's v0 subset (a `do_while` or `branch` node, an atomic process with an Object-bearing Array port, §2), or an `expansion` length this stage does not read — one inside the workflow, or of one element of a nested Array (§6.13) |
 | `array_length_unknown` | a `map` / `fold` none of whose `each` sources has a length known before the run (§2). One with no `each` source at all is `missing_each_source` (below) |
-| `each_length_mismatch` | a `map` / `fold` whose `each` sources' known lengths differ (they are zipped, §2) |
+| `each_length_mismatch` | a `map` / `fold` whose `each` sources' known lengths differ (they are zipped, §2) — an `expansion` length included (§6.13) |
+| `length_unknown_port` | an `expansion` length names a port that is not an entry input of the workflow, or one whose type is not an Array (§6.13) |
+| `length_on_object_port` | an `expansion` length names an Array of Objects, whose length is its `interface` binding's (§6.13) |
 | `data_indegree`, `object_input_no_source` | an input port of a node's target that nothing binds (Pure Data / Object-bearing): the reader would have no value to read (§9) |
 | `unknown_reference`, `malformed_reference` | a `from` naming nothing in scope, or not a reference at all (§9) |
 | `binding_source_arity` | a binding with neither or both of `from` / `value` (§9) |
@@ -2296,6 +2396,7 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `job_roster_mismatch` | the workflows given to the scheduler are not the ones the document's `jobs` roster names (§6.11) |
 | `release_after_history` | a job's roster entry states a `release` later than its own history begins (§6.11): a release holds back work that has not run, so this one constrains nothing and the document contradicts itself |
 | `multi_job_interface` | a document carrying a top-level `interface` was given to a plan that names jobs: it binds one workflow's ports, so a joint plan carries it per job (§6.11) |
+| `multi_job_expansion` | a document carrying a top-level `expansion` was given to a plan that names jobs: it describes one workflow's values, so a joint plan carries it per job (§6.11, §6.13) |
 | `unknown_withdrawal` | a job said to be leaving the plan (§6.11) is not in the document's roster, or was handed over as a workflow as well — it cannot both leave and be planned |
 | `withdrawal_not_finished` | a job said to be leaving still has `pending` or `running` work (§6.11). A `failed` activity does not count: its interval has ended and its status will not change again |
 | `withdrawal_undoes_draws` | a job said to be leaving drew on a stock after the moment `inventories` states its levels for (§6.10), and the levels were not asked to be carried forward: leaving would give the stock back what it took |

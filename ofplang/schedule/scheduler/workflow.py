@@ -64,7 +64,9 @@ def _contains_import_key(obj) -> bool:
     return False
 
 
-def parse_workflow(source, *, interface: dict | None = None) -> tuple[Workflow | None, Diagnostics]:
+def parse_workflow(
+    source, *, interface: dict | None = None, expansion: dict | None = None
+) -> tuple[Workflow | None, Diagnostics]:
     """Parse the v0 workflow into a schedulable `Workflow`.
 
     `source` is either a path to a workflow YAML file, or an already-loaded workflow
@@ -77,6 +79,14 @@ def parse_workflow(source, *, interface: dict | None = None) -> tuple[Workflow |
     and so how many invocations the expansion makes (design.md D57). The result is a
     function of the two -- the same workflow with a longer list is a different graph,
     and its fingerprint says so. Every other workflow reads the same with or without it.
+
+    `expansion` is the document's §6.13 section for this workflow: what the run's values
+    say about how the workflow expands, without the values themselves. Its `lengths`
+    give the length of a Pure Data Array entry input, which the scheduler is otherwise
+    never told (design.md D62), so a `map` / `fold` over one can be expanded. A length
+    no traversal reads is not used, and not remarked on either: the runner states every
+    Pure Data Array it was given, since which of them a traversal reads is known only
+    once the workflow is expanded.
 
     Returns `(workflow, diagnostics)`; the workflow is None when a blocking
     diagnostic (unparseable document or no entry) is raised.
@@ -109,7 +119,7 @@ def parse_workflow(source, *, interface: dict | None = None) -> tuple[Workflow |
     # The exception's own type and text go into the message: a genuine bug in the
     # reader must not be disguised as a malformed document.
     try:
-        return _read_workflow(data, diags, interface)
+        return _read_workflow(data, diags, interface, expansion)
     except (AttributeError, TypeError, KeyError) as exc:
         diags.error(
             errors.WRONG_TYPE,
@@ -253,7 +263,7 @@ def _check_readable(data: dict, diags: Diagnostics) -> bool:
 
 
 def _read_workflow(
-    data: dict, diags: Diagnostics, interface: dict | None = None
+    data: dict, diags: Diagnostics, interface: dict | None = None, expansion: dict | None = None
 ) -> tuple[Workflow | None, Diagnostics]:
     """Read a document this reader can use: the capability gate, then the flattening.
 
@@ -317,6 +327,11 @@ def _read_workflow(
             path = (entry,)
             in_ports = {p.name: p.object_bearing for p in sig.inputs}
             out_ports = {p.name: p.object_bearing for p in sig.outputs}
+            # Nothing here traverses an Array, so no length is read; a stated one is
+            # still checked against the ports, as it would be for a composite entry.
+            _boundary_lengths(
+                expansion, in_ports, _boundary_ranks(entry_proc)["entry_input_ranks"], diags
+            )
             # As Source trees every port is said, Pure Data ones included: each input is
             # the workflow's entry input of the same name, seeded at the boundary, and
             # each output is this one activity's.
@@ -361,8 +376,12 @@ def _read_workflow(
         for n, s in (entry_proc.get("outputs") or {}).items()
     }
 
+    lengths = _boundary_lengths(
+        expansion, in_ports, _boundary_ranks(entry_proc)["entry_input_ranks"], diags
+    )
     exp, precedence = _expand_body(
-        entry, entry_proc, procs, atomic, in_ports, out_ports, interface, domains, diags
+        entry, entry_proc, procs, atomic, in_ports, out_ports, interface, lengths, domains,
+        diags,
     )
 
     return (
@@ -404,6 +423,71 @@ def _boundary_ranks(entry_proc: dict) -> dict:
     }
 
 
+def _boundary_lengths(
+    expansion, in_ports: dict[str, bool], ranks: dict[str, int], diags: Diagnostics
+) -> dict[str, int]:
+    """The stated lengths this reader uses -- entry input -> its length -- with every
+    entry checked against the entry's input ports (§6.13, §9.3).
+
+    Read leniently, as `interface` is: the document has not been validated when a
+    workflow is read, so an entry not shaped as one is skipped here and is the document
+    validation's to report. Of the well-formed ones, only an outermost length at the
+    boundary of a Pure Data Array entry input is read in this stage; anything else is
+    refused rather than ignored, since a length that was stated and then not read would
+    let a document believe it had said something."""
+    lengths: dict[str, int] = {}
+    entries = expansion.get("lengths") if isinstance(expansion, dict) else None
+    if not isinstance(entries, list):
+        return lengths
+    for i, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            continue
+        node, port, index, length = (
+            entry.get("node"), entry.get("port"), entry.get("index", []), entry.get("length")
+        )
+        if not (
+            isinstance(node, list) and isinstance(port, str) and isinstance(index, list)
+            and isinstance(length, int) and not isinstance(length, bool) and length >= 0
+        ):
+            continue
+        where = f"expansion.lengths[{i}]"
+        if node:
+            # A value made during the run -- an atomic's output -- is a later stage: its
+            # length is not known when the expansion is made (design.md D62).
+            diags.error(
+                errors.UNSUPPORTED_FEATURE,
+                f"{where}: a length inside the workflow (node {node}) is not read yet; "
+                "only an entry input's, at node []",
+                where,
+            )
+        elif index:
+            # An inner Array of a nested one: not read in this stage either (D62 L2).
+            diags.error(
+                errors.UNSUPPORTED_FEATURE,
+                f"{where}: the length of one element of {port!r} (index {index}) is not "
+                "read yet; only the outermost length of an entry input",
+                where,
+            )
+        elif port not in in_ports or not ranks.get(port):
+            diags.error(
+                errors.LENGTH_UNKNOWN_PORT,
+                f"{where}: {port!r} is "
+                + ("not an entry input" if port not in in_ports else "not an Array")
+                + " of the workflow, so it has no length to state",
+                where,
+            )
+        elif in_ports[port]:
+            diags.error(
+                errors.LENGTH_ON_OBJECT_PORT,
+                f"{where}: {port!r} is an Array of Objects; its length is the length of "
+                "its interface.inputs binding, one spot per element",
+                where,
+            )
+        else:
+            lengths.setdefault(port, length)
+    return lengths
+
+
 def _array_rank(type_expr) -> int:
     """How deeply a type nests Arrays: 0 for `Plate`, 2 for `Array<Array<Plate>>`."""
     t = str(type_expr).strip()
@@ -436,7 +520,7 @@ def _object_bearing(type_expr: str, domains: dict[str, str | None]) -> bool:
 
 
 def _expand_body(entry_name, entry_proc, procs, atomic, in_ports, exit_object_bearing,
-                 interface, domains, diags):
+                 interface, lengths, domains, diags):
     """Flatten the entry composite into atomic activities, Object-bearing arcs, and
     precedence edges, following nested composites and expanding `map` / `fold`
     nodes (see `_Expander`).
@@ -444,8 +528,9 @@ def _expand_body(entry_name, entry_proc, procs, atomic, in_ports, exit_object_be
     `in_ports` / `exit_object_bearing` are the entry's `{port: object_bearing}`
     tables: the first says which entry inputs are Arrays of Objects whose length the
     `interface` gives, the second tells a Pure Data return from an Object-bearing one
-    (which the planner places: an exit arc, or a through arc, D60)."""
-    exp = _Expander(procs, atomic, diags, domains, interface, in_ports)
+    (which the planner places: an exit arc, or a through arc, D60). `lengths` are the
+    Pure Data Array entry inputs' stated lengths (`_boundary_lengths`)."""
+    exp = _Expander(procs, atomic, diags, domains, interface, in_ports, lengths)
     # The entry's own inputs are the workflow's boundary inputs: seed the entry
     # scope so `inputs.X` resolves to an `_EntryInput(X)` marker, which propagates
     # into nested composites and is recorded at the atomic that consumes it.
@@ -576,11 +661,11 @@ class _Expander:
     `bind` the whole value, and a `fold`'s carry threads invocation `i`'s output into
     invocation `i + 1`. How many invocations there are -- L -- is the length of the
     `each` sources, which must be known before the run: from an `interface` list for
-    an Array of Objects at the boundary, a literal, or another `map` / `fold`'s
-    output. A structured node is expanded once, the first time it is reached --
-    walking the body or resolving a reference to its output, whichever comes first --
-    and its outputs are kept, so a second reference reads the same invocations
-    rather than making new ones."""
+    an Array of Objects at the boundary, an `expansion` length for a Pure Data one, a
+    literal, or another `map` / `fold`'s output. A structured node is expanded once, the
+    first time it is reached -- walking the body or resolving a reference to its
+    output, whichever comes first -- and its outputs are kept, so a second reference
+    reads the same invocations rather than making new ones."""
 
     def __init__(
         self,
@@ -590,6 +675,7 @@ class _Expander:
         domains: dict | None = None,
         interface: dict | None = None,
         entry_ports: dict[str, bool] | None = None,
+        entry_lengths: dict[str, int] | None = None,
     ) -> None:
         self.procs = procs
         self.atomic = atomic
@@ -604,6 +690,9 @@ class _Expander:
         # bindings here and is the document validation's to report.
         inputs = interface.get("inputs") if isinstance(interface, dict) else None
         self.entry_bindings = dict(inputs) if isinstance(inputs, dict) else {}
+        # A Pure Data Array entry input's length, where the document states it (§6.13):
+        # the runner counted it off the value it was given (design.md D62).
+        self.entry_lengths = entry_lengths or {}
         self.activities: list[NodeInvocation] = []
         self.arcs: list[Arc] = []
         self.precedence: list[tuple[NodePath, NodePath]] = []
@@ -958,11 +1047,14 @@ class _Expander:
         where it cannot be known before the run (reported).
 
         A source whose length the scheduler can see -- an Array of Objects bound in
-        `interface`, a literal, another `map` / `fold`'s output -- decides it, and two
-        such sources disagreeing is the error spec §6.2 makes it. A source whose
-        length is a value only the run has -- a Pure Data entry input, an atomic's
-        output -- is planned at that L and recorded for the runner to check
-        (`LengthCheck`); one of those alone decides nothing (design.md D57)."""
+        `interface`, a Pure Data entry input whose length `expansion` states, a
+        literal, another `map` / `fold`'s output -- decides it, and two such sources
+        disagreeing is the error spec §6.2 makes it. A source whose length is a value
+        only the run has -- an atomic's output, an entry input with no stated length --
+        is planned at that L and recorded for the runner to check (`LengthCheck`); one
+        of those alone decides nothing (design.md D57). A stated length is recorded
+        for checking too: the runner states the length it counted, so the two agree,
+        but a document written by hand is held to the value it is run with (D62)."""
         where = f"{kind} node {format_node_path(path)!r}"
         if any(value is None for value in each.values()) and any(
             d.severity == "error" for d in self.diags.items
@@ -1001,8 +1093,8 @@ class _Expander:
             self.diags.error(
                 errors.ARRAY_LENGTH_UNKNOWN,
                 f"{where}: none of its each sources {sorted(each)} has a length known before "
-                "the run (an Array of Objects bound in interface, a literal, or a map or "
-                "fold output)",
+                "the run (an Array of Objects bound in interface, an entry input whose "
+                "length expansion.lengths states, a literal, or a map or fold output)",
             )
             return None
         if len(set(known.values())) > 1:
@@ -1014,7 +1106,7 @@ class _Expander:
             return None
         length = next(iter(known.values()))
         for port, value in each.items():
-            if port in known or value is None:
+            if value is None or (port in known and not self._stated(value)):
                 continue
             source = _source_of(value)
             if source is not None:
@@ -1029,12 +1121,24 @@ class _Expander:
             return len(value.value) if isinstance(value.value, list) else None
         if isinstance(value, _EntryInput):
             if not self.entry_ports.get(value.name):
-                return None  # Pure Data: a value the scheduler is not given (D57)
+                # Pure Data: a value the scheduler is not given (D57), only its outermost
+                # length where `expansion` states it (D62); an inner Array's is unknown.
+                return None if value.index else self.entry_lengths.get(value.name)
             binding = self.entry_bindings.get(value.name)
             for i in value.index:
                 binding = binding[i] if isinstance(binding, list) and i < len(binding) else None
             return len(binding) if isinstance(binding, list) else None
         return None  # an atomic's output: its length is a run-time value
+
+    def _stated(self, value) -> bool:
+        """Whether a known length is one `expansion` stated: the only kind the run can
+        still contradict, so the only known kind recorded for it to check."""
+        return (
+            isinstance(value, _EntryInput)
+            and not self.entry_ports.get(value.name)
+            and not value.index
+            and value.name in self.entry_lengths
+        )
 
     def _resolve_inputs(
         self, node: dict, prefix: NodePath, inputs_env: dict, siblings: dict, stack: tuple[str, ...]
