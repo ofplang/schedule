@@ -24,9 +24,13 @@ classifiers = [
     "Topic :: Scientific/Engineering",
     "Typing :: Typed",
 ]
-# `ofplang-validate` is imported only by the CLI front door (cli.py) to validate a
-# workflow once before scheduling; the scheduler library never calls it, so
-# library users take no validation overhead. The `>=0.4` floor is required: 0.4 is
+# `ofplang-validate` is run only by the CLI front door (cli.py), to validate a
+# workflow once before scheduling; the scheduler library never calls it, so library
+# users take no validation overhead. The library does import its error codes: where
+# the reader refuses what it would otherwise drop, it answers with validate's code.
+# The `>=0.4.1` floor is required for that: 0.4.1 is where validate has
+# `output_not_exposed`, which the reader's guard gives a reference to a fold output
+# the node does not expose. (Before it, `>=0.4`: 0.4 is
 # where validate implements specification revision 0.5, and the front door's verdict
 # has to be the one this reader assumes. Under 0.3 a composite could leave a Pure Data
 # output unreturned, which the reader's guard now refuses with validate's own
@@ -34,7 +38,7 @@ classifiers = [
 # here reads any more -- 0.4 calls it an unknown key. (Before it, the floor was 0.3,
 # for the `dispense_read` example's `spec_version: "0.4"`, and before that 0.1.3:
 # the front door expands `$import` itself, `validate(..., expand=True)`, which
-# validate exposes only from 0.1.3.)
+# validate exposes only from 0.1.3.))
 # ortools >= 9.15: the inventory constraint (FORMULATION Sec 11) needs a reservoir
 # whose level *changes* are decision variables, not constants. The API's type hints
 # accept a LinearExpr there and 9.15 enforces it correctly, but its docstring still
@@ -49,7 +53,7 @@ classifiers = [
 # would pick up the next such sibling and start refusing its own examples. The
 # bounds cannot protect what is already on PyPI without one, which is why they go
 # in now rather than at the first breakage.
-dependencies = ["PyYAML>=6.0", "ortools>=9.15", "ofplang-validate>=0.4,<0.5"]
+dependencies = ["PyYAML>=6.0", "ortools>=9.15", "ofplang-validate>=0.4.1,<0.5"]
 
 [project.urls]
 Homepage = "https://github.com/ofplang/schedule"

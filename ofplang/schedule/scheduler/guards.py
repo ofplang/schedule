@@ -12,7 +12,9 @@ What the reader would lose, and so what is checked, per composite body:
 
 - a binding it cannot read: neither or both of `from` / `value`
   (`binding_source_arity`), a `from` that is not a reference (`malformed_reference`),
-  or one naming nothing in scope (`unknown_reference`). One that is not a mapping at
+  or one naming nothing in scope (`unknown_reference`), or an output its node has but
+  does not expose -- a fold output dropped by the section or by default
+  (`output_not_exposed`). One that is not a mapping at
   all is refused earlier, by the reader's shape guard (`wrong_value_kind`), with the
   other shapes it cannot walk;
 - a binding the reader does not look at: a section its node kind does not take
@@ -66,9 +68,15 @@ def check_body(
     base = f"processes.{pname}.body"
     nodes = [n for n in body.get("nodes") or [] if isinstance(n, dict)]
     inputs = _mapping(proc.get("inputs"))
-    # What a body reference can name: the composite's inputs, and each node's outputs.
+    # What a body reference can name: the composite's inputs, and each node's outputs
+    # -- the ones its target has (`declared`), and of those the ones it exposes.
+    declared = {
+        node.get("id"): _declared_outputs(node, procs)
+        for node in nodes
+        if isinstance(node.get("id"), str)
+    }
     exposed = {
-        node.get("id"): _exposed_outputs(node, procs)
+        node.get("id"): _exposed_outputs(node, procs, object_bearing)
         for node in nodes
         if isinstance(node.get("id"), str)
     }
@@ -92,9 +100,17 @@ def check_body(
             diags.error(v0.MALFORMED_REFERENCE, f"malformed reference {ref!r}", path)
             return None
         left, right = ref.split(".", 1)
-        known = right in inputs if left == "inputs" else right in exposed.get(left, ())
+        known = right in inputs if left == "inputs" else right in declared.get(left, ())
         if not known:
             diags.error(v0.UNKNOWN_REFERENCE, f"unresolved reference {ref!r}", path)
+            return None
+        visible = exposed.get(left)
+        if left != "inputs" and visible is not None and right not in visible:
+            diags.error(
+                v0.OUTPUT_NOT_EXPOSED,
+                f"{ref!r} names an output node {left!r} does not expose (spec 18, 21)",
+                path,
+            )
             return None
         return "from"
 
@@ -183,19 +199,47 @@ def _mapping(value) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def _exposed_outputs(node: dict, procs: dict) -> set[str]:
-    """The outputs a body node makes visible to its siblings: its target's, for an
-    ordinary node or a `map`; for a `fold`, those its `outputs` section exposes as
-    `carry` / `collect` -- or, without one, its carried ports (v0 18.1, 18.2)."""
+def _declared_outputs(node: dict, procs: dict) -> set[str]:
+    """The outputs a body node's target has: what a reference can name at all."""
     target = procs.get(node.get("process"))
-    declared = set((target or {}).get("outputs") or {}) if isinstance(target, dict) else set()
+    outputs = target.get("outputs") if isinstance(target, dict) else None
+    return set(outputs) if isinstance(outputs, dict) else set()
+
+
+def _exposed_outputs(
+    node: dict, procs: dict, object_bearing: Callable[[str], bool]
+) -> set[str] | None:
+    """The outputs a body node makes visible to its siblings, or None for all it has.
+
+    An ordinary node and a `map` expose everything (None). A `fold` exposes what its
+    `outputs` section lists as `carry` / `collect` -- or, without one, its carried
+    ports (v0 18.1, 18.2). None too where the fold's section is one the reader
+    refuses (`_Expander._fold_modes`): what it exposes is then the thing refused, and
+    a reference to one of its outputs is that refusal's consequence, not a second
+    mistake -- the rule ofplang-validate follows."""
     if node.get("kind") != "fold":
-        return declared
+        return None
+    target = procs.get(node.get("process"))
+    outputs = target.get("outputs") if isinstance(target, dict) else None
+    if not isinstance(outputs, dict):
+        return None
+    carry_section = node.get("carry")
+    carry = set(carry_section) if isinstance(carry_section, dict) else set()
+    objects = {
+        port for port, spec in outputs.items()
+        if object_bearing(str((spec or {}).get("type", "")) if isinstance(spec, dict) else "")
+    }
     section = node.get("outputs")
-    if isinstance(section, dict):
-        return {
-            port for port, spec in section.items()
-            if isinstance(spec, dict) and spec.get("mode") in ("carry", "collect")
-        }
-    carry = node.get("carry")
-    return declared & set(carry) if isinstance(carry, dict) else set()
+    if not isinstance(section, dict):
+        if objects - carry:
+            return None  # refused: a non-carry Object output needs a section (18.2)
+        return set(outputs) & carry
+    modes = {
+        port: spec.get("mode") if isinstance(spec, dict) else None
+        for port, spec in section.items()
+    }
+    if any(mode not in ("carry", "collect", "drop") for mode in modes.values()):
+        return None  # an entry with no mode, or an invalid one
+    if set(modes) != set(outputs) or any(modes[port] == "drop" for port in objects):
+        return None  # a listing that is not complete, or an Object dropped
+    return {port for port, mode in modes.items() if mode in ("carry", "collect")}

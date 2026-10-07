@@ -2369,6 +2369,7 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `length_on_object_port` | an `expansion` length names an Array of Objects, whose length is its `interface` binding's (§6.13) |
 | `data_indegree`, `object_input_no_source` | an input port of a node's target that nothing binds (Pure Data / Object-bearing): the reader would have no value to read (§9) |
 | `unknown_reference`, `malformed_reference` | a `from` naming nothing in scope, or not a reference at all (§9) |
+| `output_not_exposed` | a `from` naming an output its node has but does not expose: a `fold` output its `outputs` section drops, or one the default drops (v0 18.2, 21). Not reported where the `fold`'s section is itself refused (below): what it exposes is then the thing refused (§9) |
 | `binding_source_arity` | a binding with neither or both of `from` / `value` (§9) |
 | `binding_port_not_found` | a binding entry naming no input port of the node's target: the reader would skip it (§9) |
 | `section_not_valid_for_kind` | a binding section the node's kind does not take, which the reader would not read (§9) |

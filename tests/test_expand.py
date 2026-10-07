@@ -676,9 +676,53 @@ def test_a_fold_section_that_drops_an_object_is_refused():
         )
         assert text != FOLD_DISPENSE
         _, errs = _parse(text, interface)
-        # Refused for the section; and where `plate` is not exposed, the body's return
-        # of `Run.plate` names nothing, which the reader's guards say too (D60 Q2).
-        assert code in errs and set(errs) <= {code, "unknown_reference"}, (outputs, errs)
+        # Refused for the section, and only for it: the body's return of `Run.plate`
+        # reads the refused section, so it is the refusal's consequence and is not
+        # reported a second time -- as ofplang-validate does.
+        assert errs == [code], (outputs, errs)
+
+
+# A fold over plain values, with a Pure Data output that is not carried.
+FOLD_NOTE = """\
+spec_version: "0.5"
+processes:
+  step:
+    kind: atomic
+    inputs: {acc: {type: Int, phase: data}, x: {type: Int, phase: data}}
+    outputs: {acc: {type: Int, phase: data}, note: {type: String, phase: data}}
+  main:
+    kind: composite
+    inputs: {xs: {type: "Array<Int>", phase: data}}
+    outputs: {acc: {type: Int, phase: data}, note: {type: String, phase: data}}
+    body:
+      nodes:
+        - id: F
+          kind: fold
+          process: step
+          carry: {acc: {value: 0}}
+          each: {x: {value: [1, 2]}}
+          outputs: {acc: {mode: carry}, note: {mode: drop}}
+      returns: {acc: {from: F.acc}, note: {from: F.note}}
+entry: main
+"""
+
+
+def test_a_reference_to_an_output_the_fold_does_not_expose_is_refused():
+    # Dropped by the section, dropped by default (no section: only the carry is
+    # exposed, spec 18.2), and -- the section being fully explicit -- left out of it.
+    # Each with the code ofplang-validate gives the same document.
+    from ofplang.validate import validate
+
+    section = "          outputs: {acc: {mode: carry}, note: {mode: drop}}\n"
+    no_section = FOLD_NOTE.replace(section, "")
+    left_out = FOLD_NOTE.replace(", note: {mode: drop}}", "}")
+    assert no_section != FOLD_NOTE and left_out != FOLD_NOTE
+    for text, code in ((FOLD_NOTE, "output_not_exposed"), (no_section, "output_not_exposed"),
+                       (left_out, "output_not_listed")):
+        _, errs = _parse(text)
+        by_validate = sorted({d.code for d in validate(yaml.safe_load(text)).diagnostics
+                              if d.severity == "error"})
+        assert errs == [code] == by_validate, (code, errs, by_validate)
 
 
 def test_an_array_passed_straight_through_is_one_through_arc_per_element():

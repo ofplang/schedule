@@ -1018,18 +1018,18 @@ class _Expander:
                     return None
                 modes[port] = mode
             for port, spec in target_outputs.items():
-                object_bearing = _object_bearing(str((spec or {}).get("type", "")), self.domains)
-                if not object_bearing:
-                    continue
+                # The section is fully explicit (§18.1 rule 9): an output left out of
+                # it is refused, Pure Data or not -- read as dropped, a reference to it
+                # would name nothing.
                 if port not in modes:
                     self.diags.error(
                         v0.OUTPUT_NOT_LISTED,
-                        f"{where}: its target's output {port!r} is Object-bearing and not "
-                        "listed in the outputs section, which must expose it as carry or "
-                        "collect (§18.1)",
+                        f"{where}: its target's output {port!r} is not listed in the "
+                        "outputs section, which lists every one (§18.1)",
                     )
                     return None
-                if modes[port] == "drop":
+                object_bearing = _object_bearing(str((spec or {}).get("type", "")), self.domains)
+                if object_bearing and modes[port] == "drop":
                     self.diags.error(
                         v0.OBJECT_OUTPUT_BAD_MODE,
                         f"{where}: its target's output {port!r} is Object-bearing, so it "
