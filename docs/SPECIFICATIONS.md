@@ -2374,6 +2374,8 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `section_not_valid_for_kind` | a binding section the node's kind does not take, which the reader would not read (§9) |
 | `literal_on_object_port` | a literal bound to an Object-bearing port: it names no Object to move (§9) |
 | `missing_each_source` | a `map` / `fold` with no `each` source (§9) |
+| `wrong_value_kind`, `invalid_identifier` | a part of the workflow the reader walks that is not shaped as v0 says — a type definition, a process, a body, a node list, a node, a binding section or entry, `returns` or one of its entries that is not a mapping or a sequence as required (`wrong_value_kind`), a node id that is not a string (`invalid_identifier`): read past, it would leave something out (§9). A workflow that cannot be read at all past these is `wrong_type`, with the reader's own reason |
+| `invalid_output_mode`, `output_not_listed`, `object_output_bad_mode`, `noncarry_object_output_unlisted` | a `fold`'s `outputs` that would leave an Object unaccounted for (v0 18.1): a mode other than carry / collect / drop, an Object-bearing output not listed, one dropped, or no section where a non-carry Object-bearing output needs one (§9) |
 | `output_not_returned`, `return_port_not_found` | a composite's `returns` and its output ports do not correspond one to one (v0 12.3, revision 0.5): an output with no entry, an entry naming no output (§9) |
 | `no_entry_process` | the workflow has no resolvable entry process |
 | `process_not_defined` | a node invokes, or an arc references, a process/node not defined in the workflow |

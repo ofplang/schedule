@@ -658,14 +658,17 @@ def test_a_joint_plan_with_a_top_level_binding_is_told_so():
 
 def test_a_fold_section_that_drops_an_object_is_refused():
     # An Object-bearing target output left out, written without a mode, or dropped:
-    # each would plan the plates to vanish (spec 18.1 rules 6, 7, 9).
+    # each would plan the plates to vanish (spec 18.1 rules 6, 7, 9). Each is refused
+    # with the code ofplang-validate gives it (D60 V1). (validate passes the entry
+    # with no mode, which rule 9 says must name one; refused here all the same.)
     interface = {"inputs": {"reagent": "shelf.r", "plates": ["loader.a"]}}
-    for outputs in (
-        "            reagent: {mode: carry}\n            count: {mode: carry}\n",
-        "            reagent: {mode: carry}\n            count: {mode: carry}\n"
-        "            plate: {}\n",
-        "            reagent: {mode: carry}\n            count: {mode: carry}\n"
-        "            plate: {mode: drop}\n",
+    for outputs, code in (
+        ("            reagent: {mode: carry}\n            count: {mode: carry}\n",
+         "output_not_listed"),
+        ("            reagent: {mode: carry}\n            count: {mode: carry}\n"
+         "            plate: {}\n", "invalid_output_mode"),
+        ("            reagent: {mode: carry}\n            count: {mode: carry}\n"
+         "            plate: {mode: drop}\n", "object_output_bad_mode"),
     ):
         text = FOLD_DISPENSE.replace(
             "            reagent: {mode: carry}\n            count: {mode: carry}\n"
@@ -676,9 +679,7 @@ def test_a_fold_section_that_drops_an_object_is_refused():
         _, errs = _parse(text, interface)
         # Refused for the section; and where `plate` is not exposed, the body's return
         # of `Run.plate` names nothing, which the reader's guards say too (D60 Q2).
-        assert "wrong_type" in errs and set(errs) <= {"wrong_type", "unknown_reference"}, (
-            outputs, errs
-        )
+        assert code in errs and set(errs) <= {code, "unknown_reference"}, (outputs, errs)
 
 
 def test_an_array_passed_straight_through_is_one_through_arc_per_element():

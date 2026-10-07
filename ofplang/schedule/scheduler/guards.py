@@ -13,8 +13,8 @@ What the reader would lose, and so what is checked, per composite body:
 - a binding it cannot read: neither or both of `from` / `value`
   (`binding_source_arity`), a `from` that is not a reference (`malformed_reference`),
   or one naming nothing in scope (`unknown_reference`). One that is not a mapping at
-  all is refused earlier, by the reader's shape guard (`wrong_type`), with the other
-  shapes it cannot walk;
+  all is refused earlier, by the reader's shape guard (`wrong_value_kind`), with the
+  other shapes it cannot walk;
 - a binding the reader does not look at: a section its node kind does not take
   (`section_not_valid_for_kind`), or an entry naming no input port of the target
   (`binding_port_not_found`);
@@ -76,7 +76,7 @@ def check_body(
     def check_source(binding, path: str) -> str | None:
         """Check one binding / return entry; its kind ("from" / "value"), or None."""
         if not isinstance(binding, dict):
-            return None  # the reader's shape guard has refused it (`wrong_type`)
+            return None  # the reader's shape guard has refused it (`wrong_value_kind`)
         has_from, has_value = "from" in binding, "value" in binding
         if has_from == has_value:
             diags.error(

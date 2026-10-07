@@ -9,9 +9,10 @@ these tests hold the two to the same words, case by case.
 Each case names the one code the reader gives, and validate must give it too. Validate
 may say more about the same document -- `object_output_unused` where an unbound Object
 input leaves its producer's Object with no fate, a type finding about a section it would
-not take -- and those are its to say: the reader loses nothing over them. One difference
-is deliberate: a binding that is not a mapping is refused by the reader's older shape
-guard as `wrong_type`, alongside the other shapes it cannot walk.
+not take -- and those are its to say: the reader loses nothing over them. A binding
+that is not a mapping is refused by the reader's shape pass rather than here, with the
+same code validate gives it (`wrong_value_kind`), alongside the other shapes it cannot
+walk.
 """
 
 from __future__ import annotations
@@ -129,11 +130,12 @@ def test_the_reader_refuses_with_validates_code(what):
     assert code in by_validate, (what, by_validate)
 
 
-def test_a_binding_that_is_not_a_mapping_stays_a_shape_error():
+def test_a_binding_that_is_not_a_mapping_is_wrong_value_kind():
+    # Refused by the reader's shape pass, before the guards, with validate's code.
     by_validate, by_reader = _codes(
         lambda d: _node(d, "wrap")["bind"].__setitem__("t", "inputs.t")
     )
-    assert "wrong_value_kind" in by_validate and by_reader == {"wrong_type"}
+    assert "wrong_value_kind" in by_validate and by_reader == {"wrong_value_kind"}
 
 
 def test_each_body_is_checked_once_however_often_it_is_invoked():

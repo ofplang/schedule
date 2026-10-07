@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+from ofplang.validate import errors as v0
 
 from ofplang.schedule.core.diagnostics import Diagnostics
 from ofplang.schedule.core.identifiers import format_node_path
@@ -104,7 +105,7 @@ def parse_workflow(
     else:
         data = yaml.safe_load(Path(source).read_text(encoding="utf-8"))
     if not isinstance(data, dict):
-        diags.error(errors.WRONG_TYPE, "workflow must be a mapping")
+        diags.error(v0.WRONG_VALUE_KIND, "workflow must be a mapping")
         return None, diags
 
     # First guard: the shapes this reader would otherwise read *partially*, which is
@@ -117,7 +118,8 @@ def parse_workflow(
     # raise, and an exception escaping a function whose contract is "returns
     # diagnostics" reaches the CLI as a traceback (both CLIs catch only YAMLError).
     # The exception's own type and text go into the message: a genuine bug in the
-    # reader must not be disguised as a malformed document.
+    # reader must not be disguised as a malformed document. It is the one refusal with
+    # no `ofplang-validate` code to answer with, so it keeps this package's own.
     try:
         return _read_workflow(data, diags, interface, expansion)
     except (AttributeError, TypeError, KeyError) as exc:
@@ -209,12 +211,16 @@ def _check_readable(data: dict, diags: Diagnostics) -> bool:
 
     Every finding is collected in one pass: these are independent positions, not one
     error and its consequences.
+
+    Each answers with the code `ofplang-validate` gives the same document (design.md
+    D60 V1): a value of the wrong YAML kind is `wrong_value_kind`, a node id that is
+    not a string `invalid_identifier`.
     """
     ok = True
 
-    def wrong(path: str, what: str) -> None:
+    def wrong(path: str, what: str, code: str = v0.WRONG_VALUE_KIND) -> None:
         nonlocal ok
-        diags.error(errors.WRONG_TYPE, f"{path} must be {what}", path)
+        diags.error(code, f"{path} must be {what}", path)
         ok = False
 
     types = data.get("types")
@@ -227,8 +233,11 @@ def _check_readable(data: dict, diags: Diagnostics) -> bool:
     if not isinstance(procs, dict):
         return ok
     for pname, proc in procs.items():
+        if pname == "$import":
+            continue  # an import directive, not a process: the capability gate refuses it
         if not isinstance(proc, dict):
-            continue  # unreadable, not partially readable: the translation reports it
+            wrong(f"processes.{pname}", "a mapping")
+            continue
         body = proc.get("body")
         if body is None:
             continue
@@ -246,11 +255,15 @@ def _check_readable(data: dict, diags: Diagnostics) -> bool:
                     wrong(npath, "a mapping")
                     continue
                 if not isinstance(node.get("id"), str):
-                    wrong(f"{npath}.id", "a string (a node is keyed by its id)")
+                    wrong(f"{npath}.id", "a string (a node is keyed by its id)",
+                          v0.INVALID_IDENTIFIER)
                 for section in ("state", "bind", "each", "carry"):
                     entries = node.get(section)
+                    if entries is None:
+                        continue
                     if not isinstance(entries, dict):
-                        continue  # unreadable: left to the translation
+                        wrong(f"{npath}.{section}", "a mapping")
+                        continue
                     for port, binding in entries.items():
                         if not isinstance(binding, dict):
                             wrong(f"{npath}.{section}.{port}", "a mapping")
@@ -259,6 +272,8 @@ def _check_readable(data: dict, diags: Diagnostics) -> bool:
             for rname, ret in returns.items():
                 if not isinstance(ret, dict):
                     wrong(f"{base}.returns.{rname}", "a mapping")
+        elif returns is not None:
+            wrong(f"{base}.returns", "a mapping")
     return ok
 
 
@@ -990,18 +1005,28 @@ class _Expander:
                 mode = spec.get("mode") if isinstance(spec, dict) else None
                 if mode not in ("carry", "collect", "drop"):
                     self.diags.error(
-                        errors.WRONG_TYPE,
+                        v0.INVALID_OUTPUT_MODE,
                         f"{where}: output {port!r} has no mode carry, collect or drop (§18.1)",
                     )
                     return None
                 modes[port] = mode
             for port, spec in target_outputs.items():
                 object_bearing = _object_bearing(str((spec or {}).get("type", "")), self.domains)
-                if object_bearing and modes.get(port, "drop") == "drop":
+                if not object_bearing:
+                    continue
+                if port not in modes:
                     self.diags.error(
-                        errors.WRONG_TYPE,
-                        f"{where}: its target's output {port!r} is Object-bearing, so the "
-                        "outputs section must expose it as carry or collect (§18.1)",
+                        v0.OUTPUT_NOT_LISTED,
+                        f"{where}: its target's output {port!r} is Object-bearing and not "
+                        "listed in the outputs section, which must expose it as carry or "
+                        "collect (§18.1)",
+                    )
+                    return None
+                if modes[port] == "drop":
+                    self.diags.error(
+                        v0.OBJECT_OUTPUT_BAD_MODE,
+                        f"{where}: its target's output {port!r} is Object-bearing, so it "
+                        "cannot be dropped; expose it as carry or collect (§18.1)",
                     )
                     return None
             return modes
@@ -1011,7 +1036,7 @@ class _Expander:
                 modes[port] = "carry"
             elif _object_bearing(str((spec or {}).get("type", "")), self.domains):
                 self.diags.error(
-                    errors.WRONG_TYPE,
+                    v0.NONCARRY_OBJECT_OUTPUT_UNLISTED,
                     f"{where} has no outputs section, but its target's output {port!r} is "
                     "Object-bearing and not carried; v0 requires the section then (§18.2)",
                 )

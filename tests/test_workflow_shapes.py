@@ -9,6 +9,9 @@ function's contract is to return diagnostics and both CLIs catch only `YAMLError
 an exception arrives as a traceback. And reading the document *partially*, because a
 workflow with fewer activities than the document describes schedules successfully and
 says nothing about what it dropped.
+
+A shape caught where it is answers with the code `ofplang-validate` gives the same
+document (design.md D60 V1), so the two never describe one mistake in two ways.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from ofplang.validate import validate
 
 from ofplang.schedule.scheduler.workflow import parse_workflow
 
@@ -54,9 +58,12 @@ VALID = {
 }
 
 # Shapes the reader would otherwise read partially: it carries on with less than the
-# document holds. Each names the position the diagnostic must point at.
+# document holds. Each names the position the diagnostic must point at, and is
+# `wrong_value_kind` there unless it names another code.
 READ_PARTIALLY = {
     "a type definition": ("types.Cup", lambda d: d["types"].__setitem__("Cup", "x")),
+    "the entry process": ("processes.main", lambda d: d["processes"].__setitem__("main", "x")),
+    "an atomic process": ("processes.make", lambda d: d["processes"].__setitem__("make", "x")),
     "a body": (
         "processes.main.body",
         lambda d: d["processes"]["main"].__setitem__("body", "x"),
@@ -79,7 +86,12 @@ READ_PARTIALLY = {
     ),
     "a node id": (
         "processes.main.body.nodes[0].id",
-        lambda d: d["processes"]["main"]["body"]["nodes"][0].pop("id"),
+        lambda d: d["processes"]["main"]["body"]["nodes"][0].__setitem__("id", 5),
+        "invalid_identifier",
+    ),
+    "a binding section": (
+        "processes.main.body.nodes[1].state",
+        lambda d: d["processes"]["main"]["body"]["nodes"][1].__setitem__("state", "x"),
     ),
     "a binding source": (
         "processes.main.body.nodes[1].state.i",
@@ -89,22 +101,20 @@ READ_PARTIALLY = {
         "processes.main.body.returns.out",
         lambda d: d["processes"]["main"]["body"]["returns"].__setitem__("out", "x"),
     ),
+    "the returns map": (
+        "processes.main.body.returns",
+        lambda d: d["processes"]["main"]["body"].__setitem__("returns", "x"),
+    ),
 }
 
 # Shapes the reader cannot use at all: it would raise, and the translation reports it.
 UNREADABLE = {
     "types": lambda d: d.__setitem__("types", "x"),
     "processes": lambda d: d.__setitem__("processes", "x"),
-    "the entry process": lambda d: d["processes"].__setitem__("main", "x"),
-    "an atomic process": lambda d: d["processes"].__setitem__("make", "x"),
     "the entry name": lambda d: d.__setitem__("entry", ["main"]),
     "a port map": lambda d: d["processes"]["make"].__setitem__("outputs", "x"),
     "a port declaration": lambda d: d["processes"]["make"]["outputs"].__setitem__("o", "x"),
     "a node kind": lambda d: d["processes"]["main"]["body"]["nodes"][0].__setitem__("kind", ["m"]),
-    "a binding section": lambda d: d["processes"]["main"]["body"]["nodes"][1].__setitem__(
-        "state", "x"
-    ),
-    "the returns map": lambda d: d["processes"]["main"]["body"].__setitem__("returns", "x"),
 }
 
 
@@ -122,11 +132,19 @@ def test_the_valid_document_parses() -> None:
 
 @pytest.mark.parametrize("what", sorted(READ_PARTIALLY))
 def test_a_partially_readable_shape_is_reported_at_its_position(what: str) -> None:
-    path, mutate = READ_PARTIALLY[what]
+    path, mutate, *code = READ_PARTIALLY[what]
     workflow, diags = parse_workflow(_mutated(mutate))
     assert workflow is None, f"{what}: a partially read document must not be scheduled"
-    assert [d.code for d in diags.items] == ["wrong_type"]
+    assert [d.code for d in diags.items] == [code[0] if code else "wrong_value_kind"]
     assert diags.items[0].path == path
+
+
+@pytest.mark.parametrize("what", sorted(READ_PARTIALLY))
+def test_it_answers_with_the_code_validate_gives(what: str) -> None:
+    _path, mutate, *_ = READ_PARTIALLY[what]
+    _, diags = parse_workflow(_mutated(mutate))
+    by_validate = {d.code for d in validate(_mutated(mutate)).diagnostics}
+    assert {d.code for d in diags.items} <= by_validate, (what, by_validate)
 
 
 @pytest.mark.parametrize("what", sorted(UNREADABLE))
@@ -143,7 +161,7 @@ def test_an_unreadable_shape_becomes_a_diagnostic(what: str) -> None:
 
 def test_every_malformed_shape_is_answered_with_diagnostics() -> None:
     """The whole survey at once: none of these may raise, and none may pass silently."""
-    shapes = [m for _, m in READ_PARTIALLY.values()] + list(UNREADABLE.values())
+    shapes = [entry[1] for entry in READ_PARTIALLY.values()] + list(UNREADABLE.values())
     for mutate in shapes:
         workflow, diags = parse_workflow(_mutated(mutate))  # must not raise
         assert diags.items, "a malformed document must produce a diagnostic"
