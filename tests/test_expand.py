@@ -659,14 +659,13 @@ def test_a_joint_plan_with_a_top_level_binding_is_told_so():
 def test_a_fold_section_that_drops_an_object_is_refused():
     # An Object-bearing target output left out, written without a mode, or dropped:
     # each would plan the plates to vanish (spec 18.1 rules 6, 7, 9). Each is refused
-    # with the code ofplang-validate gives it (D60 V1). (validate passes the entry
-    # with no mode, which rule 9 says must name one; refused here all the same.)
+    # with the code ofplang-validate gives it (D60 V1).
     interface = {"inputs": {"reagent": "shelf.r", "plates": ["loader.a"]}}
     for outputs, code in (
         ("            reagent: {mode: carry}\n            count: {mode: carry}\n",
          "output_not_listed"),
         ("            reagent: {mode: carry}\n            count: {mode: carry}\n"
-         "            plate: {}\n", "invalid_output_mode"),
+         "            plate: {}\n", "missing_required_key"),
         ("            reagent: {mode: carry}\n            count: {mode: carry}\n"
          "            plate: {mode: drop}\n", "object_output_bad_mode"),
     ):

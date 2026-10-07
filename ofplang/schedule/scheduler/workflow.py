@@ -1003,6 +1003,13 @@ class _Expander:
             modes = {}
             for port, spec in section.items():
                 mode = spec.get("mode") if isinstance(spec, dict) else None
+                if isinstance(spec, dict) and "mode" not in spec:
+                    self.diags.error(
+                        v0.MISSING_REQUIRED_KEY,
+                        f"{where}: output {port!r} has no mode; a listed output says "
+                        "carry, collect or drop (spec 21)",
+                    )
+                    return None
                 if mode not in ("carry", "collect", "drop"):
                     self.diags.error(
                         v0.INVALID_OUTPUT_MODE,
