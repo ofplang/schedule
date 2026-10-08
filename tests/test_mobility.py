@@ -27,7 +27,7 @@ from ofplang.schedule.scheduler.instance import (
     TransportOption,
 )
 from ofplang.schedule.scheduler.model import Arc, Endpoint, Environment, Mode
-from tests.schedutil import example_instance, self_contained_examples
+from tests.schedutil import example_instance, plannable_examples
 
 _ENV = Environment("second", {}, (), {}, {})
 
@@ -462,7 +462,7 @@ def test_the_walk_that_is_remembered_is_not_kept_alive(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("name", self_contained_examples())
+@pytest.mark.parametrize("name", plannable_examples())
 def test_no_example_that_can_be_scheduled_is_ever_refused(name):
     instance = example_instance(name)
     scheduled = construct(instance) is not None

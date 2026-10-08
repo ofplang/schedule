@@ -18,7 +18,6 @@ import pytest
 
 from ofplang.schedule.core.diagnostics import Diagnostics
 from ofplang.schedule.scheduler import greedy, mobility
-from ofplang.schedule.scheduler.envload import load_environment
 from ofplang.schedule.scheduler.greedy import REFUSALS, _refuse, construct
 from ofplang.schedule.scheduler.instance import (
     ActivityInstance,
@@ -29,7 +28,6 @@ from ofplang.schedule.scheduler.instance import (
     RefillOption,
     RelayInfo,
     TransportOption,
-    build_instance,
 )
 from ofplang.schedule.scheduler.model import (
     Arc,
@@ -41,19 +39,15 @@ from ofplang.schedule.scheduler.model import (
 )
 from ofplang.schedule.scheduler.plancheck import check_schedule as _violations
 from ofplang.schedule.scheduler.status import ActivityFixation, Fixation, RefillFixation
-from ofplang.schedule.scheduler.workflow import parse_workflow
-from tests.schedutil import self_contained_examples
+from tests.schedutil import example_instance, plannable_examples
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 _ENV = Environment("second", {}, (), {}, {})
 
 
 def _instance(name: str) -> Instance:
-    workflow, _ = parse_workflow(EXAMPLES / f"{name}.workflow.yaml")
-    environment, _ = load_environment(EXAMPLES / f"{name}.env.yaml")
-    instance, diags = build_instance(workflow, environment)
-    assert instance is not None, [d.code for d in diags.items]
-    return instance
+    """One worked example's instance, read with its own document where it has one."""
+    return example_instance(name)
 
 
 def test_a_two_step_workflow_is_scheduled_and_the_schedule_is_one():
@@ -490,7 +484,7 @@ def test_an_instance_with_no_way_through_still_comes_out_empty():
 # a plan the solver can crack is not a defect here.
 # ---------------------------------------------------------------------------
 
-_EXAMPLES = self_contained_examples()
+_EXAMPLES = plannable_examples()
 
 
 @pytest.mark.parametrize("name", _EXAMPLES)

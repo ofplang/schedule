@@ -14,42 +14,63 @@ EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 SIMPLE_WF = EXAMPLES / "simple.workflow.yaml"  # SampleSource(source) -> SampleTarget(target)
 
 
-def example_instance(name: str):
-    """The instance one worked example builds, or an assertion if it does not."""
+def _example_build(name: str):
+    """`(instance, errors)` for one worked example, read the way it is planned: with
+    its own document's `interface` and `expansion` where it has one -- an Array of
+    plates takes its length from the one, a list of labels or a branch's arm from the
+    other, and without them the workflow is refused."""
+    import yaml
+
     from ofplang.schedule.scheduler.envload import load_environment
     from ofplang.schedule.scheduler.instance import build_instance
     from ofplang.schedule.scheduler.workflow import parse_workflow
 
-    workflow, _ = parse_workflow(EXAMPLES / f"{name}.workflow.yaml")
+    document_path = EXAMPLES / f"{name}.document.yaml"
+    document = (
+        yaml.safe_load(document_path.read_text(encoding="utf-8")) or {}
+        if document_path.is_file()
+        else {}
+    )
+    interface, expansion = document.get("interface"), document.get("expansion")
+    workflow, wf_diags = parse_workflow(
+        EXAMPLES / f"{name}.workflow.yaml", interface=interface, expansion=expansion
+    )
+    errors = [d.code for d in wf_diags.items if d.severity == "error"]
     environment, _ = load_environment(EXAMPLES / f"{name}.env.yaml")
-    instance, diags = build_instance(workflow, environment)
-    assert instance is not None, [d.code for d in diags.items]
+    if workflow is None or errors:
+        return None, errors
+    instance, diags = build_instance(workflow, environment, interface=interface)
+    return instance, [d.code for d in diags.items if d.severity == "error"]
+
+
+def example_instance(name: str):
+    """The instance one worked example builds, or an assertion if it does not."""
+    instance, errors = _example_build(name)
+    assert instance is not None and not errors, errors
     return instance
 
 
-def self_contained_examples() -> list[str]:
-    """The worked examples that need nothing but a workflow and an environment.
+def plannable_examples() -> list[str]:
+    """The worked examples that build an instance, each read with its own document
+    where it has one.
 
-    Discovered rather than listed, so an example added to `examples/` is swept
-    by the suites that use this without anybody remembering to add it. One that
-    needs an execution document (`interface_load` binds an entry input) has no
-    instance without one and is left out here; the suites that care about
-    documents build their own.
+    Discovered rather than listed, so an example added to `examples/` is swept by
+    the suites that use this without anybody remembering to add it. An example is
+    left out only where it cannot be read cleanly even so -- one whose document is a
+    replan status, or that is planned as several jobs.
+
+    🔴 **A reading with errors is never swept.** The reader still returns the
+    workflow it built around what it refused, which can be empty; until 2026-10-08
+    the examples that need a document were read without one, came back empty, and
+    the sweeps tested nothing on them while reporting a skip.
     """
-    from ofplang.schedule.scheduler.envload import load_environment
-    from ofplang.schedule.scheduler.instance import build_instance
-    from ofplang.schedule.scheduler.workflow import parse_workflow
-
     found = []
     for path in sorted(EXAMPLES.glob("*.workflow.yaml")):
         name = path.name[: -len(".workflow.yaml")]
-        environment = EXAMPLES / f"{name}.env.yaml"
-        if not environment.exists():
+        if not (EXAMPLES / f"{name}.env.yaml").exists():
             continue
-        workflow, _ = parse_workflow(path)
-        loaded, _ = load_environment(environment)
-        instance, _diags = build_instance(workflow, loaded)
-        if instance is not None:
+        instance, errors = _example_build(name)
+        if instance is not None and not errors:
             found.append(name)
     return found
 
