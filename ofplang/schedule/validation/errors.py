@@ -244,6 +244,21 @@ LENGTH_ON_OBJECT_PORT = "length_on_object_port"
 # which is a mapping key written twice: the entries are list items, and which of the
 # two lengths was meant is a question the document leaves open either way.
 DUPLICATE_LENGTH = "duplicate_length"
+# A `branch` node (§2, design.md D63) whose arm is not known when the workflow is
+# expanded: its condition is an entry input no `expansion.arms` entry decides, or a
+# value only the run produces. Planning one arm anyway would be a guess.
+BRANCH_ARM_UNKNOWN = "branch_arm_unknown"
+# An `expansion.arms` entry names no branch node: no branch at that path, or an
+# invocation the expansion does not have. Not reported for a branch inside an arm the
+# expansion did not choose -- it simply does not occur.
+ARM_UNKNOWN_NODE = "arm_unknown_node"
+# An `expansion.arms` entry states an arm other than the one the branch's literal
+# condition decides.
+ARM_MISMATCH = "arm_mismatch"
+# Two entries of `expansion.arms` name the same branch (§6.13; schema).
+DUPLICATE_ARM = "duplicate_arm"
+# An `expansion.arms` entry's `arm` is neither `then` nor `else` (§6.13; schema).
+UNKNOWN_ARM = "unknown_arm"
 # A joint plan (§6.11) was given a document carrying a top-level `expansion`. Like
 # `interface`, it describes one workflow's values, so a joint plan carries it per job.
 MULTI_JOB_EXPANSION = "multi_job_expansion"
@@ -470,6 +485,11 @@ ERROR_CODES = frozenset(
         LENGTH_UNKNOWN_PORT,
         LENGTH_ON_OBJECT_PORT,
         DUPLICATE_LENGTH,
+        BRANCH_ARM_UNKNOWN,
+        ARM_UNKNOWN_NODE,
+        ARM_MISMATCH,
+        DUPLICATE_ARM,
+        UNKNOWN_ARM,
         MULTI_JOB_EXPANSION,
         INTERFACE_OUTPUT_UNBOUND,
         OCCUPIED_DUPLICATE_SPOT,

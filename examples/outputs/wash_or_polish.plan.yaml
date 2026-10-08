@@ -1,0 +1,192 @@
+time:
+  unit: second
+interface:
+  inputs:
+    cups:
+    - tray.a
+    - tray.b
+    - tray.c
+  outputs:
+    cups:
+    - rack.a
+    - rack.b
+    - rack.c
+expansion:
+  arms:
+  - node:
+    - Each
+    - 0
+    - Choose
+    arm: then
+  - node:
+    - Each
+    - 1
+    - Choose
+    arm: else
+  - node:
+    - Each
+    - 2
+    - Choose
+    arm: then
+outcome: optimal
+objective:
+  kind: makespan
+  value: 24
+activities:
+- kind: transport
+  start: 0
+  end: 2
+  from_spot: tray.a
+  to_spot: sink.basin
+  transporter: arm
+  arc:
+    from:
+      node: []
+      port: cups
+      index:
+      - 0
+    to:
+      node:
+      - Each
+      - 0
+      - Choose
+      port: cup
+- kind: transport
+  start: 2
+  end: 4
+  from_spot: tray.b
+  to_spot: buffer.pad
+  transporter: arm
+  arc:
+    from:
+      node: []
+      port: cups
+      index:
+      - 1
+    to:
+      node:
+      - Each
+      - 1
+      - Choose
+      port: cup
+- kind: processing
+  start: 2
+  end: 10
+  process: wash
+  mode: '0'
+  node:
+  - Each
+  - 0
+  - Choose
+  devices:
+  - sink
+  input_spots:
+    cup: sink.basin
+  output_spots:
+    cup: sink.basin
+- kind: processing
+  start: 4
+  end: 8
+  process: polish
+  mode: '0'
+  node:
+  - Each
+  - 1
+  - Choose
+  devices:
+  - buffer
+  input_spots:
+    cup: buffer.pad
+  output_spots:
+    cup: buffer.pad
+- kind: transport
+  start: 8
+  end: 10
+  from_spot: buffer.pad
+  to_spot: rack.b
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Each
+      - 1
+      - Choose
+      port: cup
+    to:
+      node: []
+      port: cups
+      index:
+      - 1
+- kind: transport
+  start: 10
+  end: 12
+  from_spot: sink.basin
+  to_spot: rack.a
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Each
+      - 0
+      - Choose
+      port: cup
+    to:
+      node: []
+      port: cups
+      index:
+      - 0
+- kind: transport
+  start: 12
+  end: 14
+  from_spot: tray.c
+  to_spot: sink.basin
+  transporter: arm
+  arc:
+    from:
+      node: []
+      port: cups
+      index:
+      - 2
+    to:
+      node:
+      - Each
+      - 2
+      - Choose
+      port: cup
+- kind: processing
+  start: 14
+  end: 22
+  process: wash
+  mode: '0'
+  node:
+  - Each
+  - 2
+  - Choose
+  devices:
+  - sink
+  input_spots:
+    cup: sink.basin
+  output_spots:
+    cup: sink.basin
+- kind: transport
+  start: 22
+  end: 24
+  from_spot: sink.basin
+  to_spot: rack.c
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Each
+      - 2
+      - Choose
+      port: cup
+    to:
+      node: []
+      port: cups
+      index:
+      - 2
+meta:
+  workflow: examples/wash_or_polish.workflow.yaml
+  environment: examples/wash_or_polish.env.yaml
+  status: examples/wash_or_polish.document.yaml

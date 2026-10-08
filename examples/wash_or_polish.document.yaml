@@ -1,0 +1,18 @@
+# Execution document for wash_or_polish.workflow.yaml.
+#
+# `interface` (SPEC §6.8) puts the three cups on the tray and the finished ones on the
+# rack, one spot per cup in element order. `expansion.arms` (§6.13) says which arm
+# each cup's branch takes: cups 0 and 2 are dirty and washed, cup 1 is polished. It is
+# not the flags themselves -- the scheduler never reads values -- only what the
+# expansion needs; a run writes it from the flags it was given.
+interface:
+  inputs:
+    cups: [tray.a, tray.b, tray.c]
+  outputs:
+    cups: [rack.a, rack.b, rack.c]
+expansion:
+  arms:
+    - { node: [Each, 0, Choose], arm: then }
+    - { node: [Each, 1, Choose], arm: else }
+    - { node: [Each, 2, Choose], arm: then }
+activities: []

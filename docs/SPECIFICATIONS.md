@@ -40,9 +40,11 @@ plan for the remaining work.
 The scheduler targets a subset of v0. The following are **out of scope** for the
 initial versions:
 
-- **`do_while` and `branch` nodes** — `node_do_while`, `node_branch`. How many
-  times a `do_while` runs, and which arm a `branch` takes, are decided by values the
-  run produces, so neither has one graph to plan before the run.
+- **`do_while` nodes** — `node_do_while`. How many times one runs is decided by
+  values the run produces, so it has no one graph to plan before the run.
+- **A `branch` whose arm is decided during the run** — its condition is a value an
+  atomic produces (`branch_arm_unknown`). One whose arm is known before the run is in
+  scope (below).
 - **An atomic process with an Object-bearing Array port** — each element is an
   Object on a spot of its own, and a mode maps a port to one spot; traverse the
   Array with a `map` / `fold` instead.
@@ -72,6 +74,17 @@ In scope:
   invocation `i`'s carry outputs — so the parts of one invocation that do not read
   the carry are not held back by the previous one. The same workflow with a longer
   list is a different graph, with a different fingerprint (§6.11).
+- **`branch` nodes whose arm is known before the run** (`node_branch`) — expanded
+  with that one arm, as though the branch node invoked the arm's process: an atomic
+  arm is the activity at the branch's own path `P`, a composite arm's body is under
+  `P` (§6.3), and an implicit `else` passes its Object arguments through untouched.
+  The node exposes what v0 20.1 / 20.3 say: its `common` outputs, or by default the
+  Object-bearing ones. Which arm is read off the condition's source: a literal decides
+  it here; an entry input -- or one element of one, for a branch inside a `map` -- is
+  a value only the run has, which states the arm in `expansion.arms` (§6.13). Every
+  branch the expansion reaches has to be decided this way (`branch_arm_unknown`); one
+  inside an arm not taken does not occur and needs nothing. A different arm is a
+  different graph, with a different fingerprint.
 - **`python_script_processes`** — per v0 §22.1 these are Pure Data only (no
   Object-bearing ports, no `objects` section). They are treated as opaque
   Pure Data atomic steps: they take time but occupy no spot and are not
@@ -887,6 +900,11 @@ environment.
     element by element, so the two would not match. Written as text (in a message,
     §9) it is `Wash/2/aspirate`; a node id cannot start with a digit, so the `2`
     reads back unambiguously.
+  - **Branch.** A `branch` node invokes its chosen arm as an ordinary node invokes
+    its process, so the arm adds nothing to the path: an atomic arm is the activity at
+    the branch's own path (`[Choose]`), a composite arm's nodes are under it
+    (`[Choose, rinse]`). Which arm ran is `expansion.arms` (§6.13) and the activity's
+    `process`.
 - `devices`, `input_spots`, `output_spots` (optional) — derivable echo of the
   mode's devices and qualified spot mappings. A Pure-Data-only activity has none.
 - `device_access` (optional) — derivable echo of the mode's `device_access` (§5.5).
@@ -1767,6 +1785,9 @@ expansion:
       port: labels          # required: the port at that node
       length: 3             # required: how many elements its Array has
       # index: [0]          # optional: one element of a nested Array, as on an arc (§6.4)
+  arms:
+    - node: [Each, 0, Choose]   # required: the node path of a branch node
+      arm: then                 # required: then | else
 ```
 
 A `map` / `fold` is expanded into its invocations before planning (§2), so how many
@@ -1819,6 +1840,39 @@ different fingerprint (§6.11), exactly as a longer `interface` list is. So the 
 is carried through replans and echoed in the plan output, like `interface`: a replan
 has to expand the workflow the same way, or its history would be matched against a
 different graph. In a joint plan it is per job (§6.11).
+
+#### `arms`
+
+A `branch` is expanded with the one arm it takes (§2), so which arm has to be known
+then. Where the condition is an entry input — a flag given at the boundary, or one
+element of a list of flags for a branch inside a `map` — the value is the run's, and
+`arms` is where the run says which arm it decides: the arm, not the flag. A branch is
+named by its node path: `[Choose]` in the entry composite, `[Each, 0, Choose]` for the
+branch in invocation 0 of a `map`, `[C, Choose]` inside a composite invoked as `C`.
+
+**Who writes it.** The run again. It asks the expansion which branches it reaches
+without an arm, decides those whose condition it holds, and asks again: a branch can
+sit inside an arm, and appears only once the arm around it is decided. A condition the
+boundary does not supply runs on its type's default — `false`, the `else` arm — and is
+reported as any undefined entry input is.
+
+**What is checked.**
+
+- Every branch the expansion reaches must have an arm: stated here, or read off a
+  literal condition by the scheduler itself. Otherwise `branch_arm_unknown` — also for
+  a condition produced during the run, which no stated arm can stand for yet: an arm
+  stated for one is `unsupported_feature`, since nothing would check it against the
+  value when it is produced.
+- An arm stated for a branch with a literal condition must be the one the literal
+  takes (`arm_mismatch`).
+- A path that names no branch of this expansion — no branch there, or an invocation
+  that is not there — is `arm_unknown_node`. One naming a branch inside an arm the
+  expansion did not take is not: that branch does not occur, and nothing reads it.
+- A branch is named once (`duplicate_arm`), and `arm` is `then` or `else`
+  (`unknown_arm`).
+
+A different arm is a different graph and fingerprint, so `arms` is carried and echoed
+exactly as `lengths` is.
 
 ## 7. Execution status
 
@@ -2047,7 +2101,11 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
   on an arc endpoint, §6.4) and a required `length` (a non-negative integer). No other
   key is accepted, and no position (`node`, `port`, `index`) is named twice
   (`duplicate_length`). (That the position is a Pure Data Array entry input of the
-  workflow is execution-layer, §9.3.)
+  workflow is execution-layer, §9.3.) `arms` (optional) is a list of mappings, each
+  with a required `node` (a non-empty node path) and a required `arm` (`then` or
+  `else`, `unknown_arm` otherwise); no other key is accepted, and no branch is named
+  twice (`duplicate_arm`). (That the path is a branch of the workflow is
+  execution-layer.)
 - Each activity: `kind` is required and is `processing`, `transport`, `relay`, or
   `replenishment`; `job` (if present) is an identifier (§6.11) naming an entry of the
   `jobs` roster (`unknown_job`, which also covers a `job` in a document with no
@@ -2151,7 +2209,11 @@ environment for processes the workflow never invokes are not checked.
   its type is not an Array; `length_on_object_port` if it is an Array of Objects);
   a `node` inside the workflow or an `index` is `unsupported_feature`. A length that
   nothing traverses is not reported, and neither is an Array with no length that
-  nothing traverses.
+  nothing traverses. Every branch the expansion reaches has an arm — stated in `arms`,
+  or read off a literal condition (`branch_arm_unknown` otherwise; an arm stated for a
+  condition produced during the run is `unsupported_feature`); a stated arm agrees
+  with a literal condition (`arm_mismatch`) and names a branch of this expansion, or
+  one inside an arm it did not take (`arm_unknown_node` otherwise).
 - **Inventories** (§6.10): the resource model is in effect, unless it has been
   disabled (§4.7.3), when **some mode of some invoked process declares
   `consumption`**. Declaring `resources` on a device is not enough on its own: a
@@ -2262,7 +2324,7 @@ Extension keys are admitted only at **closed mapping positions** — the same
 positions where the schema otherwise enforces a fixed key set: the environment
 top level and its `time` / device / transporter / transport / process / mode
 mappings (§9.1); and the execution-document top level and its `time` /
-`objective` / `interface` / `expansion` / length-entry / activity mappings (§9.2). They are **not** interpreted
+`objective` / `interface` / `expansion` / length-entry / arm-entry / activity mappings (§9.2). They are **not** interpreted
 inside the open name/port maps whose keys are user-chosen — `processes`,
 `input_spots` / `output_spots`, `interface.inputs` / `outputs`, a device's
 `resources`, a mode's `consumption`, `inventories.levels` and the per-device maps
@@ -2343,6 +2405,8 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | `occupied_duplicate_spot` | two entries of `occupied` name the same spot (§6.12) |
 | `occupied_already_derived` | an `occupied` entry names a spot a stopped job's own history already holds (§6.12): the claim is made twice, and the half that is derived does not appear in the document |
 | `occupied_spot_in_use` | an `occupied` entry names a spot a `running` activity is using (§6.12); the section is for a hold the plan does not otherwise account for |
+| `duplicate_arm` | two entries of `expansion.arms` name the same branch (§6.13) |
+| `unknown_arm` | an `expansion.arms` entry's `arm` is neither `then` nor `else` (§6.13) |
 | `duplicate_length` | two entries of `expansion.lengths` name the same position (§6.13). Not `duplicate_key`: the entries are list items, not mapping keys |
 | `duplicate_job_id` | two entries of the `jobs` roster share an `id` (§6.11) |
 | `unknown_job` | an activity's `job` names no roster entry, or the document has no roster (§6.11) |
@@ -2362,7 +2426,10 @@ building the solver instance. Severity is `error` unless marked *warning*.
 
 | code | meaning |
 | --- | --- |
-| `unsupported_feature` | a workflow feature outside the scheduler's v0 subset (a `do_while` or `branch` node, an atomic process with an Object-bearing Array port, §2), or an `expansion` length this stage does not read — one inside the workflow, or of one element of a nested Array (§6.13) |
+| `unsupported_feature` | a workflow feature outside the scheduler's v0 subset (a `do_while` node, an atomic process with an Object-bearing Array port, §2), an `expansion` length this stage does not read — one inside the workflow, or of one element of a nested Array — or an arm stated for a branch whose condition is produced during the run (§6.13) |
+| `branch_arm_unknown` | a `branch` the expansion reaches whose arm is not known: its condition is an entry input no `expansion.arms` entry decides, or a value produced during the run (§2, §6.13) |
+| `arm_unknown_node` | an `expansion.arms` entry names no branch of this expansion — no branch at that path, or an invocation that is not there — and no branch inside an arm not taken (§6.13) |
+| `arm_mismatch` | an `expansion.arms` entry states an arm other than the one its branch's literal condition takes (§6.13) |
 | `array_length_unknown` | a `map` / `fold` none of whose `each` sources has a length known before the run (§2). One with no `each` source at all is `missing_each_source` (below) |
 | `each_length_mismatch` | a `map` / `fold` whose `each` sources' known lengths differ (they are zipped, §2) — an `expansion` length included (§6.13) |
 | `length_unknown_port` | an `expansion` length names a port that is not an entry input of the workflow, or one whose type is not an Array (§6.13) |

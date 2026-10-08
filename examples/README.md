@@ -215,6 +215,36 @@ A new cup cannot be made until the last one has left the labeller's one spot, so
 cups are made one after another — and each is filled while the next is being made
 (cup 1 is made 6–10 while cup 0 is filled 6–12).
 
+## `wash_or_polish` — a branch per cup, its arm stated in `expansion`
+
+- `wash_or_polish.workflow.yaml` — `main` takes a rack of cups and one `dirty` flag per
+  cup, and a **`map`** (`Each`) handles each cup with a **`branch`** (`Choose`): washed
+  if dirty, polished if not.
+- `wash_or_polish.env.yaml` — one `sink` that washes, one `buffer` that polishes, a
+  three-slot `tray` and `rack`, one arm.
+- `wash_or_polish.document.yaml` — `interface` places the cups, and **`expansion.arms`**
+  (SPEC §6.13) says which arm each cup's branch takes: cups 0 and 2 `then` (wash), cup
+  1 `else` (polish).
+
+The flags are values, so the scheduler never reads them; the arm is the one thing
+about them the plan depends on, and that is what `expansion.arms` states — a run writes
+it from the flags it was given. Each branch is then expanded with its one arm only, as
+though its node invoked that process: the plan's activities are `[Each, 0, Choose]`
+running `wash`, `[Each, 1, Choose]` running `polish`, and so on. A branch whose arm is
+not stated — or whose condition is produced during the run — is refused
+(`branch_arm_unknown`) rather than planned on a guess.
+
+```sh
+ofp-schedule schedule wash_or_polish.workflow.yaml --env wash_or_polish.env.yaml \
+    --document wash_or_polish.document.yaml
+```
+
+- `outputs/wash_or_polish.plan.yaml` (makespan 24), with
+  `outputs/wash_or_polish.device.svg` and `outputs/wash_or_polish.lane.svg`.
+
+The two washes take the one sink in turn (2–10, 14–22) while the polish runs on the
+buffer beside the first (4–8).
+
 ## `stopped_job` — one job stops, and what it left behind is still there
 
 The example for a failure that is not the end of the world (SPEC §6.2) and for the

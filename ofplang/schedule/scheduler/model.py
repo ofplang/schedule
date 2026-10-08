@@ -390,3 +390,12 @@ class Workflow:
     # checks it via its whole-workflow boundary handles (D33); only nested composites
     # need this. The runner uses only those with contracts.
     composites: dict[NodePath, CompositeIO] = field(default_factory=dict)
+    # `branch` node path -> the arm it was expanded with (`then` / `else`). Recorded
+    # for the same reason as `iterations`: an implicit `else` leaves no activity behind.
+    arms: dict[NodePath, str] = field(default_factory=dict)
+    # `branch` node path -> where its condition's value comes from, for every branch
+    # reached whose arm was not decided (design.md D63). The runner reads this to
+    # decide the ones whose condition it holds -- an entry input -- and states them
+    # in `expansion.arms`; a workflow that has any is refused (`branch_arm_unknown`).
+    # None where the condition resolved to nothing (already reported upstream).
+    undecided_branches: dict[NodePath, Source | None] = field(default_factory=dict)

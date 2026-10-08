@@ -1,0 +1,77 @@
+# A branch per element of a map: each cup in a rack is washed if it is dirty and
+# polished if not (design.md D63, stage 1).
+#
+# `dirty` is a list of flags, one per cup, given at the boundary -- values, so the
+# scheduler never sees them. Which arm each cup takes is stated in the document's
+# `expansion.arms` (written by the run, which reads the flags), and each branch is
+# expanded with that arm only: the cup's activity is the branch's own path,
+# `[Each, i, Choose]`, running `wash` or `polish`.
+#
+#   ofp-schedule schedule wash_or_polish.workflow.yaml --env wash_or_polish.env.yaml \
+#       --document wash_or_polish.document.yaml
+spec_version: "0.5"
+
+types:
+  Cup:
+    domain: object
+
+processes:
+
+  wash:                                         # at the sink
+    kind: atomic
+    inputs:
+      cup: { type: Cup, phase: data }
+    outputs:
+      cup: { type: Cup, phase: data }
+    objects:
+      map:
+        outputs.cup: inputs.cup
+
+  polish:                                       # at the buffer
+    kind: atomic
+    inputs:
+      cup: { type: Cup, phase: data }
+    outputs:
+      cup: { type: Cup, phase: data }
+    objects:
+      map:
+        outputs.cup: inputs.cup
+
+  handle:                                       # one cup: wash it or polish it
+    kind: composite
+    inputs:
+      cup:   { type: Cup, phase: data }
+      dirty: { type: Bool, phase: run }
+    outputs:
+      cup: { type: Cup, phase: data }
+    body:
+      nodes:
+        - id: Choose
+          kind: branch
+          condition: { from: inputs.dirty }
+          args:
+            cup: { from: inputs.cup }
+          then: { process: wash }
+          else: { process: polish }
+      returns:
+        cup: { from: Choose.cup }
+
+  main:
+    kind: composite
+    inputs:
+      cups:  { type: "Array<Cup>", phase: data }
+      dirty: { type: "Array<Bool>", phase: run }
+    outputs:
+      cups: { type: "Array<Cup>", phase: data }
+    body:
+      nodes:
+        - id: Each
+          kind: map
+          process: handle
+          each:
+            cup:   { from: inputs.cups }
+            dirty: { from: inputs.dirty }
+      returns:
+        cups: { from: Each.cup }
+
+entry: main

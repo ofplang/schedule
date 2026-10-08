@@ -277,7 +277,7 @@ def test_malformed_entries():
     assert _entry_codes(node=[0], port="labels", length=1) == ["invalid_node_path"]
     assert _entry_codes(node=[], port="a-b", length=1) == ["invalid_identifier"]
     assert _entry_codes(node=[], port="p", length=1, count=2) == ["unknown_key"]
-    assert _shape_codes({"arms": []}) == ["unknown_key"]
+    assert _shape_codes({"iterations": []}) == ["unknown_key"]
     assert _shape_codes([1]) == ["wrong_type"]
 
 

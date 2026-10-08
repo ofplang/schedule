@@ -5,13 +5,18 @@ The scheduler reads the workflow itself (decision D17) instead of depending on
 atomic, each port's Object-bearing-ness (§5), and the expanded node graph
 (processing activities with node paths, Object-bearing arcs, and precedence).
 Composite invocations — including nested ones — are flattened by splicing
-dataflow across the composite boundary, and `map` / `fold` nodes are expanded into
-their invocations (see `_Expander`). The workflow is assumed to be valid v0; this
-reader only diagnoses the parts the scheduler cannot handle (a capability gate):
-generic processes (`generic_processes`), an unexpanded `$import`, `branch` and
-`do_while` nodes, an atomic process with an Object-bearing Array port, a traversal
-whose length is not known before the run, recursive composite definitions, and a
-missing entry.
+dataflow across the composite boundary, `map` / `fold` nodes are expanded into
+their invocations, and a `branch` into the arm it takes (see `_Expander`). The
+workflow is assumed to be valid v0; this reader only diagnoses the parts the
+scheduler cannot handle (a capability gate): generic processes (`generic_processes`),
+an unexpanded `$import`, `do_while` nodes, an atomic process with an Object-bearing
+Array port, a traversal whose length is not known before the run, a branch whose arm
+is not, recursive composite definitions, and a missing entry.
+
+The expansion is separate from planning (design.md D63): `parse_workflow` and
+`undecided_branches` take a workflow, its `interface` and its `expansion` and return
+the expanded graph -- and, for the runner, the branches whose arm is still to be
+stated -- without building or solving anything.
 
 Binding semantics follow §11, read by the port's type: a binding to an
 Object-bearing input carries an Object (so it is a transport arc), one to a Pure
@@ -129,6 +134,22 @@ def parse_workflow(
             "shaped as v0 requires -- validate it first",
         )
         return None, diags
+
+
+def undecided_branches(
+    source, *, interface: dict | None = None, expansion: dict | None = None
+) -> dict[NodePath, Source | None]:
+    """The branches this expansion reaches whose arm it could not decide: branch node
+    path -> where the condition's value comes from (design.md D63).
+
+    The runner's half of deciding arms. A condition that is an entry input -- or one
+    element of one, for a branch inside a `map` -- is a value the runner holds: it
+    decides the arm, states it in `expansion.arms`, and asks again, since a branch can
+    sit inside an arm that only appears once the outer one is decided. A condition
+    produced during the run is not one it can decide yet, and the workflow is refused
+    when it is planned. Expanding only: nothing here plans."""
+    workflow, _diags = parse_workflow(source, interface=interface, expansion=expansion)
+    return dict(workflow.undecided_branches) if workflow is not None else {}
 
 
 def fingerprint(workflow: Workflow) -> str:
@@ -257,6 +278,10 @@ def _check_readable(data: dict, diags: Diagnostics) -> bool:
                 if not isinstance(node.get("id"), str):
                     wrong(f"{npath}.id", "a string (a node is keyed by its id)",
                           v0.INVALID_IDENTIFIER)
+                # A branch's arms and its condition: read to decide and expand the arm.
+                for key in ("then", "else", "condition"):
+                    if key in node and not isinstance(node.get(key), dict):
+                        wrong(f"{npath}.{key}", "a mapping")
                 for section in ("state", "bind", "each", "carry"):
                     entries = node.get(section)
                     if entries is None:
@@ -347,6 +372,14 @@ def _read_workflow(
             _boundary_lengths(
                 expansion, in_ports, _boundary_ranks(entry_proc)["entry_input_ranks"], diags
             )
+            # Nor is there a body, so no branch: every stated arm names none.
+            for i, arm_path, _arm in _stated_arms(expansion):
+                diags.error(
+                    errors.ARM_UNKNOWN_NODE,
+                    f"expansion.arms[{i}]: {format_node_path(arm_path)!r} names no branch "
+                    "node: the entry process is atomic",
+                    f"expansion.arms[{i}]",
+                )
             # As Source trees every port is said, Pure Data ones included: each input is
             # the workflow's entry input of the same name, seeded at the boundary, and
             # each output is this one activity's.
@@ -394,10 +427,12 @@ def _read_workflow(
     lengths = _boundary_lengths(
         expansion, in_ports, _boundary_ranks(entry_proc)["entry_input_ranks"], diags
     )
+    stated_arms = _stated_arms(expansion)
     exp, precedence = _expand_body(
-        entry, entry_proc, procs, atomic, in_ports, out_ports, interface, lengths, domains,
-        diags,
+        entry, entry_proc, procs, atomic, in_ports, out_ports, interface, lengths,
+        {path: arm for _i, path, arm in stated_arms}, domains, diags,
     )
+    _check_stated_arms(stated_arms, exp, procs, diags)
 
     return (
         Workflow(
@@ -417,6 +452,10 @@ def _read_workflow(
             # has to check (D57); the scheduler does not read these either.
             iterations=exp.iterations,
             length_checks=tuple(exp.length_checks),
+            # Which arm each branch reached was expanded with, and the ones that could
+            # not be decided -- for the runner, which states the arms it can (D63).
+            arms=exp.arms,
+            undecided_branches=exp.undecided,
             **_boundary_ranks(entry_proc),
         ),
         diags,
@@ -503,6 +542,88 @@ def _boundary_lengths(
     return lengths
 
 
+def _stated_arms(expansion) -> list[tuple[int, NodePath, str]]:
+    """The well-formed `expansion.arms` entries, `(position, branch path, arm)`, read
+    leniently as `_boundary_lengths` reads lengths: an entry not shaped as one is the
+    document validation's to report. The first entry for a path is the one used (a
+    repeat is `duplicate_arm` there)."""
+    entries = expansion.get("arms") if isinstance(expansion, dict) else None
+    if not isinstance(entries, list):
+        return []
+    stated: list[tuple[int, NodePath, str]] = []
+    seen: set[NodePath] = set()
+    for i, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            continue
+        node, arm = entry.get("node"), entry.get("arm")
+        if not (isinstance(node, list) and node and arm in _ARMS):
+            continue
+        if not all(isinstance(x, str) or (isinstance(x, int) and not isinstance(x, bool))
+                   for x in node):
+            continue
+        path = tuple(node)
+        if path not in seen:
+            seen.add(path)
+            stated.append((i, path, arm))
+    return stated
+
+
+def _check_stated_arms(
+    stated: list[tuple[int, NodePath, str]], exp, procs: dict, diags: Diagnostics
+) -> None:
+    """Every stated arm the expansion did not read must be one it had no reason to:
+    a branch inside an arm it did not choose, or under a branch it could not decide
+    (already reported). Anything else names no branch of this expansion
+    (`arm_unknown_node`) -- no branch at that path, or an invocation that is not
+    there."""
+    for i, path, _arm in stated:
+        if path in exp.used_arms:
+            continue
+        # The innermost branch reached that `path` lies under.
+        enclosing = [q for q in exp.branch_nodes if len(q) < len(path) and path[: len(q)] == q]
+        if enclosing:
+            q = max(enclosing, key=len)
+            chosen = exp.arms.get(q)
+            if chosen is None:
+                continue  # under an undecided branch: refused there already
+            other = exp.branch_nodes[q].get("else" if chosen == "then" else "then")
+            other_proc = procs.get(other.get("process")) if isinstance(other, dict) else None
+            if isinstance(other_proc, dict) and _names_branch(other_proc, path[len(q):], procs):
+                continue  # inside the arm not chosen: it does not occur
+        diags.error(
+            errors.ARM_UNKNOWN_NODE,
+            f"expansion.arms[{i}]: {format_node_path(path)!r} names no branch node of "
+            "this expansion",
+            f"expansion.arms[{i}]",
+        )
+
+
+def _names_branch(proc, rel: NodePath, procs: dict, depth: int = 0) -> bool:
+    """Whether `rel`, read inside the composite `proc`, names a branch node -- by
+    structure alone (an iteration index after a map / fold is not bounds-checked: the
+    traversal was never expanded). A branch's arms are both looked into."""
+    if not rel or depth > 64 or not isinstance(proc, dict):
+        return False
+    head, rest = rel[0], rel[1:]
+    node = _body_nodes(proc).get(head) if isinstance(head, str) else None
+    if node is None:
+        return False
+    kind = node.get("kind")
+    if kind in ("map", "fold"):
+        if rest and isinstance(rest[0], int):
+            rest = rest[1:]
+        target = procs.get(node.get("process"))
+        return bool(rest) and _names_branch(target, rest, procs, depth + 1)
+    if kind == "branch":
+        if not rest:
+            return True
+        return any(
+            _names_branch(procs.get(arm.get("process")), rest, procs, depth + 1)
+            for arm in (node.get("then"), node.get("else")) if isinstance(arm, dict)
+        )
+    return bool(rest) and _names_branch(procs.get(node.get("process")), rest, procs, depth + 1)
+
+
 def _array_rank(type_expr) -> int:
     """How deeply a type nests Arrays: 0 for `Plate`, 2 for `Array<Array<Plate>>`."""
     t = str(type_expr).strip()
@@ -535,7 +656,7 @@ def _object_bearing(type_expr: str, domains: dict[str, str | None]) -> bool:
 
 
 def _expand_body(entry_name, entry_proc, procs, atomic, in_ports, exit_object_bearing,
-                 interface, lengths, domains, diags):
+                 interface, lengths, arms, domains, diags):
     """Flatten the entry composite into atomic activities, Object-bearing arcs, and
     precedence edges, following nested composites and expanding `map` / `fold`
     nodes (see `_Expander`).
@@ -544,8 +665,9 @@ def _expand_body(entry_name, entry_proc, procs, atomic, in_ports, exit_object_be
     tables: the first says which entry inputs are Arrays of Objects whose length the
     `interface` gives, the second tells a Pure Data return from an Object-bearing one
     (which the planner places: an exit arc, or a through arc, D60). `lengths` are the
-    Pure Data Array entry inputs' stated lengths (`_boundary_lengths`)."""
-    exp = _Expander(procs, atomic, diags, domains, interface, in_ports, lengths)
+    Pure Data Array entry inputs' stated lengths (`_boundary_lengths`), `arms` the
+    branches' stated arms (`_stated_arms`)."""
+    exp = _Expander(procs, atomic, diags, domains, interface, in_ports, lengths, arms)
     # The entry's own inputs are the workflow's boundary inputs: seed the entry
     # scope so `inputs.X` resolves to an `_EntryInput(X)` marker, which propagates
     # into nested composites and is recorded at the atomic that consumes it.
@@ -648,9 +770,10 @@ class _Gathered:
     items: tuple
 
 
-# Structured node kinds the expansion does not handle yet (D57: `branch` is the
-# next step; `do_while`'s count is a run-time value).
-_UNSUPPORTED_KINDS = {"do_while", "branch"}
+# Structured node kinds the expansion does not handle yet: `do_while`'s count is a
+# run-time value (design.md D63). A `branch` is expanded when its arm is known.
+_UNSUPPORTED_KINDS = {"do_while"}
+_ARMS = ("then", "else")
 
 
 class _Expander:
@@ -691,6 +814,7 @@ class _Expander:
         interface: dict | None = None,
         entry_ports: dict[str, bool] | None = None,
         entry_lengths: dict[str, int] | None = None,
+        stated_arms: dict[NodePath, str] | None = None,
     ) -> None:
         self.procs = procs
         self.atomic = atomic
@@ -708,6 +832,16 @@ class _Expander:
         # A Pure Data Array entry input's length, where the document states it (§6.13):
         # the runner counted it off the value it was given (design.md D62).
         self.entry_lengths = entry_lengths or {}
+        # A branch's arm, where `expansion.arms` states it (§6.13): branch node path ->
+        # `then` / `else`. Which of them a branch reached has read (`used_arms`), so the
+        # rest can be told apart from a mistake (`check_stated_arms`).
+        self.stated_arms = stated_arms or {}
+        self.used_arms: set[NodePath] = set()
+        # Every branch reached -> its node, the arm it was expanded with, and the ones
+        # whose arm could not be decided -> where their condition comes from.
+        self.branch_nodes: dict[NodePath, dict] = {}
+        self.arms: dict[NodePath, str] = {}
+        self.undecided: dict[NodePath, Source | None] = {}
         self.activities: list[NodeInvocation] = []
         self.arcs: list[Arc] = []
         self.precedence: list[tuple[NodePath, NodePath]] = []
@@ -768,6 +902,9 @@ class _Expander:
         if kind in ("map", "fold"):
             # Expanded here, unless a reference to one of its outputs already did.
             self._structured_outputs(node, prefix, inputs_env, siblings, stack)
+            return
+        if kind == "branch":
+            self._branch_outputs(node, prefix, inputs_env, siblings, stack)
             return
         if kind in _UNSUPPORTED_KINDS:
             self.diags.error(
@@ -942,6 +1079,134 @@ class _Expander:
                                         length, stack)
         self.structured[path] = outputs
         return outputs
+
+    def _branch_outputs(
+        self, node: dict, prefix: NodePath, inputs_env: dict, siblings: dict, stack: tuple[str, ...]
+    ) -> dict:
+        """Expand a `branch` node once, with its one arm, and return the outputs it
+        exposes (port -> value). Design.md D63.
+
+        The arm is the branch's own path `P`: an atomic arm is the activity at `P`, a
+        composite arm's body is under `P` -- the branch invokes it as an ordinary node
+        would, so no arm name enters a path. An implicit `else` invokes nothing and
+        returns each Object-bearing argument as it came (v0 20).
+
+        Which arm is decided by where the condition's value comes from: a literal
+        decides it here; an entry input (or one element of one) is the run's to state,
+        in `expansion.arms`; anything else is produced during the run and cannot be
+        known yet (`branch_arm_unknown`). Planning an arm that was not decided would be
+        a guess."""
+        node_id = node["id"]
+        path = prefix + (node_id,)
+        if path in self.structured:
+            return self.structured[path]
+        self.structured[path] = {}  # a reference back into itself finds nothing
+        self.branch_nodes[path] = node
+        arm = self._decide_arm(path, node, prefix, inputs_env, siblings, stack)
+        if arm is None:
+            return {}
+        self.arms[path] = arm
+        env = {
+            port: self._resolve(_parse_ref(binding), prefix, inputs_env, siblings, stack)
+            for port, binding in (node.get("args") or {}).items()
+        }
+        arm_node = node.get(arm)
+        if isinstance(arm_node, dict):
+            pname = arm_node.get("process")
+            if not isinstance(pname, str) or pname not in self.procs:
+                self.diags.error(
+                    errors.PROCESS_NOT_DEFINED,
+                    f"branch {node_id!r} {arm} arm invokes undefined process {pname!r}",
+                )
+                return {}
+            if pname in stack:
+                self.diags.error(
+                    errors.RECURSIVE_COMPOSITE,
+                    f"composite {pname!r} is recursively defined (via branch {node_id!r})",
+                )
+                return {}
+            produced = self._invoke(pname, path, env, stack)
+            arm_outputs = self.procs[pname].get("outputs") or {}
+            objects = {
+                port for port, spec in arm_outputs.items()
+                if _object_bearing(str((spec or {}).get("type", "")), self.domains)
+            }
+        else:
+            # The implicit identity arm: each Object-bearing argument, as it came. Which
+            # arguments carry an Object is read off the `then` arm's same-name inputs.
+            then_node = node.get("then")
+            then = then_node if isinstance(then_node, dict) else {}
+            then_inputs = (self.procs.get(then.get("process")) or {}).get("inputs") or {}
+            objects = {
+                port for port in env
+                if _object_bearing(str((then_inputs.get(port) or {}).get("type", "")),
+                                   self.domains)
+            }
+            produced = {port: env[port] for port in objects}
+        # What the node exposes (v0 20.1, 20.3): the `common` outputs of an explicit
+        # `outputs`, or else the Object-bearing ones.
+        section = node.get("outputs")
+        if isinstance(section, dict):
+            exposed = {
+                port for port, spec in section.items()
+                if isinstance(spec, dict) and spec.get("mode") == "common"
+            }
+        else:
+            exposed = objects
+        outputs = {port: produced.get(port) for port in exposed}
+        self.structured[path] = outputs
+        return outputs
+
+    def _decide_arm(self, path, node, prefix, inputs_env, siblings, stack) -> str | None:
+        """The arm a branch at `path` is expanded with, or None (reported)."""
+        where = f"branch node {format_node_path(path)!r}"
+        stated = self.stated_arms.get(path)
+        if stated is not None:
+            self.used_arms.add(path)
+        value = self._resolve(
+            _parse_ref(node.get("condition")), prefix, inputs_env, siblings, stack
+        )
+        if isinstance(value, _Literal):
+            # The value is in the workflow: the scheduler can read the arm off it.
+            arm = "then" if value.value is True else "else"
+            if stated is not None and stated != arm:
+                self.diags.error(
+                    errors.ARM_MISMATCH,
+                    f"{where}: expansion.arms says {stated}, but its condition is the "
+                    f"literal {value.value!r}, which takes the {arm} arm",
+                )
+                return None
+            return arm
+        if isinstance(value, _EntryInput):
+            if stated is not None:
+                return stated
+            self.undecided[path] = _source_of(value)
+            self.diags.error(
+                errors.BRANCH_ARM_UNKNOWN,
+                f"{where}: its condition is the entry input {value.name!r}, a value the "
+                "scheduler is not given; the run states the arm in expansion.arms",
+            )
+            return None
+        if value is None and any(d.severity == "error" for d in self.diags.items):
+            # Nothing to decide on because something upstream was already refused: the
+            # arm is that refusal's consequence, not a second mistake.
+            return None
+        self.undecided[path] = _source_of(value)
+        if stated is not None:
+            # Accepted in a later stage, when the run states an arm once the value is
+            # produced and checks it; until then a stated arm would go unchecked.
+            self.diags.error(
+                errors.UNSUPPORTED_FEATURE,
+                f"{where}: its condition is produced during the run, so an arm stated "
+                "for it in expansion.arms cannot be checked against the value yet",
+            )
+            return None
+        self.diags.error(
+            errors.BRANCH_ARM_UNKNOWN,
+            f"{where}: its condition is produced during the run, so which arm it takes "
+            "is not known before it",
+        )
+        return None
 
     def _expand_map(self, path, pname, each, bind, length, stack) -> dict:
         """`map` (§17): invocation `i` gets element `i` of every `each` source and the
@@ -1233,6 +1498,8 @@ class _Expander:
         if child_kind in ("map", "fold"):
             # Expanded on first reach, in this scope, and read thereafter.
             return self._structured_outputs(child, prefix, inputs_env, siblings, stack).get(right)
+        if child_kind == "branch":
+            return self._branch_outputs(child, prefix, inputs_env, siblings, stack).get(right)
         if child_kind is not None:
             return None  # a structured node this stage does not expand (reported)
         pname = child.get("process")

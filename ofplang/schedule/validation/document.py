@@ -43,8 +43,11 @@ JOB_KEYS = {"id", "release", "bound", "fingerprint", "interface", "expansion"}
 # `expansion` (§6.13) and one entry of its `lengths`. An entry names a position the way
 # an arc endpoint does (§6.4) -- `node: []` is the boundary -- and says how long the
 # Array there is.
-EXPANSION_KEYS = {"lengths"}
+EXPANSION_KEYS = {"lengths", "arms"}
 LENGTH_KEYS = {"node", "port", "index", "length"}
+# One entry of `expansion.arms` (§6.13): the branch node it decides, and which arm.
+ARM_KEYS = {"node", "arm"}
+ARMS = {"then", "else"}
 # One entry of `occupied` (§6.12): a spot something is sitting on, and since when.
 # Not which job left it: a spot can be held for reasons no document records, and
 # nothing read the attribution where one happened to be known.
@@ -452,6 +455,7 @@ def _check_expansion(node: YNode | None, diags: Diagnostics, base: str = "expans
     if emap is None:
         return
     shape.unknown_keys(emap, EXPANSION_KEYS, base, diags)
+    _check_arms(emap.get("arms"), shape.join(base, "arms"), diags)
     lengths_path = shape.join(base, "lengths")
     seq = shape.as_seq(emap.get("lengths"), lengths_path, diags)
     if seq is None:
@@ -519,6 +523,49 @@ def _check_expansion(node: YNode | None, diags: Diagnostics, base: str = "expans
                 + " is stated more than once",
                 entry_base,
                 at=lmap,
+            )
+        seen.add(key)
+
+
+def _check_arms(node: YNode | None, base: str, diags: Diagnostics) -> None:
+    """Shape only (§6.13): `arms` is a list of `{node, arm}` -- `node` the non-empty
+    node path of a branch node, `arm` one of `then` / `else` (`unknown_arm`). One
+    branch is named once (`duplicate_arm`). Whether the path is a branch of the
+    workflow is the execution layer's (§9.3)."""
+    seq = shape.as_seq(node, base, diags)
+    if seq is None:
+        return
+    seen: set[tuple] = set()
+    for i, item in enumerate(seq.items):
+        entry_base = f"{base}[{i}]"
+        amap = shape.as_map(item, entry_base, diags)
+        if amap is None:
+            continue
+        shape.unknown_keys(amap, ARM_KEYS, entry_base, diags)
+        key: tuple | None = None
+        path_node = shape.require(amap, "node", entry_base, diags)
+        node_path = shape.join(entry_base, "node")
+        if path_node is not None:
+            before = len(diags.items)
+            _check_node_path(path_node, node_path, diags)
+            if len(diags.items) == before and isinstance(path_node, YSeq):
+                key = tuple(x.value for x in path_node.items if isinstance(x, YScalar))
+        arm = shape.require(amap, "arm", entry_base, diags)
+        if arm is not None and not (isinstance(arm, YScalar) and arm.is_str and arm.value in ARMS):
+            diags.error(
+                errors.UNKNOWN_ARM,
+                "arm must be then or else",
+                shape.join(entry_base, "arm"),
+                at=arm,
+            )
+        if key is None:
+            continue  # a malformed path: already reported, and not compared
+        if key in seen:
+            diags.error(
+                errors.DUPLICATE_ARM,
+                f"the arm of branch {list(key)} is stated more than once",
+                entry_base,
+                at=amap,
             )
         seen.add(key)
 

@@ -105,6 +105,15 @@ CASES = [
         EXAMPLES / "labels.document.yaml",
         34,
     ),
+    # A branch per element of a map, each arm stated in `expansion.arms` (design.md
+    # D63): the two washes share the one sink and the polish runs beside them.
+    (
+        "wash_or_polish",
+        EXAMPLES / "wash_or_polish.workflow.yaml",
+        EXAMPLES / "wash_or_polish.env.yaml",
+        EXAMPLES / "wash_or_polish.document.yaml",
+        24,
+    ),
 ]
 
 
