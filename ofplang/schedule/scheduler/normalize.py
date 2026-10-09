@@ -143,6 +143,9 @@ def normalize(
     if root is not None and not isinstance(root, YMap):
         diags.error(errors.WRONG_TYPE, "execution document must be a mapping", "")
         return None, None, diags
+    # A `decision` (§6.14) is derived from the workflow on every plan and is not
+    # something that happened: whatever it says -- a status included -- is not read.
+    root = _without_decisions(root)
 
     now_node = root.get("now") if isinstance(root, YMap) else None
     has_now = isinstance(now_node, YScalar) and now_node.is_int
@@ -757,6 +760,27 @@ def _held_nodes(root: YNode | None, frozen: tuple[dict, ...] = ()) -> list[Activ
     return out
 
 
+def _without_decisions(root: YNode | None) -> YNode | None:
+    """`root` with its `decision` activities left out (§6.14); `root` itself when it
+    has none."""
+    if not isinstance(root, YMap):
+        return root
+    activities = root.get("activities")
+    if not isinstance(activities, YSeq):
+        return root
+    kept = [
+        item for item in activities.items
+        if not (isinstance(item, YMap) and text(item.get("kind")) == "decision")
+    ]
+    if len(kept) == len(activities.items):
+        return root
+    seq = YSeq(kept, activities.file, activities.line, activities.col)
+    entries = [replace(e, value=seq) if e.key == "activities" else e for e in root.entries]
+    by_key: dict[str, YNode] = {e.key: e.value for e in root.entries}  # last wins
+    by_key["activities"] = seq
+    return YMap(entries, by_key, root.file, root.line, root.col)
+
+
 def _terminal_jobs(root: YMap) -> set[str]:
     """The jobs a terminal status has stopped (§6.2, §6.11).
 
@@ -821,8 +845,6 @@ def _read_status(root, node_index, arc_keys, now, diags, withdrawn=frozenset()):
         status = status_of(item)
         if status not in _STARTED:
             continue  # pending / relay / status-less: regenerated from committed legs
-        if text(item.get("kind")) == "decision":
-            continue  # derived from the workflow on every plan, whatever it says (§6.14)
         base = f"activities[{i}]"
         kind = text(item.get("kind"))
         job = job_of(item)
