@@ -17,7 +17,7 @@ import yaml
 
 from ofplang.schedule.core import objective as objective_stages
 from ofplang.schedule.scheduler.instance import Instance
-from ofplang.schedule.scheduler.model import JobSpec
+from ofplang.schedule.scheduler.model import BranchGate, JobSpec, NodePath
 from ofplang.schedule.scheduler.result import Solution
 
 
@@ -37,6 +37,7 @@ def render_plan(
     ignore_resources: bool = False,
     jobs: tuple[JobSpec, ...] = (),
     stopped: frozenset[str] = frozenset(),
+    gates: tuple[tuple[str, dict[NodePath, BranchGate]], ...] = (),
 ) -> dict:
     """Build the execution-document dict for `solution`.
 
@@ -54,9 +55,13 @@ def render_plan(
 
     `stopped` names the jobs a terminal status has stopped (§6.2). They keep their
     roster entry -- something of theirs is still in the laboratory -- but not their
-    promise; see `_job_entry`."""
+    promise; see `_job_entry`.
+
+    `gates` are, per job id (`""` for a single workflow), the branches whose condition
+    is produced during the run (design.md D64); each one still waiting for it is
+    rendered as a `decision` (`_decisions`)."""
     job_ids = tuple(job.id for job in jobs)
-    activities: list[dict] = []
+    activities: list[dict] = _decisions(solution, gates, job_ids, stopped)
 
     for p in solution.processing:
         if p.boundary is not None:
@@ -266,6 +271,51 @@ def _job_entry(job: JobSpec, stopped: frozenset[str] = frozenset()) -> dict:
     if job.expansion:
         entry["expansion"] = job.expansion
     return entry
+
+
+def _decisions(
+    solution: Solution,
+    gates: tuple[tuple[str, dict[NodePath, BranchGate]], ...],
+    jobs: tuple[str, ...],
+    stopped: frozenset[str],
+) -> list[dict]:
+    """A `decision` for every branch still waiting for its condition (SPEC §6.14):
+    one whose condition's producer has not finished. It marks the moment nothing of
+    the branch may start before -- the producer's planned end -- and which arm was
+    planned, `assumed` where the run has not stated it yet.
+
+    Not an activity anything runs, and not read back: a replan derives it again from
+    the workflow, the way it derives relays. Once the producer has finished it is not
+    rendered at all, since the wait is over; neither is a stopped job's."""
+    ends = {p.node: p for p in solution.processing if p.boundary is None and p.relay is None}
+    entries: list[dict] = []
+    for job, branches in gates:
+        if job in stopped:
+            continue
+        prefix = (job,) if job else ()
+        for node, gate in branches.items():
+            producer = ends.get(prefix + gate.condition.node)
+            if producer is None or producer.status not in (None, "running"):
+                continue
+            entry: dict[str, Any] = {"kind": "decision"}
+            _set_job(entry, job or None)
+            condition: dict[str, Any] = {
+                "node": list(gate.condition.node), "port": gate.condition.port,
+            }
+            if gate.condition.index:
+                condition["index"] = list(gate.condition.index)
+            entry.update(
+                {
+                    "start": producer.end,
+                    "end": producer.end,
+                    "node": list(node),
+                    "arm": gate.arm,
+                    "assumed": gate.assumed,
+                    "condition": condition,
+                }
+            )
+            entries.append(entry)
+    return entries
 
 
 def _split_job(path, jobs: tuple[str, ...]) -> tuple[str | None, list]:

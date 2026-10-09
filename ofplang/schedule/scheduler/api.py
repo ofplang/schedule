@@ -78,6 +78,12 @@ class ScheduleReport:
 _SOLVED = ("optimal", "feasible")
 
 
+# The arm a branch whose condition is produced during the run is planned on until the
+# run states it (design.md D64): fixed to `then` for now, to be revisited once it has
+# been tried. Nothing of the branch starts before its condition exists, whichever.
+ASSUMED_ARM = "then"
+
+
 def _has_error(diagnostics) -> bool:
     return any(d.severity == ERROR for d in diagnostics)
 
@@ -126,14 +132,19 @@ def _roster_entries(roster) -> dict[str, dict]:
 
 
 def _document_activities(doc_path, root) -> list[dict]:
-    """The document's activities as plain dicts, from whichever form it arrived in."""
+    """The document's activities as plain dicts, from whichever form it arrived in.
+
+    A `decision` (§6.14) is not among them: it is derived from the workflow on every
+    plan and is not something that happened, whatever status it carries."""
     if isinstance(doc_path, dict):
         listed = doc_path.get("activities")
     elif isinstance(root, yamlnode.YMap):
         listed = yamlnode.to_plain(root.get("activities"))
     else:
         return []
-    return [a for a in listed if isinstance(a, dict)] if isinstance(listed, list) else []
+    if not isinstance(listed, list):
+        return []
+    return [a for a in listed if isinstance(a, dict) and a.get("kind") != "decision"]
 
 
 def _activity_spots(activity: dict) -> set[str]:
@@ -221,7 +232,10 @@ def derived_holds(document: dict) -> list[dict]:
     stopped, and a spot a running activity is using is not among them -- that activity
     accounts for it perfectly well.
     """
-    activities = [a for a in (document.get("activities") or []) if isinstance(a, dict)]
+    activities = [
+        a for a in (document.get("activities") or [])
+        if isinstance(a, dict) and a.get("kind") != "decision"  # nothing that happened
+    ]
     roster = document.get("jobs")
     entries = _roster_entries(roster) if isinstance(roster, list) else {}
     now = document.get("now")
@@ -1501,6 +1515,10 @@ def _run(
             job.workflow,
             interface=job_interfaces.get(job.id, top_interface) if job.id else top_interface,
             expansion=job_expansions.get(job.id, top_expansion) if job.id else top_expansion,
+            # A branch whose condition is produced during the run is planned on its
+            # `then` arm until the run states the arm (design.md D64), waiting for the
+            # condition either way.
+            assume=ASSUMED_ARM,
         )
         diagnostics += _attribute(wf_diags.items, job, jobs)
         if workflow is not None and not _has_error(wf_diags.items):
@@ -1882,6 +1900,11 @@ def _run(
         ignore_resources=ignore_resources,
         jobs=settled,
         stopped=frozenset(_stopped_jobs(document_activities) - set(withdraw)),
+        gates=tuple(
+            (job.id, workflow.branch_gates)
+            for job, workflow in zip(jobs, workflows, strict=True)
+            if workflow.branch_gates
+        ),
     )
 
     # 6. Check what is about to be handed out. The refill amounts in the document are

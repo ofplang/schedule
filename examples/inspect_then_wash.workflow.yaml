@@ -1,0 +1,89 @@
+# A branch whose condition is measured during the run (design.md D64): each cup in a
+# tray is inspected, then washed if the inspection found it dirty and polished if not.
+#
+# The flag is made by `inspect`, so which arm a cup takes is not known before the run.
+# The scheduler plans each branch on its `then` arm until the run says otherwise, and
+# lets nothing of the branch start before the inspection has ended: the cup waits on
+# the scope's stage, and the plan marks the moment with a `decision`. A run reads the
+# flag when the inspection finishes, states the arm in `expansion.arms`, and replans.
+#
+#   ofp-schedule schedule inspect_then_wash.workflow.yaml --env inspect_then_wash.env.yaml \
+#       --document inspect_then_wash.document.yaml
+spec_version: "0.5"
+
+types:
+  Cup:
+    domain: object
+
+processes:
+
+  inspect:                                      # at the scope: is the cup dirty?
+    kind: atomic
+    inputs:
+      cup: { type: Cup, phase: data }
+    outputs:
+      cup:   { type: Cup, phase: data }
+      dirty: { type: Bool, phase: data }
+    objects:
+      map:
+        outputs.cup: inputs.cup
+
+  wash:                                         # at the sink
+    kind: atomic
+    inputs:
+      cup: { type: Cup, phase: data }
+    outputs:
+      cup: { type: Cup, phase: data }
+    objects:
+      map:
+        outputs.cup: inputs.cup
+
+  polish:                                       # at the buffer
+    kind: atomic
+    inputs:
+      cup: { type: Cup, phase: data }
+    outputs:
+      cup: { type: Cup, phase: data }
+    objects:
+      map:
+        outputs.cup: inputs.cup
+
+  handle:                                       # one cup: inspect it, then wash or polish
+    kind: composite
+    inputs:
+      cup: { type: Cup, phase: data }
+    outputs:
+      cup: { type: Cup, phase: data }
+    body:
+      nodes:
+        - id: Look
+          process: inspect
+          state:
+            cup: { from: inputs.cup }
+        - id: Choose
+          kind: branch
+          condition: { from: Look.dirty }
+          args:
+            cup: { from: Look.cup }
+          then: { process: wash }
+          else: { process: polish }
+      returns:
+        cup: { from: Choose.cup }
+
+  main:
+    kind: composite
+    inputs:
+      cups: { type: "Array<Cup>", phase: data }
+    outputs:
+      cups: { type: "Array<Cup>", phase: data }
+    body:
+      nodes:
+        - id: Each
+          kind: map
+          process: handle
+          each:
+            cup: { from: inputs.cups }
+      returns:
+        cups: { from: Each.cup }
+
+entry: main

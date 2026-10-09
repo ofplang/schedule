@@ -821,6 +821,8 @@ def _read_status(root, node_index, arc_keys, now, diags, withdrawn=frozenset()):
         status = status_of(item)
         if status not in _STARTED:
             continue  # pending / relay / status-less: regenerated from committed legs
+        if text(item.get("kind")) == "decision":
+            continue  # derived from the workflow on every plan, whatever it says (§6.14)
         base = f"activities[{i}]"
         kind = text(item.get("kind"))
         job = job_of(item)

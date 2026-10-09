@@ -1,0 +1,11 @@
+# Execution document for inspect_then_wash.workflow.yaml.
+#
+# `interface` (SPEC §6.8) puts the three cups on the tray and the finished ones on the
+# rack, one spot per cup in element order. There is no `expansion`: no arm is known
+# before the run, since every flag is measured during it.
+interface:
+  inputs:
+    cups: [tray.a, tray.b, tray.c]
+  outputs:
+    cups: [rack.a, rack.b, rack.c]
+activities: []

@@ -234,6 +234,15 @@ def _workflow_layout(activities):
             label = _refill_label(a)
             lane_labels.append(label)
             bars.append(_Bar(lane, s, e, label, "xfer"))
+        elif kind == "decision":
+            # A branch still waiting for its condition (§6.14): a mark at the moment
+            # nothing of it may start before, naming the arm planned. No device holds
+            # it, so the device view has nothing to show for it.
+            label = f"decide {'/'.join(map(str, a.get('node') or []))}: {a.get('arm')}"
+            if a.get("assumed"):
+                label += " (assumed)"
+            lane_labels.append(label)
+            bars.append(_Bar(lane, s, e, label, "hold-ghost"))
         else:
             src = _arc_end_key(a, "from")
             dst = _arc_end_key(a, "to")

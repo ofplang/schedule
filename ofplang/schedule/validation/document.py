@@ -101,7 +101,11 @@ RELAY_KEYS = {"kind", "job", "status", "start", "end", "arc", "seq", "spot"}
 # no `job` either: the scheduler decided to run it, and in a joint plan one refill
 # commonly serves several jobs (§6.11).
 REPLENISHMENT_KEYS = {"kind", "status", "start", "end", "id", "device", "replenisher", "amounts"}
-ACTIVITY_KINDS = {"processing", "transport", "relay", "replenishment"}
+# A decision (§6.14) marks a branch still waiting for its condition: the moment nothing
+# of it may start before, and the arm planned. Rendered from the workflow on every
+# plan and never read back, like a relay's position in a chain.
+DECISION_KEYS = {"kind", "job", "status", "start", "end", "node", "arm", "assumed", "condition"}
+ACTIVITY_KINDS = {"processing", "transport", "relay", "replenishment", "decision"}
 ARC_ENDPOINT_KEYS = {"node", "port", "index"}
 
 
@@ -590,7 +594,7 @@ def _check_activity(
     ):
         diags.error(
             errors.UNKNOWN_ACTIVITY_KIND,
-            "kind must be processing, transport, or relay",
+            "kind must be processing, transport, relay, replenishment or decision",
             shape.join(base, "kind"),
             at=kind_node,
         )
@@ -602,6 +606,7 @@ def _check_activity(
         "transport": TRANSPORT_KEYS,
         "relay": RELAY_KEYS,
         "replenishment": REPLENISHMENT_KEYS,
+        "decision": DECISION_KEYS,
     }[kind]
     shape.unknown_keys(amap, allowed, base, diags)
     _check_job(amap.get("job"), base, kind, job_ids, diags)
@@ -614,6 +619,8 @@ def _check_activity(
         _check_transport(amap, base, diags)
     elif kind == "replenishment":
         _check_replenishment(amap, base, diags)
+    elif kind == "decision":
+        _check_decision(amap, base, diags)
     else:
         _check_relay(amap, base, diags)
 
@@ -856,6 +863,31 @@ def _check_replenishment(amap: YMap, base: str, diags: Diagnostics) -> None:
             diags.error(
                 errors.NONPOSITIVE_VALUE, "amount must be positive", entry_path, at=value
             )
+
+
+def _check_decision(amap: YMap, base: str, diags: Diagnostics) -> None:
+    """A `decision` (§6.14): the branch's node path, the arm planned, whether it was
+    assumed, and where the condition comes from (an arc endpoint's shape)."""
+    _check_node_path(shape.require(amap, "node", base, diags), shape.join(base, "node"), diags)
+    arm = shape.require(amap, "arm", base, diags)
+    if arm is not None and not (isinstance(arm, YScalar) and arm.is_str and arm.value in ARMS):
+        diags.error(
+            errors.UNKNOWN_ARM, "arm must be then or else", shape.join(base, "arm"), at=arm
+        )
+    assumed = shape.require(amap, "assumed", base, diags)
+    if assumed is not None and not (isinstance(assumed, YScalar) and assumed.is_bool):
+        diags.error(
+            errors.WRONG_TYPE, "assumed must be a boolean", shape.join(base, "assumed"),
+            at=assumed,
+        )
+    condition = shape.require(amap, "condition", base, diags)
+    if condition is not None and not _endpoint_ok(condition):
+        diags.error(
+            errors.WRONG_TYPE,
+            "condition must be {node, port} with an optional index",
+            shape.join(base, "condition"),
+            at=condition,
+        )
 
 
 def _check_relay(amap: YMap, base: str, diags: Diagnostics) -> None:
