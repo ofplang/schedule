@@ -267,12 +267,15 @@ class LengthCheck:
     error for a run-phase value and a runtime data error for a data-phase one).
 
     `node` is the structured node's path, `port` the `each` port, `source` where that
-    port's Array comes from."""
+    port's Array comes from. `gates` are the producers it waits for besides its own
+    (design.md D64): where the Array was handed on untouched by a branch whose
+    condition is produced during the run, what it will be is not settled before them."""
 
     node: NodePath
     port: str
     source: Source
     length: int
+    gates: frozenset[NodePath] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -285,11 +288,16 @@ class CompositeIO:
     is otherwise lost. This records it, as `Source` trees: each input / output port ->
     the value it reads (an atomic's output, the workflow boundary, a literal, an Array
     assembled element by element). Runner-only, under the INVARIANTS stated with
-    `Workflow.input_sources`."""
+    `Workflow.input_sources`.
+
+    `gates` are the producers its values wait for besides their own (design.md D64):
+    a value handed on untouched by a branch whose condition is produced during the run
+    is not settled before that condition, so neither is a contract over it."""
 
     process: str
     input_sources: dict[str, Source] = field(default_factory=dict)
     output_sources: dict[str, Source] = field(default_factory=dict)
+    gates: frozenset[NodePath] = frozenset()
 
 
 @dataclass(frozen=True)

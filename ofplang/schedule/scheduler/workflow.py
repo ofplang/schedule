@@ -1504,7 +1504,9 @@ class _Expander:
                 continue
             source = _source_of(value)
             if source is not None:
-                self.length_checks.append(LengthCheck(path, port, source, length))
+                self.length_checks.append(
+                    LengthCheck(path, port, source, length, _gates_of(value))
+                )
         return length
 
     def _length(self, value) -> int | None:
@@ -1553,10 +1555,12 @@ class _Expander:
         `returns` resolved in the composite's own scope)."""
         cproc = self.procs[pname]
         output_sources: dict[str, Source] = {}
+        gates: frozenset[NodePath] = frozenset().union(*map(_gates_of, child_env.values()))
         for out_port, source in _returns(cproc).items():
             producer = self._resolve(
                 _parse_ref(source), path, child_env, _body_nodes(cproc), stack + (pname,)
             )
+            gates |= _gates_of(producer)
             if (resolved := _source_of(producer)) is not None:
                 output_sources[out_port] = resolved
         input_sources = {
@@ -1568,6 +1572,7 @@ class _Expander:
             process=pname,
             input_sources=input_sources,
             output_sources=output_sources,
+            gates=gates,
         )
 
     def _resolve(

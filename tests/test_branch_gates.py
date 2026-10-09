@@ -265,6 +265,36 @@ def test_a_value_handed_on_untouched_waits_too():
     assert not wf.branch_gates[("H",)].assumed
 
 
+# The cup after the branch goes through a composite: on `else` it reaches it untouched.
+SAMPLE_THEN_COMPOSITE = SAMPLE_DECIDES.replace(
+    "        - {id: F, process: polish, state: {cup: {from: H.cup}}}\n",
+    "        - {id: F, process: finish_one, state: {cup: {from: H.cup}}}\n",
+).replace(
+    "  main:\n",
+    "  finish_one:\n"
+    "    kind: composite\n"
+    "    inputs: {cup: {type: Cup, phase: data}}\n"
+    "    outputs: {cup: {type: Cup, phase: data}}\n"
+    "    body:\n"
+    "      nodes:\n"
+    "        - {id: P, process: polish, state: {cup: {from: inputs.cup}}}\n"
+    "      returns: {cup: {from: P.cup}}\n"
+    "  main:\n",
+)
+
+
+def test_a_composite_reading_a_value_handed_on_untouched_says_what_it_waits_for():
+    # Its contracts read that value, which is not settled before the sample is
+    # inspected -- the run holds them until then (design.md D64).
+    assert validate(yaml.safe_load(SAMPLE_THEN_COMPOSITE)).ok
+    wf, errs = _parse(SAMPLE_THEN_COMPOSITE, arms((("H",), "else")))
+    assert errs == []
+    assert wf.composites[("F",)].gates == frozenset({("I",)})
+    # On `then` the cup it reads is the wash's, made after the condition: no wait.
+    wf, errs = _parse(SAMPLE_THEN_COMPOSITE)
+    assert errs == [] and wf.composites[("F",)].gates == frozenset()
+
+
 def test_an_inner_branch_waits_for_both_conditions():
     wf, errs = _parse(NESTED_MEASURED)
     assert errs == []
