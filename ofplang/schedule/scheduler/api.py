@@ -39,7 +39,7 @@ from ofplang.schedule.scheduler.instance import (
 )
 from ofplang.schedule.scheduler.interface import binding_elements, element_label
 from ofplang.schedule.scheduler.mobility import report_deadlocked_objects
-from ofplang.schedule.scheduler.model import JobSpec, Workflow
+from ofplang.schedule.scheduler.model import JobSpec, SourceRef, Workflow
 from ofplang.schedule.scheduler.normalize import normalize
 from ofplang.schedule.scheduler.plan import render_plan
 from ofplang.schedule.scheduler.plancheck import check_plan_inventories, check_schedule
@@ -1453,29 +1453,56 @@ def _arm_expansions(
     at a time, the rest as planned. A branch that only appears on that other arm is
     switched the same way, with the arm it lies in held where it is.
 
+    A branch appearing there whose condition is an entry input has no arm in the
+    expansion: the run decides it from the boundary only once the arm around it is
+    taken, and the scheduler is never told the value. It is not a guess to check both
+    of its arms, so both are: read on `then` first, then switched like the others.
+
     Returns `(branches switched, workflow or None, reader errors)` per expansion; the
     branches switched name it, outermost first."""
     found: list[tuple[tuple, Workflow | None, list]] = []
 
-    def switch(expansion, workflow, chain, inside) -> None:
-        for path, gate in workflow.branch_gates.items():
-            if not gate.assumed or (inside is not None and path[: len(inside)] != inside):
-                continue
-            if inside is not None and path == inside:
-                continue
-            other = "else" if gate.arm == "then" else "then"
-            arms = list((expansion or {}).get("arms") or [])
-            arms.append({"node": list(path), "arm": other})
-            switched = {**(expansion or {}), "arms": arms}
-            read, diags = parse_workflow(
-                source, interface=interface, expansion=switched, assume=ASSUMED_ARM
+    def with_arm(expansion, path, arm) -> dict:
+        arms = [
+            entry for entry in (expansion or {}).get("arms") or []
+            if tuple(entry.get("node") or ()) != tuple(path)
+        ]
+        arms.append({"node": list(path), "arm": arm})
+        return {**(expansion or {}), "arms": arms}
+
+    def read(expansion):
+        """`expansion` read, with every branch on an entry input it reaches undecided
+        put on `then`: the workflow, its errors, the expansion read, and those put."""
+        put: list = []
+        for _round in range(1000):
+            read_wf, diags = parse_workflow(
+                source, interface=interface, expansion=expansion, assume=ASSUMED_ARM
             )
             errs = [d for d in diags.items if d.severity == ERROR]
-            found.append(((*chain, (path, other)), read, errs))
-            if read is not None and not errs:
-                switch(switched, read, (*chain, (path, other)), path)
+            entry = [
+                path for path, condition in (read_wf.undecided_branches if read_wf else {}).items()
+                if isinstance(condition, SourceRef) and condition.node == ()
+            ]
+            if not errs or not entry:
+                return read_wf, errs, expansion, put
+            for path in entry:
+                expansion = with_arm(expansion, path, "then")
+                put.append(path)
+        raise RuntimeError("reading the switched arms did not settle")  # pragma: no cover
 
-    switch(expansion, workflow, (), None)
+    def switch(expansion, workflow, put, chain, inside) -> None:
+        points = [(path, gate.arm) for path, gate in workflow.branch_gates.items() if gate.assumed]
+        points += [(path, "then") for path in put]
+        for path, arm in points:
+            if inside is not None and (path[: len(inside)] != inside or path == inside):
+                continue
+            other = "else" if arm == "then" else "then"
+            read_wf, errs, switched, newly = read(with_arm(expansion, path, other))
+            found.append(((*chain, (path, other)), read_wf, errs))
+            if read_wf is not None and not errs:
+                switch(switched, read_wf, newly, (*chain, (path, other)), path)
+
+    switch(expansion, workflow, [], (), None)
     return found
 
 

@@ -439,6 +439,74 @@ def test_a_branch_only_on_the_other_arm_is_switched_with_it():
     ])
 
 
+# A clean cup is finished, and soaked first if the boundary says it is stained: a
+# branch on an entry input that exists only on the `else` arm.
+ENTRY_ON_ELSE = f"""\
+spec_version: "0.5"
+types:
+  Cup: {{domain: object}}
+processes:
+{_ATOMICS}  just_wash:
+    kind: composite
+    inputs: {{cup: {{type: Cup, phase: data}}, stained: {{type: Bool, phase: run}}}}
+    outputs: {{cup: {{type: Cup, phase: data}}}}
+    body:
+      nodes:
+        - {{id: W, process: wash, state: {{cup: {{from: inputs.cup}}}}}}
+      returns: {{cup: {{from: W.cup}}}}
+  finish:
+    kind: composite
+    inputs: {{cup: {{type: Cup, phase: data}}, stained: {{type: Bool, phase: run}}}}
+    outputs: {{cup: {{type: Cup, phase: data}}}}
+    body:
+      nodes:
+        - id: S
+          kind: branch
+          condition: {{from: inputs.stained}}
+          args: {{cup: {{from: inputs.cup}}}}
+          then: {{process: soak}}
+        - {{id: P, process: polish, state: {{cup: {{from: S.cup}}}}}}
+      returns: {{cup: {{from: P.cup}}}}
+  main:
+    kind: composite
+    inputs: {{cup: {{type: Cup, phase: data}}, stained: {{type: Bool, phase: run}}}}
+    outputs: {{cup: {{type: Cup, phase: data}}}}
+    body:
+      nodes:
+        - {{id: I, process: inspect, state: {{cup: {{from: inputs.cup}}}}}}
+        - id: H
+          kind: branch
+          condition: {{from: I.dirty}}
+          args: {{cup: {{from: I.cup}}, stained: {{from: inputs.stained}}}}
+          then: {{process: just_wash}}
+          else: {{process: finish}}
+      returns: {{cup: {{from: H.cup}}}}
+entry: main
+"""
+
+
+def test_a_branch_on_an_entry_input_on_the_other_arm_is_checked_both_ways():
+    # The run decides S from the boundary once H takes `else`; the scheduler is not
+    # told the flag, so the check reads S on both arms rather than refuse.
+    workflow = yaml.safe_load(ENTRY_ON_ELSE)
+    assert validate(workflow).ok
+    wf, _ = parse_workflow(workflow, interface=None, assume=ASSUMED_ARM)
+    found = _arm_expansions(workflow, None, None, wf)
+    assert [chain for chain, _read, errs in found if not errs] == [
+        ((("H",), "else"),),
+        ((("H",), "else"), (("H", "S"), "else")),
+    ]
+    document = {"interface": {"inputs": {"cup": "tray.a"}, "outputs": {"cup": "rack.a"}},
+                "activities": []}
+    assert schedule(workflow, _env(), document_path=document).ok
+    # And a soak nothing can run is found on S's `then`, with H on `else`.
+    env = _env()
+    env["processes"].pop("soak")
+    report = schedule(workflow, env, document_path=document)
+    (found_one,) = [d.message for d in report.diagnostics if d.code == "arm_unplannable"]
+    assert found_one.startswith("branch 'H' on its else arm could not") and "soak" in found_one
+
+
 def test_an_inner_arm_that_cannot_be_planned_is_named_with_its_outer_one():
     env = _env()
     env["processes"].pop("polish")  # `finish` -- the outer else -- cannot be run
