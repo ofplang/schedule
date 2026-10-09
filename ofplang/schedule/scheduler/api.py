@@ -1372,6 +1372,84 @@ def schedule_jobs(
     )
 
 
+@dataclass(frozen=True)
+class _Fixed:
+    """What `normalize` is told about this call besides the instance and the history:
+    the same for every expansion of the call's workflows, so an expansion read with
+    different arms (design.md D64, the arm check) is normalized exactly as the one
+    being planned is."""
+
+    ignore_resources: bool
+    max_transport_legs: int
+    jobs: tuple[str, ...]
+    withdrawn: frozenset[str]
+    frozen: tuple[dict, ...]
+    derived: tuple[dict, ...]
+
+
+def _build_merged(jobs, workflows, specs, env, interface) -> tuple[object | None, list[Diagnostic]]:
+    """One instance per job, each job's node paths prefixed with its id so two cannot
+    collide, merged into one (None when any job could not be built).
+
+    Boundary nodes and arcs are re-created from `interface` every time, like relays.
+    Everything downstream sees a single instance and never learns that jobs exist --
+    which is what lets one refill candidate serve activities from several jobs
+    (`merge_instances`)."""
+    diagnostics: list[Diagnostic] = []
+    bases = []
+    for job, workflow, spec in zip(jobs, workflows, specs, strict=True):
+        base, inst_diags = build_instance(
+            # A named job brings its own boundary (`spec.interface`); the unnamed
+            # single-workflow call has the document's, which is refused above wherever
+            # jobs are named, so exactly one of the two is ever set.
+            workflow, env, interface=spec.interface or interface, check_reachability=False
+        )
+        diagnostics += _attribute(inst_diags.items, job, jobs)
+        if base is not None:
+            bases.append(prefix_instance(base, (job.id,) if job.id else ()))
+    # Every job is built before any rejection, for the same reason every one is
+    # parsed first: a caller whose environment is missing two capabilities should
+    # hear about both, not be sent round the loop once per job.
+    if len(bases) != len(jobs):
+        return None, diagnostics
+    return merge_instances(bases), diagnostics
+
+
+def _normalize_and_check(base, root, env, fixed: _Fixed):
+    """The augmented instance and the fixation of the executed part (`normalize`),
+    then the checks that settle without a solve whether it can be planned at all.
+
+    Returns the instance, the fixation, normalize's diagnostics and the checks'. The
+    checks are not run when normalize produced nothing to check."""
+    instance, fixation, norm_diags = normalize(
+        base,
+        root,
+        env,
+        ignore_resources=fixed.ignore_resources,
+        max_transport_legs=fixed.max_transport_legs,
+        jobs=fixed.jobs,
+        withdrawn=fixed.withdrawn,
+        frozen=fixed.frozen,
+        derived=fixed.derived,
+    )
+    if instance is None or fixation is None:
+        return instance, fixation, list(norm_diags.items), []
+
+    reach = Diagnostics()
+    report_unreachable(instance, set(fixation.arcs), reach)
+    # And whether the finished products have anywhere to sit. Beside reachability
+    # because it is the same kind of statement -- a counting argument about the
+    # instance, settled without solving -- and because the solve it saves is the
+    # expensive kind: measured, twelve minutes spent returning `unknown` on a plan
+    # that never had a schedule.
+    report_crowded_outputs(instance, reach)
+    # And whether the stocks can last. Beside the count for the same reason it is
+    # beside reachability: monotone arithmetic about the instance, true whichever
+    # planner is asked, and settled without solving.
+    report_exhausted_stocks(instance, fixation, reach)
+    return instance, fixation, list(norm_diags.items), list(reach.items)
+
+
 def _run(
     jobs,
     environment_path,
@@ -1559,28 +1637,11 @@ def _run(
     if _has_error(diagnostics):
         return ScheduleReport(None, None, None, diagnostics)
 
-    # 3. Build one instance per job (boundary nodes/arcs from interface always
-    # re-created, like relays), prefix each job's node paths with its id so the two
-    # cannot collide, and merge. Everything downstream sees a single instance and
-    # never learns that jobs exist -- which is what lets one refill candidate serve
-    # activities from several jobs (`merge_instances`).
-    bases = []
-    for job, workflow, spec in zip(jobs, workflows, specs, strict=True):
-        base, inst_diags = build_instance(
-            # A named job brings its own boundary (`spec.interface`); the unnamed
-            # single-workflow call has the document's, which is refused above wherever
-            # jobs are named, so exactly one of the two is ever set.
-            workflow, env, interface=spec.interface or interface, check_reachability=False
-        )
-        diagnostics += _attribute(inst_diags.items, job, jobs)
-        if base is not None:
-            bases.append(prefix_instance(base, (job.id,) if job.id else ()))
-    # Every job is built before any rejection, for the same reason every one is
-    # parsed first: a caller whose environment is missing two capabilities should
-    # hear about both, not be sent round the loop once per job.
-    if len(bases) != len(jobs):
+    # 3. Build one instance per job and merge them (`_build_merged`).
+    base, build_diags = _build_merged(jobs, workflows, specs, env, interface)
+    diagnostics += build_diags
+    if base is None:
         return ScheduleReport(None, None, None, diagnostics)
-    base = merge_instances(bases)
 
     document_activities = _document_activities(doc_path, root)
 
@@ -1687,35 +1748,23 @@ def _run(
         else []
     )
 
-    instance, fixation, norm_diags = normalize(
+    # The augmented instance and the fixation of what has happened, then the counting
+    # checks settled without a solve (`_normalize_and_check`).
+    instance, fixation, normalized, checked = _normalize_and_check(
         base,
         root,
         env,
-        ignore_resources=ignore_resources,
-        max_transport_legs=max_transport_legs,
-        jobs=tuple(spec.id for spec in specs if spec.id),
-        withdrawn=frozenset(withdraw),
-        frozen=tuple(frozen),
-        derived=tuple(residue),
+        _Fixed(
+            ignore_resources=ignore_resources,
+            max_transport_legs=max_transport_legs,
+            jobs=tuple(spec.id for spec in specs if spec.id),
+            withdrawn=frozenset(withdraw),
+            frozen=tuple(frozen),
+            derived=tuple(residue),
+        ),
     )
-    diagnostics += norm_diags.items
-    if instance is None or fixation is None:
-        return ScheduleReport(None, None, None, diagnostics)
-
-    reach = Diagnostics()
-    report_unreachable(instance, set(fixation.arcs), reach)
-    # And whether the finished products have anywhere to sit. Beside reachability
-    # because it is the same kind of statement -- a counting argument about the
-    # instance, settled without solving -- and because the solve it saves is the
-    # expensive kind: measured, twelve minutes spent returning `unknown` on a plan
-    # that never had a schedule.
-    report_crowded_outputs(instance, reach)
-    # And whether the stocks can last. Beside the count for the same reason it is
-    # beside reachability: monotone arithmetic about the instance, true whichever
-    # planner is asked, and settled without solving.
-    report_exhausted_stocks(instance, fixation, reach)
-    diagnostics += reach.items
-    if _has_error(reach.items):
+    diagnostics += normalized + checked
+    if instance is None or fixation is None or _has_error(checked):
         return ScheduleReport(None, None, None, diagnostics)
 
     # Which of this laboratory's resources this instance never tells apart (§10.4).
