@@ -42,9 +42,6 @@ initial versions:
 
 - **`do_while` nodes** — `node_do_while`. How many times one runs is decided by
   values the run produces, so it has no one graph to plan before the run.
-- **A `branch` whose arm is decided during the run** — its condition is a value an
-  atomic produces (`branch_arm_unknown`). One whose arm is known before the run is in
-  scope (below).
 - **An atomic process with an Object-bearing Array port** — each element is an
   Object on a spot of its own, and a mode maps a port to one spot; traverse the
   Array with a `map` / `fold` instead.
@@ -85,6 +82,14 @@ In scope:
   branch the expansion reaches has to be decided this way (`branch_arm_unknown`); one
   inside an arm not taken does not occur and needs nothing. A different arm is a
   different graph, with a different fingerprint.
+- **`branch` nodes whose condition is produced during the run** — a value an atomic
+  makes. Its arm is the one the run states in `expansion.arms` once the value exists
+  (§6.13), and until then the one the scheduler **assumes**, which is `then`. Either
+  way nothing of the branch starts before the condition exists: every activity of the
+  arm, every move into the arm, and every consumer of a value the branch hands on
+  untouched waits for the end of the condition's producer (§4.5). The plan marks each
+  branch still waiting with a `decision` (§6.14). The arm not planned is not solved;
+  it is checked without a solve instead (§9.3, `arm_unplannable`).
 - **`python_script_processes`** — per v0 §22.1 these are Pure Data only (no
   Object-bearing ports, no `objects` section). They are treated as opaque
   Pure Data atomic steps: they take time but occupy no spot and are not
@@ -253,7 +258,11 @@ activity start `s_j`:
 (This three-device occupation is the conservative formulation of ofp-scheduler's
 final model; a looser alternative would occupy only the transporter.)
 
-Ordering: `a >= e_i` and `s_j >= b`.
+Ordering: `a >= e_i` and `s_j >= b`. A move into a `branch` whose condition is produced
+during the run, or one carrying an Object the branch hands on untouched, also waits
+for that condition (§2): `a >= e_k`, `k` the activity producing it. So does every
+activity of the branch's arm, as a dependency (`s_j >= e_k`). A move that has already
+happened is history and is not held to it.
 
 **Relay (transport junction).** A single arc's Object may be moved in more than
 one leg — delivered to an intermediate spot by one transport, then picked up from
@@ -839,8 +848,8 @@ environment.
 
 ### 6.2 Activity — common fields
 
-- `kind` (required) — `processing`, `transport`, `relay` (§6.4.1), or
-  `replenishment` (§6.9).
+- `kind` (required) — `processing`, `transport`, `relay` (§6.4.1),
+  `replenishment` (§6.9), or `decision` (§6.14).
 - `job` (optional) — an identifier (§8.1) naming which of several jointly planned
   workflows this activity came from (§6.11). Absent from every plan of a single
   workflow, and from a `replenishment` in any plan. It **scopes** the activity's
@@ -1800,9 +1809,10 @@ the one thing about them that the plan depends on.
 nothing else; the labels themselves stay with the run. The section is limited to
 information of that kind — what the run's values decide about the **shape** of the
 workflow — so it is not where the laboratory's state goes (that is `occupied`, §6.12),
-and not where a person states an input (that is `interface`, §6.8). A later stage that
-expands on what the run produces as it goes, rather than on what it was given, states
-those facts here too.
+and not where a person states an input (that is `interface`, §6.8). What the run's
+values decide **as they are produced** is stated here too, as the run comes to know
+it: the arm of a branch whose condition is made during the run (`arms`, below). The
+section is "what is known about the expansion now", and it grows during a run.
 
 **Who writes it.** The run: it holds the values and counts them. `ofplang-run` states
 the length of every Pure Data Array entry input it was given, whether or not anything
@@ -1843,26 +1853,35 @@ different graph. In a joint plan it is per job (§6.11).
 
 #### `arms`
 
-A `branch` is expanded with the one arm it takes (§2), so which arm has to be known
-then. Where the condition is an entry input — a flag given at the boundary, or one
-element of a list of flags for a branch inside a `map` — the value is the run's, and
-`arms` is where the run says which arm it decides: the arm, not the flag. A branch is
-named by its node path: `[Choose]` in the entry composite, `[Each, 0, Choose]` for the
-branch in invocation 0 of a `map`, `[C, Choose]` inside a composite invoked as `C`.
+A `branch` is expanded with the one arm it takes (§2). Where the condition is an
+entry input — a flag given at the boundary, or one element of a list of flags for a
+branch inside a `map` — the value is the run's, and `arms` is where the run says which
+arm it decides: the arm, not the flag. Where the condition is produced during the run,
+`arms` is where the run says which arm the value it got decides, once it has it. A
+branch is named by its node path: `[Choose]` in the entry composite, `[Each, 0, Choose]`
+for the branch in invocation 0 of a `map`, `[C, Choose]` inside a composite invoked as
+`C`.
 
-**Who writes it.** The run again. It asks the expansion which branches it reaches
-without an arm, decides those whose condition it holds, and asks again: a branch can
-sit inside an arm, and appears only once the arm around it is decided. A condition the
-boundary does not supply runs on its type's default — `false`, the `else` arm — and is
-reported as any undefined entry input is.
+**Who writes it.** The run again. Before it starts, it asks the expansion which
+branches it reaches without an arm, decides those whose condition it holds, and asks
+again: a branch can sit inside an arm, and appears only once the arm around it is
+decided. A condition the boundary does not supply runs on its type's default —
+`false`, the `else` arm — and is reported as any undefined entry input is. During the
+run, as soon as a condition's value is recorded, it states that branch's arm the same
+way and replans; a branch that the newly taken arm reveals is decided then too, from
+the boundary or as its own condition is produced. The scheduler never sees a value,
+so holding a stated arm to the value it stands for is the run's part.
+
+**Until it is written.** A branch whose condition is produced during the run and whose
+arm is not stated yet is planned on an **assumed** arm — `then` — and marked as such
+(§6.14). Stated or assumed, nothing of it starts before the condition exists (§2).
 
 **What is checked.**
 
-- Every branch the expansion reaches must have an arm: stated here, or read off a
-  literal condition by the scheduler itself. Otherwise `branch_arm_unknown` — also for
-  a condition produced during the run, which no stated arm can stand for yet: an arm
-  stated for one is `unsupported_feature`, since nothing would check it against the
-  value when it is produced.
+- Every branch the expansion reaches must have an arm: stated here, read off a
+  literal condition by the scheduler itself, or — for a condition produced during the
+  run — assumed until it is stated. Otherwise `branch_arm_unknown`: a condition that
+  is an entry input no entry decides.
 - An arm stated for a branch with a literal condition must be the one the literal
   takes (`arm_mismatch`).
 - A path that names no branch of this expansion — no branch there, or an invocation
@@ -1872,7 +1891,34 @@ reported as any undefined entry input is.
   (`unknown_arm`).
 
 A different arm is a different graph and fingerprint, so `arms` is carried and echoed
-exactly as `lengths` is.
+exactly as `lengths` is. A run that states an arm during a joint plan therefore also
+drops that job's `fingerprint` from the roster, and its `bound` with it — the promise
+was made for the arm assumed (§6.11) — and the next plan writes both again.
+
+### 6.14 Decision
+
+```yaml
+- kind: decision
+  job: one                      # as on any activity (§6.11)
+  start: 5                      # = end: the producer's planned end
+  end: 5
+  node: [Each, 0, Choose]       # the branch
+  arm: then                     # the arm planned
+  assumed: true                 # false where expansion.arms states it
+  condition: {node: [Each, 0, Look], port: dirty}   # where the condition comes from
+```
+
+A `decision` marks a branch whose condition is produced during the run and has not
+been produced yet (§2): the moment nothing of the branch may start before — its
+producer's planned end — and the arm planned there, `assumed` where the run has not
+stated it (§6.13). It is not an activity anything runs, takes no time, and holds no
+machine or spot.
+
+**Derived, never read back.** The plan renders one for every such branch on every
+solve, from the workflow, the way it renders relays. A document given to the
+scheduler may carry them, as any plan fed back does; whatever they say — a `status`
+included — is not read. Once the producer has finished there is nothing left to wait
+for, and the branch has no `decision` in the plan.
 
 ## 7. Execution status
 
@@ -2106,8 +2152,8 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
   `else`, `unknown_arm` otherwise); no other key is accepted, and no branch is named
   twice (`duplicate_arm`). (That the path is a branch of the workflow is
   execution-layer.)
-- Each activity: `kind` is required and is `processing`, `transport`, `relay`, or
-  `replenishment`; `job` (if present) is an identifier (§6.11) naming an entry of the
+- Each activity: `kind` is required and is `processing`, `transport`, `relay`,
+  `replenishment` or `decision`; `job` (if present) is an identifier (§6.11) naming an entry of the
   `jobs` roster (`unknown_job`, which also covers a `job` in a document with no
   roster) and is accepted on every kind but `replenishment`, which belongs to no job
   (§6.9) — and where the roster *is* present, every other kind must carry one
@@ -2210,10 +2256,20 @@ environment for processes the workflow never invokes are not checked.
   a `node` inside the workflow or an `index` is `unsupported_feature`. A length that
   nothing traverses is not reported, and neither is an Array with no length that
   nothing traverses. Every branch the expansion reaches has an arm — stated in `arms`,
-  or read off a literal condition (`branch_arm_unknown` otherwise; an arm stated for a
-  condition produced during the run is `unsupported_feature`); a stated arm agrees
-  with a literal condition (`arm_mismatch`) and names a branch of this expansion, or
-  one inside an arm it did not take (`arm_unknown_node` otherwise).
+  read off a literal condition, or assumed for a condition produced during the run
+  (`branch_arm_unknown` otherwise); a stated arm agrees with a literal condition
+  (`arm_mismatch`) and names a branch of this expansion, or one inside an arm it did
+  not take (`arm_unknown_node` otherwise).
+- **The arm not planned** (§2, §6.13): a branch planned on an assumed arm may still
+  take the other, which no solve looks at. Each such branch is switched to its other
+  arm — one at a time, the rest as planned; a branch that appears only on that arm is
+  switched the same way, with the arm it lies in held — and that expansion is read,
+  built and normalized, and put through the checks settled without a solve
+  (`arc_unreachable`, the places for finished products, the stocks that cannot be
+  refilled, a process with no capability), beside the other jobs as they are. A finding
+  there is `arm_unplannable`, naming the branch, the arm and what was found. A caller
+  may skip the check (`check_arms`): a run does, on a replan where nothing it reads
+  has changed.
 - **Inventories** (§6.10): the resource model is in effect, unless it has been
   disabled (§4.7.3), when **some mode of some invoked process declares
   `consumption`**. Declaring `resources` on a device is not enough on its own: a
@@ -2426,8 +2482,9 @@ building the solver instance. Severity is `error` unless marked *warning*.
 
 | code | meaning |
 | --- | --- |
-| `unsupported_feature` | a workflow feature outside the scheduler's v0 subset (a `do_while` node, an atomic process with an Object-bearing Array port, §2), an `expansion` length this stage does not read — one inside the workflow, or of one element of a nested Array — or an arm stated for a branch whose condition is produced during the run (§6.13) |
-| `branch_arm_unknown` | a `branch` the expansion reaches whose arm is not known: its condition is an entry input no `expansion.arms` entry decides, or a value produced during the run (§2, §6.13) |
+| `unsupported_feature` | a workflow feature outside the scheduler's v0 subset (a `do_while` node, an atomic process with an Object-bearing Array port, §2), or an `expansion` length this stage does not read — one inside the workflow, or of one element of a nested Array (§6.13) |
+| `branch_arm_unknown` | a `branch` the expansion reaches whose arm is not known: its condition is an entry input no `expansion.arms` entry decides (§2, §6.13) |
+| `arm_unplannable` | a `branch` planned on an assumed arm could not be planned on its other arm, which the run may yet take: the switched expansion fails a check settled without a solve (§9.3) |
 | `arm_unknown_node` | an `expansion.arms` entry names no branch of this expansion — no branch at that path, or an invocation that is not there — and no branch inside an arm not taken (§6.13) |
 | `arm_mismatch` | an `expansion.arms` entry states an arm other than the one its branch's literal condition takes (§6.13) |
 | `array_length_unknown` | a `map` / `fold` none of whose `each` sources has a length known before the run (§2). One with no `each` source at all is `missing_each_source` (below) |

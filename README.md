@@ -93,7 +93,7 @@ port is bound to a list of spots, one per plate, and that list's length is how m
 plates a `map` / `fold` over it traverses), the `expansion` lengths (§6.13, how many
 elements each list of values the run was given has — the run writes them, so a
 `map` / `fold` over a list of labels can be expanded without the scheduler reading
-a label) and arms (which arm each `branch` on a given flag takes), the
+a label) and arms (which arm each `branch` on a flag takes, given or measured), the
 `inventories` levels as of a moment it names (§6.10) where devices hold
 consumables, the
 `objective` (§6.1, now its only declaration site), the `jobs` roster (§6.11) and the
@@ -166,7 +166,7 @@ plan it:
 |---|---|
 | `python_script_processes` | Supported. A script process is scheduled like any atomic one; its mode `duration` is the estimate of the compute cost. Running the script is the runner's job. |
 | `node_map`, `node_fold` | Supported. Each node is expanded into its invocations before planning, invocation `i` of `N` under the node path `[N, i, …]`. The number of invocations has to be known before the run — from an Array of Objects bound in `interface` as a list of spots, a Pure Data entry input whose length `expansion` states, a literal, or another map / fold's output. An atomic process with an Object-bearing Array port is not supported (`unsupported_feature`); traverse the Array with a map or fold. |
-| `node_branch` | Supported where the arm is known before the run. The branch is expanded with that arm, its activity at the branch's own path; a literal condition decides it here, and an entry-input one -- a flag, or one flag per element inside a `map` -- is decided by the run and stated in the document's `expansion.arms`. A condition produced during the run is refused (`branch_arm_unknown`). |
+| `node_branch` | Supported. The branch is expanded with one arm, its activity at the branch's own path. A literal condition decides it here; an entry-input one -- a flag, or one flag per element inside a `map` -- is decided by the run before it starts and stated in the document's `expansion.arms`. A condition produced during the run is stated there by the run once the value exists; until then the branch is planned on its `then` arm, nothing of it starts before the condition does, the plan marks the wait with a `decision` (§6.14), and the other arm is checked without a solve (`arm_unplannable`). |
 | `node_do_while` | **Not supported.** How many times a `do_while` runs is decided by values the run produces, so there is no single graph to plan; refused with `unsupported_feature`. |
 | `generic_processes` | **Not supported.** Refused with `unsupported_feature`. |
 
@@ -362,7 +362,7 @@ asking is anybody's.
 to drive and eyeball the scheduler: a minimal source → target, a workflow with
 boundary material pinned by an `interface`, a `fold` and a `map` over an Array of
 plates, a `map` over a list of labels whose length `expansion` states, a branch per
-cup whose arm `expansion` states, two jobs on a two-transporter fleet, a plate-reformatting DAG, and a
+cup whose arm `expansion` states, a branch per cup on a measured condition, two jobs on a two-transporter fleet, a plate-reformatting DAG, and a
 parametric generator that scales the instance up.
 Each comes with its solved plan and a rendered chart under `examples/outputs/`.
 

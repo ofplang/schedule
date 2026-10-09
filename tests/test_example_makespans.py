@@ -114,6 +114,16 @@ CASES = [
         EXAMPLES / "wash_or_polish.document.yaml",
         24,
     ),
+    # A branch per cup on a flag measured during the run (design.md D64): every cup is
+    # planned on the `then` arm (wash) until the run says otherwise, and no wash starts
+    # before its own inspection. 41: the last wash ends at 39, and its cup reaches the rack.
+    (
+        "inspect_then_wash",
+        EXAMPLES / "inspect_then_wash.workflow.yaml",
+        EXAMPLES / "inspect_then_wash.env.yaml",
+        EXAMPLES / "inspect_then_wash.document.yaml",
+        41,
+    ),
 ]
 
 

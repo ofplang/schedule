@@ -154,6 +154,11 @@ same schedule without interacting.
   transport). Pure Data arcs contribute a dependency to $A$ only and are not in
   $R$ (SPEC §4.3, §4.5). A **boundary arc** (one endpoint is a boundary node) is
   an ordinary member of $R$; nothing below special-cases it.
+- $G_r \subseteq T$, for $r \in R$: the activities a move waits for besides its
+  source -- the producers of the conditions of the branches decided during the run
+  that it moves into, or that hand its Object on untouched (SPEC §2, design.md D64).
+  Empty for every arc of a workflow without such a branch. (The arm's activities wait
+  through ordinary dependencies in $A$.)
 - $L$: device set. A device is an exclusive resource that owns spots and carries
   out work (SPEC §4.4).
 - $L^{\mathrm{tr}} \subseteq L$: transporters — individual devices used for moves
@@ -395,6 +400,14 @@ ends and finishes before the destination activity starts:
 $$
 a_r \ge e_i, \qquad s_j \ge b_r, \quad \forall r=(i,j) \in R
 $$
+
+and not before anything else it waits for has ended:
+
+$$
+a_r \ge e_k, \quad \forall r \in R,\ k \in G_r
+$$
+
+A move that has already happened is fixed (§9) and not held to it.
 
 This applies to boundary arcs unchanged: for `input node → consumer` the source
 is the input node (with $e = 0$, §3-bis), for `producer → output node` the

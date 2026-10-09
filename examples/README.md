@@ -245,6 +245,38 @@ ofp-schedule schedule wash_or_polish.workflow.yaml --env wash_or_polish.env.yaml
 The two washes take the one sink in turn (2–10, 14–22) while the polish runs on the
 buffer beside the first (4–8).
 
+## `inspect_then_wash` — a branch per cup on a condition measured during the run
+
+- `inspect_then_wash.workflow.yaml` — `main` takes a tray of cups and a **`map`**
+  (`Each`) handles each one: it is inspected (`Look`), which makes a `dirty` flag, and
+  a **`branch`** (`Choose`) on that flag washes it if dirty and polishes it if not.
+- `inspect_then_wash.env.yaml` — a one-stage `scope` that inspects, one `sink`, one
+  `buffer`, a three-slot `tray` and `rack`, one arm.
+- `inspect_then_wash.document.yaml` — `interface` places the cups; no `expansion`, since
+  no flag is known before the run.
+
+The flag is made during the run, so which arm a cup takes is not known when the plan
+is made (SPEC §2, design.md D64). The scheduler plans each branch on its `then` arm
+until the run states the arm in `expansion.arms`, and lets nothing of the branch start
+before its inspection has ended: the cup waits on the scope's stage, and the plan
+marks the moment with a **`decision`** (§6.14) -- `[Each, 0, Choose]` at 5, when its
+`Look` ends, `arm: then`, `assumed: true`. The `else` arm is not solved; it is checked
+without a solve instead, and an `else` that could not be planned would be refused
+(`arm_unplannable`). A run reads each flag as its inspection finishes, states the arm,
+and replans.
+
+```sh
+ofp-schedule schedule inspect_then_wash.workflow.yaml --env inspect_then_wash.env.yaml     --document inspect_then_wash.document.yaml
+```
+
+- `outputs/inspect_then_wash.plan.yaml` (makespan 41), with
+  `outputs/inspect_then_wash.device.svg`, `outputs/inspect_then_wash.lane.svg` and
+  `outputs/inspect_then_wash.workflow.svg` (the only view that draws the decisions).
+
+Every cup is planned to be washed, the longer arm here, one after another on the one
+sink; each wash starts only after its own inspection, and the next cup is inspected
+while the previous one is in the sink.
+
 ## `stopped_job` — one job stops, and what it left behind is still there
 
 The example for a failure that is not the end of the world (SPEC §6.2) and for the
