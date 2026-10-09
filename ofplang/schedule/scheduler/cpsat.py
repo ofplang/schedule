@@ -427,6 +427,12 @@ def solve(
         # Ordering (§3): transport after source ends, before destination starts.
         model.Add(a >= e_src)
         model.Add(s_dst >= b)
+        # And after the condition of every branch the move enters or passes through
+        # (design.md D64). History is pinned above and is not held to it: a move that
+        # has happened is not re-decided.
+        if fr is None:
+            for gate in arc.gates:
+                model.Add(a >= ends[gate])
         # A boundary-output delivery has its successor (the output node) pinned to
         # the makespan, so the delivery must be counted in it (§8); otherwise a
         # delivery later than every real end could not fit before c_max.

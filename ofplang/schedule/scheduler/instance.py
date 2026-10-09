@@ -118,13 +118,18 @@ class ArcInstance:
     """One transport leg. `arc` is the logical connection served (all legs of a
     multi-leg move share it); `seq` is the leg's chain position (§6.6), None for a
     single-leg transport. `src_activity` / `dst_activity` are the physical
-    endpoints (either may be a relay), which can differ from `arc`'s endpoints."""
+    endpoints (either may be a relay), which can differ from `arc`'s endpoints.
+
+    `gates` are the activities this leg may not depart before the end of (design.md
+    D64): the producers of the conditions of the branches its Object is moved into or
+    passed through. Every leg of a logical move carries its move's."""
 
     arc: Arc
     src_activity: int
     dst_activity: int
     options: tuple[TransportOption, ...]
     seq: int | None = None
+    gates: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -276,6 +281,19 @@ def build_instance(
         for s, d in workflow.precedence
         if s in index_by_node and d in index_by_node
     )
+    # What each move waits for besides its own source (design.md D64), by activity.
+    if workflow.arc_gates:
+        arcs = [
+            replace(
+                arc_inst,
+                gates=tuple(sorted(
+                    index_by_node[path]
+                    for path in workflow.arc_gates.get(arc_inst.arc, ())
+                    if path in index_by_node
+                )),
+            )
+            for arc_inst in arcs
+        ]
 
     if any(d.severity == "error" for d in diags.items):
         return None, diags
@@ -411,6 +429,7 @@ def merge_instances(instances: Sequence[Instance]) -> Instance:
                 a,
                 src_activity=a.src_activity + offset,
                 dst_activity=a.dst_activity + offset,
+                gates=tuple(g + offset for g in a.gates),
             )
             for a in inst.arcs
         ]

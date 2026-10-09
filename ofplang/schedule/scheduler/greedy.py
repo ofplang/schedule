@@ -1251,7 +1251,7 @@ def _replay(instance: Instance, order, floors: dict[int, int]) -> Solution | Non
                 moves, placed, resting, outputs, orders,
             ):
                 return None
-        elif not _replay_move(instance, board, index, choice, moves, resting):
+        elif not _replay_move(instance, board, index, choice, moves, resting, placed):
             return None
 
     if len(placed) != len(instance.activities) or len(moves) != len(instance.arcs):
@@ -1345,10 +1345,12 @@ def _replay_move(
     option_index: int,
     moves: dict[int, _Move],
     resting: dict[int, int],
+    placed: dict[int, _Placement],
 ) -> bool:
-    """Send one move on the route the walk chose for it."""
+    """Send one move on the route the walk chose for it -- no earlier than the end of
+    everything it waits for (design.md D64), which the walk placed before it."""
     option = instance.arcs[index].options[option_index]
-    start = resting.pop(index, 0)
+    start = max([resting.pop(index, 0), *(placed[g].end for g in instance.arcs[index].gates)])
     if option.from_spot == option.to_spot:
         # A hand-off that stays put takes no time and names no arm (§Parameters).
         landed = start
@@ -1741,11 +1743,17 @@ def _send_what_can_go(
         )
         for arc_index in order:
             source = instance.arcs[arc_index].src_activity
+            # A move into, or through, a branch whose condition is produced during the
+            # run waits for that condition (design.md D64): not before it is placed,
+            # and not before it ends.
+            gates = instance.arcs[arc_index].gates
+            if any(g not in placed for g in gates):
+                continue
             if _depart(
                 instance,
                 board,
                 arc_index,
-                resting[arc_index],
+                max([resting[arc_index], *(placed[g].end for g in gates)]),
                 placed[source].mode_index,
                 moves,
                 settled,

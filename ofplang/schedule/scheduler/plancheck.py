@@ -285,6 +285,12 @@ def check_schedule(
             wrong.append(f"arc{index}: end is not start plus the route's duration")
         if move.start < source.end:
             wrong.append(f"arc{index}: sets off before the source activity ends")
+        # And not before the condition of a branch it enters or passes through
+        # (design.md D64) -- unless it is history, which is not re-decided.
+        if told is None:
+            for gate in arc.gates:
+                if move.start < by_activity[gate].end:
+                    wrong.append(f"arc{index}: sets off before activity {gate} it waits for ends")
         if target.start < move.end:
             wrong.append(f"arc{index}: the destination starts before the material lands")
 

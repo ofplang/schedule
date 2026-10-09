@@ -48,7 +48,7 @@ from __future__ import annotations
 import weakref
 from array import array
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ofplang.schedule.core.diagnostics import Diagnostics
 from ofplang.schedule.core.identifiers import format_node_path
@@ -87,6 +87,10 @@ class _Shape:
     outgoing: tuple[tuple[int, ...], ...]
     # Precedence sources, by the activity that waits on them.
     predecessors: tuple[tuple[int, ...], ...]
+    # The activities a move may not set off before, by arc (design.md D64): the
+    # producers of the conditions of the branches it enters or passes through. The
+    # same form as a move waiting for its own source, so the walk stays a relaxation.
+    gates: tuple[tuple[int, ...], ...]
     # Bytes per choice in a state key; see `_read`.
     width: int
     # Whether the activity holds the spots of its mode for the rest of the run: an
@@ -114,7 +118,22 @@ def report_deadlocked_objects(instance: Instance, diags: Diagnostics) -> None:
     outcome, deepest, _order = _walked(instance, shape)
     if outcome != "exhausted":
         return
-    diags.error(errors.OBJECTS_DEADLOCKED, _explain(instance, shape, deepest))
+    message = _explain(instance, shape, deepest)
+    # Where moves wait for a branch's condition (design.md D64), say whether the wait
+    # is what leaves no way through: an Object held back for a branch that has not
+    # been decided may be standing where something else has to go. Walked again only
+    # here, on the way to a refusal, so a plannable instance pays nothing for it.
+    waited = sorted({gate for gates in shape.gates for gate in gates})
+    if waited:
+        free = replace(shape, gates=tuple(() for _ in shape.gates))
+        if _walk(instance, free)[0] == "found":
+            names = ", ".join(_name(instance, gate) for gate in waited)
+            message += (
+                f". Without waiting for the condition of a branch ({names}) there would"
+                " be a way through: an Object held back until the branch is decided"
+                " stands where something else has to go"
+            )
+    diags.error(errors.OBJECTS_DEADLOCKED, message)
 
 
 def _read(instance: Instance) -> _Shape | None:
@@ -185,6 +204,7 @@ def _read(instance: Instance) -> _Shape | None:
         incoming=tuple(tuple(items) for items in incoming),
         outgoing=tuple(tuple(items) for items in outgoing),
         predecessors=tuple(tuple(items) for items in predecessors),
+        gates=tuple(arc.gates for arc in instance.arcs),
         keeps=tuple(keeps),
         width=width,
     )
@@ -395,6 +415,8 @@ def _steps(
         chosen = mode[arc.src_activity]
         if chosen < 0:
             continue
+        if any(mode[gate] < 0 for gate in shape.gates[index]):
+            continue  # it waits for a branch's condition, not yet produced
         settled = {
             instance.arcs[other].options[route[other]].dst_mode_index
             for other in shape.incoming[arc.dst_activity]

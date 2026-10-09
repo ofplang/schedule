@@ -240,6 +240,22 @@ Source = SourceRef | SourceLiteral | SourceSeq
 
 
 @dataclass(frozen=True)
+class BranchGate:
+    """A branch whose condition is produced during the run (design.md D64).
+
+    Nothing of it may start before the condition exists: its arm's activities wait
+    for `condition`'s producer, and so does every move into the arm and every
+    consumer of a value the branch passes through untouched -- whichever arm is
+    planned, and whether or not the arm is known. `arm` is the one expanded: the one
+    `expansion.arms` states, or the one assumed (`assumed`) until the run states it.
+    Once the producer has finished, the wait is met and changes nothing."""
+
+    condition: SourceRef
+    arm: str
+    assumed: bool
+
+
+@dataclass(frozen=True)
 class LengthCheck:
     """A length the plan was built on but the scheduler could not see (D57).
 
@@ -396,6 +412,16 @@ class Workflow:
     # `branch` node path -> where its condition's value comes from, for every branch
     # reached whose arm was not decided (design.md D63). The runner reads this to
     # decide the ones whose condition it holds -- an entry input -- and states them
-    # in `expansion.arms`; a workflow that has any is refused (`branch_arm_unknown`).
+    # in `expansion.arms`. One whose condition is an entry input is refused when
+    # planned (`branch_arm_unknown`); one whose condition is produced during the run is
+    # refused too, unless the reader was told which arm to assume (`assume`, D64).
     # None where the condition resolved to nothing (already reported upstream).
     undecided_branches: dict[NodePath, Source | None] = field(default_factory=dict)
+    # `branch` node path -> its wait, for every branch reached whose condition is
+    # produced during the run (`BranchGate`, design.md D64).
+    branch_gates: dict[NodePath, BranchGate] = field(default_factory=dict)
+    # The waits on moves: an Object arc (interior, entry, exit or through) -> the
+    # producers whose end it may not depart before. An arc into a gated branch's arm,
+    # or one carrying an Object the branch passes through untouched. The waits on
+    # activities are ordinary edges in `precedence`.
+    arc_gates: dict[Arc, frozenset[NodePath]] = field(default_factory=dict)

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import yaml
@@ -39,6 +39,7 @@ from ofplang.schedule.scheduler.guards import check_body
 from ofplang.schedule.scheduler.model import (
     Arc,
     AtomicProcess,
+    BranchGate,
     CompositeIO,
     Endpoint,
     LengthCheck,
@@ -71,7 +72,8 @@ def _contains_import_key(obj) -> bool:
 
 
 def parse_workflow(
-    source, *, interface: dict | None = None, expansion: dict | None = None
+    source, *, interface: dict | None = None, expansion: dict | None = None,
+    assume: str | None = None,
 ) -> tuple[Workflow | None, Diagnostics]:
     """Parse the v0 workflow into a schedulable `Workflow`.
 
@@ -92,7 +94,15 @@ def parse_workflow(
     never told (design.md D62), so a `map` / `fold` over one can be expanded. A length
     no traversal reads is not used, and not remarked on either: the runner states every
     Pure Data Array it was given, since which of them a traversal reads is known only
-    once the workflow is expanded.
+    once the workflow is expanded. Its `arms` give a branch's arm: one whose condition
+    is an entry input the run decides before it starts (D63), one whose condition is
+    produced during the run once the value exists (D64).
+
+    `assume` is the arm to expand a branch with whose condition is produced during the
+    run and whose arm `expansion` does not state yet -- the caller's choice, which this
+    reader never makes for it (design.md D64). Planned that way, nothing of the branch
+    starts before its condition exists (`Workflow.branch_gates`). None refuses such a
+    branch (`branch_arm_unknown`).
 
     Returns `(workflow, diagnostics)`; the workflow is None when a blocking
     diagnostic (unparseable document or no entry) is raised.
@@ -126,7 +136,7 @@ def parse_workflow(
     # reader must not be disguised as a malformed document. It is the one refusal with
     # no `ofplang-validate` code to answer with, so it keeps this package's own.
     try:
-        return _read_workflow(data, diags, interface, expansion)
+        return _read_workflow(data, diags, interface, expansion, assume)
     except (AttributeError, TypeError, KeyError) as exc:
         diags.error(
             errors.WRONG_TYPE,
@@ -137,7 +147,8 @@ def parse_workflow(
 
 
 def undecided_branches(
-    source, *, interface: dict | None = None, expansion: dict | None = None
+    source, *, interface: dict | None = None, expansion: dict | None = None,
+    assume: str | None = None,
 ) -> dict[NodePath, Source | None]:
     """The branches this expansion reaches whose arm it could not decide: branch node
     path -> where the condition's value comes from (design.md D63).
@@ -146,9 +157,12 @@ def undecided_branches(
     element of one, for a branch inside a `map` -- is a value the runner holds: it
     decides the arm, states it in `expansion.arms`, and asks again, since a branch can
     sit inside an arm that only appears once the outer one is decided. A condition
-    produced during the run is not one it can decide yet, and the workflow is refused
-    when it is planned. Expanding only: nothing here plans."""
-    workflow, _diags = parse_workflow(source, interface=interface, expansion=expansion)
+    produced during the run is decided the same way once its value exists (D64);
+    until then, expanded with the arm `assume` names, the branches inside that arm are
+    reached and reported too. Expanding only: nothing here plans."""
+    workflow, _diags = parse_workflow(
+        source, interface=interface, expansion=expansion, assume=assume
+    )
     return dict(workflow.undecided_branches) if workflow is not None else {}
 
 
@@ -303,7 +317,8 @@ def _check_readable(data: dict, diags: Diagnostics) -> bool:
 
 
 def _read_workflow(
-    data: dict, diags: Diagnostics, interface: dict | None = None, expansion: dict | None = None
+    data: dict, diags: Diagnostics, interface: dict | None = None, expansion: dict | None = None,
+    assume: str | None = None,
 ) -> tuple[Workflow | None, Diagnostics]:
     """Read a document this reader can use: the capability gate, then the flattening.
 
@@ -430,7 +445,7 @@ def _read_workflow(
     stated_arms = _stated_arms(expansion)
     exp, precedence = _expand_body(
         entry, entry_proc, procs, atomic, in_ports, out_ports, interface, lengths,
-        {path: arm for _i, path, arm in stated_arms}, domains, diags,
+        {path: arm for _i, path, arm in stated_arms}, domains, diags, assume,
     )
     _check_stated_arms(stated_arms, exp, procs, diags)
 
@@ -456,6 +471,10 @@ def _read_workflow(
             # not be decided -- for the runner, which states the arms it can (D63).
             arms=exp.arms,
             undecided_branches=exp.undecided,
+            # What waits for a condition produced during the run (D64): the planner
+            # reads these, and the branches for the plan's `decision` entries.
+            branch_gates=exp.branch_gates,
+            arc_gates={arc: frozenset(waits) for arc, waits in exp.arc_gates.items()},
             **_boundary_ranks(entry_proc),
         ),
         diags,
@@ -656,7 +675,7 @@ def _object_bearing(type_expr: str, domains: dict[str, str | None]) -> bool:
 
 
 def _expand_body(entry_name, entry_proc, procs, atomic, in_ports, exit_object_bearing,
-                 interface, lengths, arms, domains, diags):
+                 interface, lengths, arms, domains, diags, assume=None):
     """Flatten the entry composite into atomic activities, Object-bearing arcs, and
     precedence edges, following nested composites and expanding `map` / `fold`
     nodes (see `_Expander`).
@@ -666,8 +685,9 @@ def _expand_body(entry_name, entry_proc, procs, atomic, in_ports, exit_object_be
     `interface` gives, the second tells a Pure Data return from an Object-bearing one
     (which the planner places: an exit arc, or a through arc, D60). `lengths` are the
     Pure Data Array entry inputs' stated lengths (`_boundary_lengths`), `arms` the
-    branches' stated arms (`_stated_arms`)."""
-    exp = _Expander(procs, atomic, diags, domains, interface, in_ports, lengths, arms)
+    branches' stated arms (`_stated_arms`), `assume` the arm to expand an unstated
+    branch with whose condition is produced during the run (design.md D64)."""
+    exp = _Expander(procs, atomic, diags, domains, interface, in_ports, lengths, arms, assume)
     # The entry's own inputs are the workflow's boundary inputs: seed the entry
     # scope so `inputs.X` resolves to an `_EntryInput(X)` marker, which propagates
     # into nested composites and is recorded at the atomic that consumes it.
@@ -704,11 +724,13 @@ def _expand_body(entry_name, entry_proc, procs, atomic, in_ports, exit_object_be
             for index, leaf in _leaves(value):
                 exit_end = Endpoint((), out_name, index)
                 if isinstance(leaf, _Producer) and not leaf.index:
-                    exp.exit_arcs.append(Arc(Endpoint(leaf.path, leaf.port), exit_end))
+                    arc = Arc(Endpoint(leaf.path, leaf.port), exit_end)
+                    exp.exit_arcs.append(arc)
+                    exp._gate_arc(arc, leaf.path, leaf.gates)
                 elif isinstance(leaf, _EntryInput):
-                    exp.through_arcs.append(
-                        Arc(Endpoint((), leaf.name, leaf.index), exit_end)
-                    )
+                    arc = Arc(Endpoint((), leaf.name, leaf.index), exit_end)
+                    exp.through_arcs.append(arc)
+                    exp._gate_arc(arc, (), leaf.gates)
         if (resolved := _source_of(value)) is not None:
             exp.output_sources[out_name] = resolved
 
@@ -728,11 +750,16 @@ class _Producer:
     """The concrete atomic output that ultimately feeds a reference, after
     resolving through any composite boundaries (a `returns` map, or a composite's
     own input). `index` selects one element of that output's Array, where a `map` /
-    `fold` traverses it; empty, the whole value."""
+    `fold` traverses it; empty, the whole value.
+
+    `gates` are the producers a consumer of this value has to wait for besides this
+    one: set where the value passed untouched through a branch whose condition is
+    produced during the run (design.md D64), and on every marker below alike."""
 
     path: NodePath
     port: str
     index: tuple[int, ...] = ()
+    gates: frozenset[NodePath] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -747,6 +774,7 @@ class _EntryInput:
 
     name: str
     index: tuple[int, ...] = ()
+    gates: frozenset[NodePath] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -759,6 +787,7 @@ class _Literal:
     never reads it."""
 
     value: object
+    gates: frozenset[NodePath] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -815,6 +844,7 @@ class _Expander:
         entry_ports: dict[str, bool] | None = None,
         entry_lengths: dict[str, int] | None = None,
         stated_arms: dict[NodePath, str] | None = None,
+        assume: str | None = None,
     ) -> None:
         self.procs = procs
         self.atomic = atomic
@@ -842,6 +872,16 @@ class _Expander:
         self.branch_nodes: dict[NodePath, dict] = {}
         self.arms: dict[NodePath, str] = {}
         self.undecided: dict[NodePath, Source | None] = {}
+        # The arm to expand a branch with whose condition is produced during the run and
+        # whose arm nobody has stated yet -- the caller's choice, never this reader's
+        # (design.md D64). None refuses such a branch (`branch_arm_unknown`).
+        self.assume = assume
+        # Branches whose condition is produced during the run -> their wait, and the
+        # ones being expanded right now, innermost last: (branch path, the condition's
+        # producer). Everything invoked inside waits for every producer on the stack.
+        self.branch_gates: dict[NodePath, BranchGate] = {}
+        self.gate_stack: list[tuple[NodePath, NodePath]] = []
+        self.arc_gates: dict[Arc, set[NodePath]] = {}
         self.activities: list[NodeInvocation] = []
         self.arcs: list[Arc] = []
         self.precedence: list[tuple[NodePath, NodePath]] = []
@@ -964,6 +1004,10 @@ class _Expander:
         self.activities.append(NodeInvocation(path, pname))
         sig = self.atomic[pname]
         self.used[pname] = sig
+        # Inside the arm of a branch whose condition is produced during the run: nothing
+        # here starts before the condition exists (design.md D64).
+        for _branch, producer in self.gate_stack:
+            self.precedence.append((producer, path))
         # 🔴 Whether a binding moves an Object is the target **port's type**, never
         # the section it is written under. The spec pairs the two (`state` for
         # Object-bearing ports, `bind` for Pure Data, v0 §11), but this reader does
@@ -984,6 +1028,11 @@ class _Expander:
             source = _source_of(value)
             if source is not None:
                 self.input_sources[dst] = source
+            # A value passed untouched through a branch whose condition is produced
+            # during the run is not this activity's to take before that condition
+            # exists: the branch might yet route it elsewhere (design.md D64).
+            for producer in _gates_of(value):
+                self.precedence.append((producer, path))
             if isinstance(value, _Literal):
                 # A static literal: no producer, no precedence, no arc -- its source is
                 # all there is. (One on an Object-bearing port is refused by the guards.)
@@ -994,7 +1043,9 @@ class _Expander:
                 # planner places (an element of an Array on an arc of its own); a Pure
                 # Data one occupies no spot, and its source is the boundary `()`.
                 if object_bearing:
-                    self.entry_arcs.append(Arc(Endpoint((), value.name, value.index), dst))
+                    arc = Arc(Endpoint((), value.name, value.index), dst)
+                    self.entry_arcs.append(arc)
+                    self._gate_arc(arc, (), value.gates)
                 continue
             if isinstance(value, _Gathered):
                 # An Array assembled from several invocations, read whole (a Pure Data
@@ -1007,8 +1058,23 @@ class _Expander:
                 continue
             self.precedence.append((value.path, path))
             if object_bearing:
-                self.arcs.append(Arc(Endpoint(value.path, value.port, value.index), dst))
+                arc = Arc(Endpoint(value.path, value.port, value.index), dst)
+                self.arcs.append(arc)
+                self._gate_arc(arc, value.path, value.gates)
             # A Pure Data one is the precedence edge above, and its source.
+
+    def _gate_arc(self, arc: Arc, src: NodePath, gates: frozenset[NodePath]) -> None:
+        """Record what the move along `arc` waits for (design.md D64): the producers
+        its Object was passed through untouched under (`gates`), and the condition of
+        every branch being expanded that the move enters from outside -- an Object
+        moved into an arm before the arm is known might have been wanted elsewhere.
+        `src` is the producing activity's path, `()` for the boundary."""
+        waits = set(gates)
+        for branch, producer in self.gate_stack:
+            if src[: len(branch)] != branch:
+                waits.add(producer)
+        if waits:
+            self.arc_gates.setdefault(arc, set()).update(waits)
 
     def _plannable(self, pname: str) -> bool:
         """Whether an atomic process can be planned in this stage (design.md D57): not
@@ -1093,9 +1159,11 @@ class _Expander:
 
         Which arm is decided by where the condition's value comes from: a literal
         decides it here; an entry input (or one element of one) is the run's to state,
-        in `expansion.arms`; anything else is produced during the run and cannot be
-        known yet (`branch_arm_unknown`). Planning an arm that was not decided would be
-        a guess."""
+        in `expansion.arms`; anything else is produced during the run, and is the arm
+        the run states once the value exists or, until then, the one the caller says to
+        assume (design.md D64) -- with nothing of the branch starting before the
+        condition (`BranchGate`). Without either it is `branch_arm_unknown`: planning
+        an arm nobody chose would be a guess."""
         node_id = node["id"]
         path = prefix + (node_id,)
         if path in self.structured:
@@ -1110,6 +1178,27 @@ class _Expander:
             port: self._resolve(_parse_ref(binding), prefix, inputs_env, siblings, stack)
             for port, binding in (node.get("args") or {}).items()
         }
+        gate = self.branch_gates.get(path)
+        if gate is not None:
+            self.gate_stack.append((path, gate.condition.node))
+        try:
+            outputs = self._expand_arm(node, path, arm, env, stack)
+        finally:
+            if gate is not None:
+                self.gate_stack.pop()
+        if gate is not None:
+            # What the branch hands on without having made it -- an argument returned
+            # untouched, by an implicit `else` or by an arm that only passes it along --
+            # is no more available before the condition than the arm's own work is.
+            waits = frozenset({gate.condition.node})
+            outputs = {port: _gated_outside(value, path, waits) for port, value in outputs.items()}
+        self.structured[path] = outputs
+        return outputs
+
+    def _expand_arm(self, node: dict, path: NodePath, arm: str, env: dict, stack) -> dict:
+        """Invoke a branch's chosen arm at the branch's own path and return what the
+        node exposes (port -> value), v0 20.1, 20.3."""
+        node_id = node["id"]
         arm_node = node.get(arm)
         if isinstance(arm_node, dict):
             pname = arm_node.get("process")
@@ -1153,9 +1242,7 @@ class _Expander:
             }
         else:
             exposed = objects
-        outputs = {port: produced.get(port) for port in exposed}
-        self.structured[path] = outputs
-        return outputs
+        return {port: produced.get(port) for port in exposed}
 
     def _decide_arm(self, path, node, prefix, inputs_env, siblings, stack) -> str | None:
         """The arm a branch at `path` is expanded with, or None (reported)."""
@@ -1191,16 +1278,26 @@ class _Expander:
             # Nothing to decide on because something upstream was already refused: the
             # arm is that refusal's consequence, not a second mistake.
             return None
-        self.undecided[path] = _source_of(value)
-        if stated is not None:
-            # Accepted in a later stage, when the run states an arm once the value is
-            # produced and checks it; until then a stated arm would go unchecked.
+        if isinstance(value, _Producer):
+            # Produced during the run (design.md D64). The arm is the one the run states
+            # once the value exists -- holding it to the value is the run's part, since
+            # the scheduler never sees one -- or, until then, the one the caller says to
+            # assume. Either way nothing of the branch starts before the condition does.
+            condition = SourceRef(value.path, value.port, value.index)
+            if stated is not None:
+                self.branch_gates[path] = BranchGate(condition, stated, assumed=False)
+                return stated
+            self.undecided[path] = condition
+            if self.assume is not None:
+                self.branch_gates[path] = BranchGate(condition, self.assume, assumed=True)
+                return self.assume
             self.diags.error(
-                errors.UNSUPPORTED_FEATURE,
-                f"{where}: its condition is produced during the run, so an arm stated "
-                "for it in expansion.arms cannot be checked against the value yet",
+                errors.BRANCH_ARM_UNKNOWN,
+                f"{where}: its condition is produced during the run, so which arm it takes "
+                "is not known before it",
             )
             return None
+        self.undecided[path] = _source_of(value)
         self.diags.error(
             errors.BRANCH_ARM_UNKNOWN,
             f"{where}: its condition is produced during the run, so which arm it takes "
@@ -1535,14 +1632,40 @@ def _element(value, i: int):
     Array. None where there is no such element."""
     if isinstance(value, _Gathered):
         return value.items[i] if i < len(value.items) else None
-    if isinstance(value, _Producer):
-        return _Producer(value.path, value.port, (*value.index, i))
-    if isinstance(value, _EntryInput):
-        return _EntryInput(value.name, (*value.index, i))
+    if isinstance(value, _Producer | _EntryInput):
+        return replace(value, index=(*value.index, i))
     if isinstance(value, _Literal):
         items = value.value
-        return _Literal(items[i]) if isinstance(items, list) and i < len(items) else None
+        if isinstance(items, list) and i < len(items):
+            return _Literal(items[i], value.gates)
+        return None
     return None
+
+
+def _gated(value, gates: frozenset[NodePath]):
+    """`value` with `gates` added to every marker it is made of (design.md D64)."""
+    if not gates or value is None:
+        return value
+    if isinstance(value, _Gathered):
+        return _Gathered(tuple(_gated(item, gates) for item in value.items))
+    return replace(value, gates=value.gates | gates)
+
+
+def _gated_outside(value, branch: NodePath, gates: frozenset[NodePath]):
+    """`value` with `gates` added to every marker not produced under `branch` -- what
+    a branch hands on without having made it (design.md D64)."""
+    if value is None:
+        return None
+    if isinstance(value, _Gathered):
+        return _Gathered(tuple(_gated_outside(item, branch, gates) for item in value.items))
+    if isinstance(value, _Producer) and value.path[: len(branch)] == branch:
+        return value
+    return _gated(value, gates)
+
+
+def _gates_of(value) -> frozenset[NodePath]:
+    """Every producer a consumer of `value` waits for besides its own producers."""
+    return frozenset().union(*(leaf.gates for _index, leaf in _leaves(value)))
 
 
 def _leaves(value, index: tuple[int, ...] = ()):

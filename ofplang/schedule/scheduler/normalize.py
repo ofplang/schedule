@@ -252,6 +252,12 @@ def normalize(
         if any(act_fix.get(i) is not None and act_fix[i].status == "cancelled" for i in endpoints):
             arc_fix[r] = ArcFixation("cancelled", now, now, 0)
 
+    # Every leg of a logical move waits for what the move waits for (design.md D64).
+    # Activity indices are those of `base`, which the augmented list keeps aligned.
+    waits = {arc_inst.arc: arc_inst.gates for arc_inst in base.arcs if arc_inst.gates}
+    if waits:
+        arcs = [replace(a, gates=waits.get(a.arc, ())) for a in arcs]
+
     instance = Instance(env, base.time_unit, tuple(activities), tuple(arcs), base.precedence)
 
     # 3. Started refills read back from the status, then the consumable levels at

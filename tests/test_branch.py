@@ -383,11 +383,25 @@ def test_a_literal_condition_is_decided_by_the_scheduler():
 
 
 def test_a_measured_condition_is_not_known_before_the_run():
+    # Not without an arm to assume (design.md D64): the reader never picks one itself.
     _, errs = _parse(MEASURED)
     assert errs == ["branch_arm_unknown"]
-    # An arm stated for it cannot be checked against the value yet (D63 A).
-    _, errs = _parse(MEASURED, arms((("H",), "then")))
-    assert errs == ["unsupported_feature"]
+
+
+def test_an_arm_stated_for_a_measured_condition_is_taken_and_still_waits():
+    # The run states it once the value exists (D64; D63 A is lifted). Holding it to
+    # the value is the run's part; the arm still waits for the measurement.
+    wf, errs = _parse(MEASURED, arms((("H",), "else")))
+    assert errs == []
+    assert [a.path for a in wf.activities] == [("I",), ("H",)]
+    assert wf.activities[1].process == "polish"
+    gate = wf.branch_gates[("H",)]
+    assert (gate.condition.node, gate.condition.port, gate.arm, gate.assumed) == (
+        ("I",), "dirty", "else", False
+    )
+    assert (("I",), ("H",)) in wf.precedence
+    (arc,) = [a for a in wf.arcs if a.dst.node == ("H",)]
+    assert wf.arc_gates[arc] == frozenset({("I",)})
 
 
 # --- stated arms that name no branch -------------------------------------------------------
