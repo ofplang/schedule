@@ -246,8 +246,15 @@ LENGTH_ON_OBJECT_PORT = "length_on_object_port"
 DUPLICATE_LENGTH = "duplicate_length"
 # A `branch` node (§2, design.md D63) whose arm is not known when the workflow is
 # expanded: its condition is an entry input no `expansion.arms` entry decides, or a
-# value only the run produces. Planning one arm anyway would be a guess.
+# value only the run produces and the reader was not told which arm to assume (D64).
+# Planning one arm anyway would be a guess.
 BRANCH_ARM_UNKNOWN = "branch_arm_unknown"
+# A branch whose condition is produced during the run is planned on one arm until the
+# run states it (design.md D64), so the other arm is never solved; it is checked
+# instead, without a solve, and this is that check failing: with the branch on that
+# arm the plan could not be made (an activity no machine can run, a move no route
+# serves, products with nowhere to rest, a stock that cannot last).
+ARM_UNPLANNABLE = "arm_unplannable"
 # An `expansion.arms` entry names no branch node: no branch at that path, or an
 # invocation the expansion does not have. Not reported for a branch inside an arm the
 # expansion did not choose -- it simply does not occur.
@@ -486,6 +493,7 @@ ERROR_CODES = frozenset(
         LENGTH_ON_OBJECT_PORT,
         DUPLICATE_LENGTH,
         BRANCH_ARM_UNKNOWN,
+        ARM_UNPLANNABLE,
         ARM_UNKNOWN_NODE,
         ARM_MISMATCH,
         DUPLICATE_ARM,

@@ -25,6 +25,7 @@ from dataclasses import dataclass, field, replace
 from ofplang.schedule.core import objective as objective_stages
 from ofplang.schedule.core import yamlnode
 from ofplang.schedule.core.diagnostics import ERROR, WARNING, Diagnostic, Diagnostics
+from ofplang.schedule.core.identifiers import format_node_path
 from ofplang.schedule.core.yamlnode import YMap
 from ofplang.schedule.scheduler.envload import load_environment
 from ofplang.schedule.scheduler.instance import (
@@ -1242,6 +1243,7 @@ def schedule(
     carry_levels_to_now: bool = False,
     collect_solutions: bool = False,
     planner: str = "cpsat",
+    check_arms: bool = True,
     workflow_source: str | None = None,
     environment_source: str | None = None,
     document_source: str | None = None,
@@ -1296,6 +1298,7 @@ def schedule(
         carry_levels_to_now=carry_levels_to_now,
         collect_solutions=collect_solutions,
         planner=planner,
+        check_arms=check_arms,
         environment_source=environment_source,
         document_source=document_source,
     )
@@ -1315,6 +1318,7 @@ def schedule_jobs(
     carry_levels_to_now: bool = False,
     collect_solutions: bool = False,
     planner: str = "cpsat",
+    check_arms: bool = True,
     environment_source: str | None = None,
     document_source: str | None = None,
 ) -> ScheduleReport:
@@ -1381,6 +1385,7 @@ def schedule_jobs(
         carry_levels_to_now=carry_levels_to_now,
         collect_solutions=collect_solutions,
         planner=planner,
+        check_arms=check_arms,
         environment_source=environment_source,
         document_source=document_source,
     )
@@ -1401,9 +1406,25 @@ class _Fixed:
     derived: tuple[dict, ...]
 
 
-def _build_merged(jobs, workflows, specs, env, interface) -> tuple[object | None, list[Diagnostic]]:
+def _build_one(job, workflow, spec, env, interface, jobs) -> tuple:
+    """One job's instance, its node paths prefixed with its id (None when it could not
+    be built), and what building it said."""
+    base, inst_diags = build_instance(
+        # A named job brings its own boundary (`spec.interface`); the unnamed
+        # single-workflow call has the document's, which is refused above wherever
+        # jobs are named, so exactly one of the two is ever set.
+        workflow, env, interface=spec.interface or interface, check_reachability=False
+    )
+    diagnostics = _attribute(inst_diags.items, job, jobs)
+    if base is None:
+        return None, diagnostics
+    return prefix_instance(base, (job.id,) if job.id else ()), diagnostics
+
+
+def _build_merged(jobs, workflows, specs, env, interface) -> tuple:
     """One instance per job, each job's node paths prefixed with its id so two cannot
-    collide, merged into one (None when any job could not be built).
+    collide, merged into one (None when any job could not be built), and the per-job
+    instances it was merged from.
 
     Boundary nodes and arcs are re-created from `interface` every time, like relays.
     Everything downstream sees a single instance and never learns that jobs exist --
@@ -1412,21 +1433,94 @@ def _build_merged(jobs, workflows, specs, env, interface) -> tuple[object | None
     diagnostics: list[Diagnostic] = []
     bases = []
     for job, workflow, spec in zip(jobs, workflows, specs, strict=True):
-        base, inst_diags = build_instance(
-            # A named job brings its own boundary (`spec.interface`); the unnamed
-            # single-workflow call has the document's, which is refused above wherever
-            # jobs are named, so exactly one of the two is ever set.
-            workflow, env, interface=spec.interface or interface, check_reachability=False
-        )
-        diagnostics += _attribute(inst_diags.items, job, jobs)
+        base, built = _build_one(job, workflow, spec, env, interface, jobs)
+        diagnostics += built
         if base is not None:
-            bases.append(prefix_instance(base, (job.id,) if job.id else ()))
+            bases.append(base)
     # Every job is built before any rejection, for the same reason every one is
     # parsed first: a caller whose environment is missing two capabilities should
     # hear about both, not be sent round the loop once per job.
     if len(bases) != len(jobs):
-        return None, diagnostics
-    return merge_instances(bases), diagnostics
+        return None, bases, diagnostics
+    return merge_instances(bases), bases, diagnostics
+
+
+def _arm_expansions(
+    source, interface, expansion, workflow
+) -> list[tuple[tuple, Workflow | None, list]]:
+    """The expansions the arm check reads (design.md D64): for every branch planned on
+    an assumed arm, the same expansion with that branch on its other arm -- one branch
+    at a time, the rest as planned. A branch that only appears on that other arm is
+    switched the same way, with the arm it lies in held where it is.
+
+    Returns `(branches switched, workflow or None, reader errors)` per expansion; the
+    branches switched name it, outermost first."""
+    found: list[tuple[tuple, Workflow | None, list]] = []
+
+    def switch(expansion, workflow, chain, inside) -> None:
+        for path, gate in workflow.branch_gates.items():
+            if not gate.assumed or (inside is not None and path[: len(inside)] != inside):
+                continue
+            if inside is not None and path == inside:
+                continue
+            other = "else" if gate.arm == "then" else "then"
+            arms = list((expansion or {}).get("arms") or [])
+            arms.append({"node": list(path), "arm": other})
+            switched = {**(expansion or {}), "arms": arms}
+            read, diags = parse_workflow(
+                source, interface=interface, expansion=switched, assume=ASSUMED_ARM
+            )
+            errs = [d for d in diags.items if d.severity == ERROR]
+            found.append(((*chain, (path, other)), read, errs))
+            if read is not None and not errs:
+                switch(switched, read, (*chain, (path, other)), path)
+
+    switch(expansion, workflow, (), None)
+    return found
+
+
+def _check_arms(
+    jobs, workflows, specs, bases, env, interface, roots, root, fixed
+) -> list[Diagnostic]:
+    """`arm_unplannable` for every branch planned on an assumed arm whose other arm
+    could not be planned (design.md D64). Each such expansion goes through what the
+    one being planned went through before its solve -- reading, building, normalizing,
+    and the checks settled without one -- with the other jobs as they are; no solve.
+    `roots` are each job's `(interface, expansion)` as it was read."""
+    found: list[Diagnostic] = []
+    for j, (job, workflow, spec) in enumerate(zip(jobs, workflows, specs, strict=True)):
+        if not any(gate.assumed for gate in workflow.branch_gates.values()):
+            continue
+        job_interface, job_expansion = roots[j]
+        for chain, read, errs in _arm_expansions(
+            job.workflow, job_interface, job_expansion, workflow
+        ):
+            problems = list(errs)
+            if read is not None and not errs:
+                base, built = _build_one(job, read, spec, env, interface, jobs)
+                problems += [d for d in built if d.severity == ERROR]
+                if base is not None:
+                    merged = merge_instances([*bases[:j], base, *bases[j + 1:]])
+                    _i, _f, normalized, checked = _normalize_and_check(merged, root, env, fixed)
+                    problems += [d for d in (*normalized, *checked) if d.severity == ERROR]
+            if problems:
+                where = " with ".join(
+                    f"branch {format_node_path(path)!r} on its {arm} arm" for path, arm in chain
+                )
+                said = "; ".join(f"{d.code}: {d.message}" for d in problems)
+                found += _attribute(
+                    [
+                        Diagnostic(
+                            errors.ARM_UNPLANNABLE,
+                            f"{where} could not be planned, and the run may yet take it "
+                            f"({said})",
+                            "expansion",
+                        )
+                    ],
+                    job,
+                    jobs,
+                )
+    return found
 
 
 def _normalize_and_check(base, root, env, fixed: _Fixed):
@@ -1478,6 +1572,7 @@ def _run(
     carry_levels_to_now: bool = False,
     collect_solutions: bool = False,
     planner: str = "cpsat",
+    check_arms: bool = True,
     environment_source: str | None = None,
     document_source: str | None = None,
 ) -> ScheduleReport:
@@ -1505,16 +1600,24 @@ def _run(
     # 2. Workflows: our own minimal parse (D17), one per job. Every job is parsed
     # before any is rejected, so a caller with two broken workflows hears about both.
     workflows: list[Workflow] = []
+    # Each job's sections as its workflow was read with them, for reading it again
+    # with another arm (the arm check).
+    readings: list[tuple[dict | None, dict | None]] = []
     for job in jobs:
         # A named job without a roster binding falls back to the document's own, for
         # reading only: a joint plan that put its binding at the top level is refused
         # below for exactly that (`multi_job_interface`), and reading the workflow
         # without it would instead report the length as missing -- the wrong mistake.
         # `expansion` falls back the same way, refused the same way.
+        reading = (
+            job_interfaces.get(job.id, top_interface) if job.id else top_interface,
+            job_expansions.get(job.id, top_expansion) if job.id else top_expansion,
+        )
+        readings.append(reading)
         workflow, wf_diags = parse_workflow(
             job.workflow,
-            interface=job_interfaces.get(job.id, top_interface) if job.id else top_interface,
-            expansion=job_expansions.get(job.id, top_expansion) if job.id else top_expansion,
+            interface=reading[0],
+            expansion=reading[1],
             # A branch whose condition is produced during the run is planned on its
             # `then` arm until the run states the arm (design.md D64), waiting for the
             # condition either way.
@@ -1656,7 +1759,7 @@ def _run(
         return ScheduleReport(None, None, None, diagnostics)
 
     # 3. Build one instance per job and merge them (`_build_merged`).
-    base, build_diags = _build_merged(jobs, workflows, specs, env, interface)
+    base, job_bases, build_diags = _build_merged(jobs, workflows, specs, env, interface)
     diagnostics += build_diags
     if base is None:
         return ScheduleReport(None, None, None, diagnostics)
@@ -1768,22 +1871,30 @@ def _run(
 
     # The augmented instance and the fixation of what has happened, then the counting
     # checks settled without a solve (`_normalize_and_check`).
-    instance, fixation, normalized, checked = _normalize_and_check(
-        base,
-        root,
-        env,
-        _Fixed(
-            ignore_resources=ignore_resources,
-            max_transport_legs=max_transport_legs,
-            jobs=tuple(spec.id for spec in specs if spec.id),
-            withdrawn=frozenset(withdraw),
-            frozen=tuple(frozen),
-            derived=tuple(residue),
-        ),
+    fixed = _Fixed(
+        ignore_resources=ignore_resources,
+        max_transport_legs=max_transport_legs,
+        jobs=tuple(spec.id for spec in specs if spec.id),
+        withdrawn=frozenset(withdraw),
+        frozen=tuple(frozen),
+        derived=tuple(residue),
     )
+    instance, fixation, normalized, checked = _normalize_and_check(base, root, env, fixed)
     diagnostics += normalized + checked
     if instance is None or fixation is None or _has_error(checked):
         return ScheduleReport(None, None, None, diagnostics)
+
+    # The arms nobody has planned (design.md D64): a branch planned on an assumed arm
+    # may yet take the other, so that one is held to the same checks. Asked for by the
+    # caller, who knows when the answer can have changed -- a run, at its first plan and
+    # whenever a machine goes down or comes back, not on every replan.
+    if check_arms:
+        unplannable = _check_arms(
+            jobs, workflows, specs, job_bases, env, interface, readings, root, fixed
+        )
+        diagnostics += unplannable
+        if unplannable:
+            return ScheduleReport(None, None, None, diagnostics)
 
     # Which of this laboratory's resources this instance never tells apart (§10.4).
     # After reachability, so the classes are read off the routes that actually
