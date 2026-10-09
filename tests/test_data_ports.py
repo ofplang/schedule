@@ -18,6 +18,7 @@ from pathlib import Path
 import yaml
 
 from ofplang.schedule import schedule
+from ofplang.schedule.scheduler.api import ASSUMED_ARM
 from ofplang.schedule.scheduler.model import Arc, Endpoint, SourceLiteral, SourceRef, Workflow
 from ofplang.schedule.scheduler.workflow import parse_workflow
 
@@ -195,7 +196,10 @@ def _example_sections(path: Path) -> dict:
     if not document.is_file():
         return {}
     loaded = yaml.safe_load(document.read_text(encoding="utf-8")) or {}
-    return {key: loaded.get(key) for key in ("interface", "expansion")}
+    # Read as the scheduler reads it (design.md D64).
+    return {key: loaded.get(key) for key in ("interface", "expansion")} | {
+        "assume": ASSUMED_ARM
+    }
 
 
 def test_every_port_has_a_source(tmp_path):

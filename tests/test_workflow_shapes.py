@@ -23,6 +23,7 @@ import pytest
 import yaml
 from ofplang.validate import validate
 
+from ofplang.schedule.scheduler.api import ASSUMED_ARM
 from ofplang.schedule.scheduler.workflow import parse_workflow
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
@@ -202,6 +203,7 @@ def test_the_examples_still_parse_without_a_diagnostic(path: Path) -> None:
         yaml.safe_load(path.read_text(encoding="utf-8")),
         interface=loaded.get("interface"),
         expansion=loaded.get("expansion"),
+        assume=ASSUMED_ARM,  # as the scheduler reads it (design.md D64)
     )
     assert workflow is not None
     assert not diags.items

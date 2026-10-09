@@ -21,6 +21,7 @@ def _example_build(name: str):
     other, and without them the workflow is refused."""
     import yaml
 
+    from ofplang.schedule.scheduler.api import ASSUMED_ARM
     from ofplang.schedule.scheduler.envload import load_environment
     from ofplang.schedule.scheduler.instance import build_instance
     from ofplang.schedule.scheduler.workflow import parse_workflow
@@ -33,7 +34,10 @@ def _example_build(name: str):
     )
     interface, expansion = document.get("interface"), document.get("expansion")
     workflow, wf_diags = parse_workflow(
-        EXAMPLES / f"{name}.workflow.yaml", interface=interface, expansion=expansion
+        EXAMPLES / f"{name}.workflow.yaml", interface=interface, expansion=expansion,
+        # Read as the scheduler reads it: a branch on a measured condition is planned
+        # on the arm it assumes (design.md D64).
+        assume=ASSUMED_ARM,
     )
     errors = [d.code for d in wf_diags.items if d.severity == "error"]
     environment, _ = load_environment(EXAMPLES / f"{name}.env.yaml")
