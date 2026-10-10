@@ -983,7 +983,7 @@ class _Expander:
         self.used_loops: set[NodePath] = set()
         self.loop_nodes: dict[NodePath, dict] = {}
         self.loops: dict[NodePath, LoopGate] = {}
-        self.undecided_loops: dict[NodePath, tuple[int, Source | None]] = {}
+        self.undecided_loops: dict[NodePath, tuple[int, Source | None, Source | None]] = {}
         self.arc_gates: dict[Arc, set[NodePath]] = {}
         self.activities: list[NodeInvocation] = []
         self.arcs: list[Arc] = []
@@ -1559,7 +1559,7 @@ class _Expander:
                 ended = True
             elif literal is not None:
                 if literal is True and bound is None:
-                    self.undecided_loops[path] = (i + 1, _source_of(condition))
+                    self.undecided_loops[path] = (i + 1, _source_of(condition), _source_of(limit))
                     self.diags.error(
                         errors.LOOP_COUNT_UNKNOWN,
                         f"{where}: its condition is the literal true, so it runs to "
@@ -1573,7 +1573,7 @@ class _Expander:
                 go_on = False
                 assumed = True
             else:
-                self.undecided_loops[path] = (i + 1, _source_of(condition))
+                self.undecided_loops[path] = (i + 1, _source_of(condition), _source_of(limit))
                 self.diags.error(
                     errors.LOOP_COUNT_UNKNOWN,
                     f"{where}: whether invocation {i} is followed by another is "

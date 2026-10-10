@@ -1504,7 +1504,7 @@ def _arm_expansions(
             for path in entry:
                 expansion = with_arm(expansion, path, "then")
                 put.append(("branch", path))
-            for path, (count, _condition) in loops.items():
+            for path, (count, _condition, _limit) in loops.items():
                 expansion = with_loop(expansion, path, count, True)
                 put.append(("loop", path, count))
         raise RuntimeError("reading the switched arms did not settle")  # pragma: no cover

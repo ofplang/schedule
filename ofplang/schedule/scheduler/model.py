@@ -458,11 +458,14 @@ class Workflow:
     # (`LoopGate`, design.md D65), for every loop reached.
     loops: dict[NodePath, LoopGate] = field(default_factory=dict)
     # `do_while` node path -> (the invocations decided so far, where the condition of
-    # the last of them comes from), for every loop reached whose next decision the
+    # the last of them comes from, where `max_iterations` comes from), for every loop
+    # reached whose next decision the
     # reader could not make and may not assume: an entry input's value, or a literal
     # `true` with a `max_iterations` it is not given. The run decides these from the
     # boundary and states them in `expansion.loops` (`loop_count_unknown` until then).
-    undecided_loops: dict[NodePath, tuple[int, Source | None]] = field(default_factory=dict)
+    undecided_loops: dict[NodePath, tuple[int, Source | None, Source | None]] = field(
+        default_factory=dict
+    )
     # The waits on moves: an Object arc (interior, entry, exit or through) -> the
     # producers whose end it may not depart before. An arc into a gated branch's arm,
     # or one carrying an Object the branch passes through untouched. The waits on

@@ -173,14 +173,16 @@ def test_a_literal_condition_decides_here():
     unbounded["processes"]["main"]["inputs"]["rounds"] = {"type": "Int", "phase": "run"}
     wf, errs = _parse(unbounded)
     assert errs == ["loop_count_unknown"]
-    assert wf.undecided_loops[("Clean",)] == (1, SourceLiteral(True))
+    assert wf.undecided_loops[("Clean",)] == (
+        1, SourceLiteral(True), SourceRef((), "rounds")
+    )
     assert _parse(unbounded, loops((("Clean",), 4, True)))[1] == []
 
 
 def test_a_condition_from_the_boundary_is_the_runs_to_state():
     wf, errs = _parse(PASSED_ON)
     assert errs == ["loop_count_unknown"]
-    assert wf.undecided_loops[("Clean",)] == (1, SourceRef((), "soiled"))
+    assert wf.undecided_loops[("Clean",)] == (1, SourceRef((), "soiled"), SourceLiteral(5))
     wf, errs = _parse(PASSED_ON, loops((("Clean",), 3, True)))
     assert errs == [] and wf.loops[("Clean",)].count == 3
 
