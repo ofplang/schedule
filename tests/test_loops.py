@@ -458,3 +458,4 @@ def test_a_condition_handed_on_by_an_undecided_branch_waits_for_it():
     gate = wf.branch_gates[("Then",)]
     assert gate.condition == SourceRef(("Clean2",), "exhausted")
     assert gate.waits == (("Clean2", 0, "Read"),)
+    assert gate.after == (("Clean2",),)  # not before the loop has ended

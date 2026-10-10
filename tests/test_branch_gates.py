@@ -602,4 +602,6 @@ def test_a_condition_handed_on_by_an_undecided_branch_is_not_decided_before_it()
     gate = wf.branch_gates[("K",)]
     assert gate.condition.node == () and gate.condition.port == "flag"
     assert gate.waits == (("I",),) and gate.assumed
+    # And it says which decision: K is not the run's to decide before H is stated.
+    assert gate.after == (("H",),)
     assert (("I",), ("K",)) in wf.precedence
