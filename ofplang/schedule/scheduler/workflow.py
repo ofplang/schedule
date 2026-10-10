@@ -43,6 +43,7 @@ from ofplang.schedule.scheduler.model import (
     CompositeIO,
     Endpoint,
     LengthCheck,
+    LoopGate,
     NodeInvocation,
     NodePath,
     Port,
@@ -387,7 +388,14 @@ def _read_workflow(
             _boundary_lengths(
                 expansion, in_ports, _boundary_ranks(entry_proc)["entry_input_ranks"], diags
             )
-            # Nor is there a body, so no branch: every stated arm names none.
+            # Nor is there a body, so no branch or loop: every one stated names none.
+            for i, loop_path, _count, _ended in _stated_loops(expansion):
+                diags.error(
+                    errors.LOOP_UNKNOWN_NODE,
+                    f"expansion.loops[{i}]: {format_node_path(loop_path)!r} names no "
+                    "do_while node: the entry process is atomic",
+                    f"expansion.loops[{i}]",
+                )
             for i, arm_path, _arm in _stated_arms(expansion):
                 diags.error(
                     errors.ARM_UNKNOWN_NODE,
@@ -443,11 +451,14 @@ def _read_workflow(
         expansion, in_ports, _boundary_ranks(entry_proc)["entry_input_ranks"], diags
     )
     stated_arms = _stated_arms(expansion)
+    stated_loops = _stated_loops(expansion)
     exp, precedence = _expand_body(
         entry, entry_proc, procs, atomic, in_ports, out_ports, interface, lengths,
         {path: arm for _i, path, arm in stated_arms}, domains, diags, assume,
+        {path: (count, ended) for _i, path, count, ended in stated_loops},
     )
     _check_stated_arms(stated_arms, exp, procs, diags)
+    _check_stated_loops(stated_loops, exp, procs, diags)
 
     return (
         Workflow(
@@ -475,6 +486,8 @@ def _read_workflow(
             # reads these, and the branches for the plan's `decision` entries.
             branch_gates=exp.branch_gates,
             arc_gates={arc: frozenset(waits) for arc, waits in exp.arc_gates.items()},
+            loops=exp.loops,
+            undecided_loops=exp.undecided_loops,
             **_boundary_ranks(entry_proc),
         ),
         diags,
@@ -587,6 +600,82 @@ def _stated_arms(expansion) -> list[tuple[int, NodePath, str]]:
     return stated
 
 
+def _stated_loops(expansion) -> list[tuple[int, NodePath, int, bool]]:
+    """The well-formed `expansion.loops` entries, `(position, loop path, count,
+    ended)`, read leniently as `_stated_arms` reads arms: an entry not shaped as one is
+    the document validation's to report, and the first entry for a path is the one
+    used (a repeat is `duplicate_loop` there)."""
+    entries = expansion.get("loops") if isinstance(expansion, dict) else None
+    if not isinstance(entries, list):
+        return []
+    stated: list[tuple[int, NodePath, int, bool]] = []
+    seen: set[NodePath] = set()
+    for i, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            continue
+        node, count, ended = entry.get("node"), entry.get("count"), entry.get("ended")
+        if not (
+            isinstance(node, list) and node
+            and isinstance(count, int) and not isinstance(count, bool) and count >= 1
+            and isinstance(ended, bool)
+        ):
+            continue
+        if not all(isinstance(x, str) or (isinstance(x, int) and not isinstance(x, bool))
+                   for x in node):
+            continue
+        path = tuple(node)
+        if path not in seen:
+            seen.add(path)
+            stated.append((i, path, count, ended))
+    return stated
+
+
+def _check_stated_loops(
+    stated: list[tuple[int, NodePath, int, bool]], exp, procs: dict, diags: Diagnostics
+) -> None:
+    """Every stated loop the expansion did not read must be one it had no reason to:
+    inside an arm or an invocation that does not occur (`_does_not_occur`), or under
+    something already refused. Anything else names no `do_while` of this expansion
+    (`loop_unknown_node`)."""
+    for i, path, _count, _ended in stated:
+        if path in exp.used_loops or _does_not_occur(path, exp, procs, "do_while"):
+            continue
+        diags.error(
+            errors.LOOP_UNKNOWN_NODE,
+            f"expansion.loops[{i}]: {format_node_path(path)!r} names no do_while node of "
+            "this expansion",
+            f"expansion.loops[{i}]",
+        )
+
+
+def _does_not_occur(path: NodePath, exp, procs: dict, kind: str) -> bool:
+    """Whether `path` names a node of `kind` that this expansion has no reason to
+    reach: inside the arm a reached branch did not take, inside an invocation a reached
+    loop has not made, or under a branch or loop that could not be expanded (already
+    reported). Judged by structure -- an iteration index is not bounds-checked."""
+    reached = {**exp.branch_nodes, **exp.loop_nodes}
+    enclosing = [q for q in reached if len(q) < len(path) and path[: len(q)] == q]
+    if not enclosing:
+        return False
+    q = max(enclosing, key=len)
+    rest = path[len(q):]
+    node = reached[q]
+    if q in exp.branch_nodes:
+        chosen = exp.arms.get(q)
+        if chosen is None:
+            return True  # under an undecided branch: refused there already
+        other = node.get("else" if chosen == "then" else "then")
+        other_proc = procs.get(other.get("process")) if isinstance(other, dict) else None
+        return isinstance(other_proc, dict) and _names_node(other_proc, rest, procs, kind)
+    loop = exp.loops.get(q)
+    if loop is None:
+        return True  # a loop that could not be expanded: refused there already
+    if not rest or not isinstance(rest[0], int) or rest[0] < loop.count:
+        return False
+    target = procs.get(node.get("process"))
+    return isinstance(target, dict) and _names_node(target, rest[1:], procs, kind)
+
+
 def _check_stated_arms(
     stated: list[tuple[int, NodePath, str]], exp, procs: dict, diags: Diagnostics
 ) -> None:
@@ -596,19 +685,8 @@ def _check_stated_arms(
     (`arm_unknown_node`) -- no branch at that path, or an invocation that is not
     there."""
     for i, path, _arm in stated:
-        if path in exp.used_arms:
+        if path in exp.used_arms or _does_not_occur(path, exp, procs, "branch"):
             continue
-        # The innermost branch reached that `path` lies under.
-        enclosing = [q for q in exp.branch_nodes if len(q) < len(path) and path[: len(q)] == q]
-        if enclosing:
-            q = max(enclosing, key=len)
-            chosen = exp.arms.get(q)
-            if chosen is None:
-                continue  # under an undecided branch: refused there already
-            other = exp.branch_nodes[q].get("else" if chosen == "then" else "then")
-            other_proc = procs.get(other.get("process")) if isinstance(other, dict) else None
-            if isinstance(other_proc, dict) and _names_branch(other_proc, path[len(q):], procs):
-                continue  # inside the arm not chosen: it does not occur
         diags.error(
             errors.ARM_UNKNOWN_NODE,
             f"expansion.arms[{i}]: {format_node_path(path)!r} names no branch node of "
@@ -617,30 +695,31 @@ def _check_stated_arms(
         )
 
 
-def _names_branch(proc, rel: NodePath, procs: dict, depth: int = 0) -> bool:
-    """Whether `rel`, read inside the composite `proc`, names a branch node -- by
-    structure alone (an iteration index after a map / fold is not bounds-checked: the
-    traversal was never expanded). A branch's arms are both looked into."""
+def _names_node(proc, rel: NodePath, procs: dict, kind: str, depth: int = 0) -> bool:
+    """Whether `rel`, read inside the composite `proc`, names a node of `kind` (a
+    `branch`, a `do_while`) -- by structure alone (an iteration index after a map,
+    fold or do_while is not bounds-checked: the invocations were never made). A
+    branch's arms are both looked into."""
     if not rel or depth > 64 or not isinstance(proc, dict):
         return False
     head, rest = rel[0], rel[1:]
     node = _body_nodes(proc).get(head) if isinstance(head, str) else None
     if node is None:
         return False
-    kind = node.get("kind")
-    if kind in ("map", "fold"):
-        if rest and isinstance(rest[0], int):
+    node_kind = node.get("kind")
+    if not rest:
+        return node_kind == kind
+    if node_kind in ("map", "fold", "do_while"):
+        if isinstance(rest[0], int):
             rest = rest[1:]
         target = procs.get(node.get("process"))
-        return bool(rest) and _names_branch(target, rest, procs, depth + 1)
-    if kind == "branch":
-        if not rest:
-            return True
+        return bool(rest) and _names_node(target, rest, procs, kind, depth + 1)
+    if node_kind == "branch":
         return any(
-            _names_branch(procs.get(arm.get("process")), rest, procs, depth + 1)
+            _names_node(procs.get(arm.get("process")), rest, procs, kind, depth + 1)
             for arm in (node.get("then"), node.get("else")) if isinstance(arm, dict)
         )
-    return bool(rest) and _names_branch(procs.get(node.get("process")), rest, procs, depth + 1)
+    return _names_node(procs.get(node.get("process")), rest, procs, kind, depth + 1)
 
 
 def _array_rank(type_expr) -> int:
@@ -675,7 +754,7 @@ def _object_bearing(type_expr: str, domains: dict[str, str | None]) -> bool:
 
 
 def _expand_body(entry_name, entry_proc, procs, atomic, in_ports, exit_object_bearing,
-                 interface, lengths, arms, domains, diags, assume=None):
+                 interface, lengths, arms, domains, diags, assume=None, loops=None):
     """Flatten the entry composite into atomic activities, Object-bearing arcs, and
     precedence edges, following nested composites and expanding `map` / `fold`
     nodes (see `_Expander`).
@@ -687,7 +766,9 @@ def _expand_body(entry_name, entry_proc, procs, atomic, in_ports, exit_object_be
     Pure Data Array entry inputs' stated lengths (`_boundary_lengths`), `arms` the
     branches' stated arms (`_stated_arms`), `assume` the arm to expand an unstated
     branch with whose condition is produced during the run (design.md D64)."""
-    exp = _Expander(procs, atomic, diags, domains, interface, in_ports, lengths, arms, assume)
+    exp = _Expander(
+        procs, atomic, diags, domains, interface, in_ports, lengths, arms, assume, loops
+    )
     # The entry's own inputs are the workflow's boundary inputs: seed the entry
     # scope so `inputs.X` resolves to an `_EntryInput(X)` marker, which propagates
     # into nested composites and is recorded at the atomic that consumes it.
@@ -791,6 +872,17 @@ class _Literal:
 
 
 @dataclass(frozen=True)
+class _NodeValue:
+    """A value no activity produces: a structured node's own output, which the runner
+    records at the node's path -- a `do_while`'s `exhausted` (design.md D65). Its
+    source is `[L].exhausted`; what a consumer waits for is in `gates`."""
+
+    path: NodePath
+    port: str
+    gates: frozenset[NodePath] = frozenset()
+
+
+@dataclass(frozen=True)
 class _Gathered:
     """An Array assembled element by element: the output of a `map`, or a `fold`'s
     collected output, element `i` being invocation `i`'s value. Its elements are any
@@ -799,10 +891,12 @@ class _Gathered:
     items: tuple
 
 
-# Structured node kinds the expansion does not handle yet: `do_while`'s count is a
-# run-time value (design.md D63). A `branch` is expanded when its arm is known.
-_UNSUPPORTED_KINDS = {"do_while"}
+# Structured node kinds the expansion does not handle. Every kind is expanded now: a
+# `branch` with the arm it takes (D63, D64), a `do_while` invocation by invocation (D65).
+_UNSUPPORTED_KINDS: set[str] = set()
 _ARMS = ("then", "else")
+# A `do_while`'s own output (v0 19.3): not any target's, so recorded at the node.
+_EXHAUSTED = "exhausted"
 
 
 class _Expander:
@@ -845,6 +939,7 @@ class _Expander:
         entry_lengths: dict[str, int] | None = None,
         stated_arms: dict[NodePath, str] | None = None,
         assume: str | None = None,
+        stated_loops: dict[NodePath, tuple[int, bool]] | None = None,
     ) -> None:
         self.procs = procs
         self.atomic = atomic
@@ -881,6 +976,14 @@ class _Expander:
         # producer). Everything invoked inside waits for every producer on the stack.
         self.branch_gates: dict[NodePath, BranchGate] = {}
         self.gate_stack: list[tuple[NodePath, NodePath]] = []
+        # A `do_while`'s invocations, where `expansion.loops` states them (D65): loop
+        # node path -> (count, ended). Which were read (`used_loops`), every loop reached
+        # (`loop_nodes`), and how each was expanded (`loops`).
+        self.stated_loops = stated_loops or {}
+        self.used_loops: set[NodePath] = set()
+        self.loop_nodes: dict[NodePath, dict] = {}
+        self.loops: dict[NodePath, LoopGate] = {}
+        self.undecided_loops: dict[NodePath, tuple[int, Source | None]] = {}
         self.arc_gates: dict[Arc, set[NodePath]] = {}
         self.activities: list[NodeInvocation] = []
         self.arcs: list[Arc] = []
@@ -945,6 +1048,9 @@ class _Expander:
             return
         if kind == "branch":
             self._branch_outputs(node, prefix, inputs_env, siblings, stack)
+            return
+        if kind == "do_while":
+            self._loop_outputs(node, prefix, inputs_env, siblings, stack)
             return
         if kind in _UNSUPPORTED_KINDS:
             self.diags.error(
@@ -1033,9 +1139,10 @@ class _Expander:
             # exists: the branch might yet route it elsewhere (design.md D64).
             for producer in _gates_of(value):
                 self.precedence.append((producer, path))
-            if isinstance(value, _Literal):
-                # A static literal: no producer, no precedence, no arc -- its source is
-                # all there is. (One on an Object-bearing port is refused by the guards.)
+            if isinstance(value, _Literal | _NodeValue):
+                # A static literal, or a node's own value the runner records: no
+                # producer, no arc -- its source, and the waits above, are all there is.
+                # (A literal on an Object-bearing port is refused by the guards.)
                 continue
             if isinstance(value, _EntryInput):
                 # A workflow entry input -- or one element of it: no in-body producer,
@@ -1179,19 +1286,22 @@ class _Expander:
             for port, binding in (node.get("args") or {}).items()
         }
         gate = self.branch_gates.get(path)
-        if gate is not None:
-            self.gate_stack.append((path, gate.condition.node))
+        waits = gate.waits if gate is not None else ()
+        for producer in waits:
+            self.gate_stack.append((path, producer))
         try:
             outputs = self._expand_arm(node, path, arm, env, stack)
         finally:
-            if gate is not None:
+            for _producer in waits:
                 self.gate_stack.pop()
-        if gate is not None:
+        if waits:
             # What the branch hands on without having made it -- an argument returned
             # untouched, by an implicit `else` or by an arm that only passes it along --
             # is no more available before the condition than the arm's own work is.
-            waits = frozenset({gate.condition.node})
-            outputs = {port: _gated_outside(value, path, waits) for port, value in outputs.items()}
+            outputs = {
+                port: _gated_outside(value, path, frozenset(waits))
+                for port, value in outputs.items()
+            }
         self.structured[path] = outputs
         return outputs
 
@@ -1253,6 +1363,40 @@ class _Expander:
         value = self._resolve(
             _parse_ref(node.get("condition")), prefix, inputs_env, siblings, stack
         )
+        if value is None:
+            if not any(d.severity == "error" for d in self.diags.items):
+                self.undecided[path] = None
+                self.diags.error(
+                    errors.BRANCH_ARM_UNKNOWN,
+                    f"{where}: its condition resolves to no value",
+                )
+            # Otherwise nothing to decide on because something upstream was already
+            # refused: the arm is that refusal's consequence, not a second mistake.
+            return None
+        waits = _waits_of(value)
+        if waits is not None:
+            # Settled only during the run (design.md D64, D65): an activity's output, a
+            # loop's `exhausted`, or any value a branch or loop not yet decided hands on
+            # untouched -- which value it will be waits for that decision too. The arm is
+            # the one the run states once the value is settled -- holding it to the value
+            # is the run's part, since the scheduler never sees one -- or, until then,
+            # the one the caller says to assume. Either way nothing of the branch starts
+            # before then.
+            condition = _source_of(value)
+            assert condition is not None  # a value with something to wait for has a source
+            if stated is not None:
+                self.branch_gates[path] = BranchGate(condition, stated, False, waits)
+                return stated
+            self.undecided[path] = condition
+            if self.assume is not None:
+                self.branch_gates[path] = BranchGate(condition, self.assume, True, waits)
+                return self.assume
+            self.diags.error(
+                errors.BRANCH_ARM_UNKNOWN,
+                f"{where}: its condition is produced during the run, so which arm it takes "
+                "is not known before it",
+            )
+            return None
         if isinstance(value, _Literal):
             # The value is in the workflow: the scheduler can read the arm off it.
             arm = "then" if value.value is True else "else"
@@ -1274,29 +1418,6 @@ class _Expander:
                 "scheduler is not given; the run states the arm in expansion.arms",
             )
             return None
-        if value is None and any(d.severity == "error" for d in self.diags.items):
-            # Nothing to decide on because something upstream was already refused: the
-            # arm is that refusal's consequence, not a second mistake.
-            return None
-        if isinstance(value, _Producer):
-            # Produced during the run (design.md D64). The arm is the one the run states
-            # once the value exists -- holding it to the value is the run's part, since
-            # the scheduler never sees one -- or, until then, the one the caller says to
-            # assume. Either way nothing of the branch starts before the condition does.
-            condition = SourceRef(value.path, value.port, value.index)
-            if stated is not None:
-                self.branch_gates[path] = BranchGate(condition, stated, assumed=False)
-                return stated
-            self.undecided[path] = condition
-            if self.assume is not None:
-                self.branch_gates[path] = BranchGate(condition, self.assume, assumed=True)
-                return self.assume
-            self.diags.error(
-                errors.BRANCH_ARM_UNKNOWN,
-                f"{where}: its condition is produced during the run, so which arm it takes "
-                "is not known before it",
-            )
-            return None
         self.undecided[path] = _source_of(value)
         self.diags.error(
             errors.BRANCH_ARM_UNKNOWN,
@@ -1304,6 +1425,257 @@ class _Expander:
             "is not known before it",
         )
         return None
+
+    def _loop_outputs(
+        self, node: dict, prefix: NodePath, inputs_env: dict, siblings: dict, stack: tuple[str, ...]
+    ) -> dict:
+        """Expand a `do_while` node once and return its outputs (port -> value).
+        Design.md D65.
+
+        Invocation `i` is under `[L, i]`, as a `fold`'s is: it gets the node's `bind`
+        values and the carry -- the node's `carry` bindings first, then the previous
+        invocation's carry outputs. Whether invocation `i + 1` happens is what invocation
+        `i`'s condition says, so the invocations made are as many as the conditions so
+        far decide: a literal one here (`true` runs to a literal `max_iterations`), one
+        the run has stated in `expansion.loops`, and -- for one settled only during the
+        run -- the loop is planned to end at the invocation it is in, if the caller says
+        to assume (`assume`); it grows by one each time the run says it goes on.
+
+        Nothing of invocation `i + 1` starts before invocation `i`'s condition is
+        settled, and nothing the loop hands on before its last one is: its carry and
+        collected outputs and `exhausted` wait for it, whichever invocation made them --
+        an invocation's own work runs before its condition is known, so an Object made
+        by it could otherwise leave for what follows the loop and be wanted by the next
+        invocation instead."""
+        node_id = node["id"]
+        path = prefix + (node_id,)
+        if path in self.structured:
+            return self.structured[path]
+        self.structured[path] = {}  # a reference back into itself finds nothing
+        self.loop_nodes[path] = node
+        where = f"do_while node {format_node_path(path)!r}"
+        pname = node.get("process")
+        if pname not in self.procs:
+            self.diags.error(
+                errors.PROCESS_NOT_DEFINED,
+                f"node {node_id!r} invokes undefined process {pname!r}",
+            )
+            return {}
+        if pname in stack:
+            self.diags.error(
+                errors.RECURSIVE_COMPOSITE,
+                f"composite {pname!r} is recursively defined (via node {node_id!r})",
+            )
+            return {}
+        assert isinstance(pname, str)  # a key of the str-keyed self.procs
+
+        def resolved(section: str) -> dict:
+            return {
+                port: self._resolve(_parse_ref(binding), prefix, inputs_env, siblings, stack)
+                for port, binding in (node.get(section) or {}).items()
+            }
+
+        carry, bind = resolved("carry"), resolved("bind")
+        target_outputs = self.procs[pname].get("outputs") or {}
+        modes = self._loop_modes(path, node, set(carry), target_outputs)
+        if modes is None:
+            return {}
+        condition_spec = node.get("condition")
+        condition_port = (
+            condition_spec.get("output") if isinstance(condition_spec, dict) else None
+        )
+        limit = self._resolve(
+            _parse_ref(node.get("max_iterations")), prefix, inputs_env, siblings, stack
+        )
+        bound = (
+            limit.value
+            if isinstance(limit, _Literal) and _waits_of(limit) is None
+            and isinstance(limit.value, int) and not isinstance(limit.value, bool)
+            else None
+        )
+        stated = self.stated_loops.get(path)
+        if stated is not None:
+            self.used_loops.add(path)
+            count, ended = stated
+            if bound is not None and (count > bound or (count == bound and not ended)):
+                self.diags.error(
+                    errors.LOOP_COUNT_MISMATCH,
+                    f"{where}: expansion.loops says {count} invocation(s), "
+                    + ("ended" if ended else "not ended")
+                    + f", but max_iterations is {bound}",
+                )
+                return {}
+
+        def mismatch(i: int, said: str) -> dict:
+            self.diags.error(
+                errors.LOOP_COUNT_MISMATCH,
+                f"{where}: expansion.loops says the loop {said} after invocation {i}, "
+                "but its condition there is a literal that says otherwise",
+            )
+            return {}
+
+        state = dict(carry)
+        collected: dict[str, list] = {p: [] for p, mode in modes.items() if mode == "collect"}
+        waits: tuple[NodePath, ...] = ()  # what invocation `i` waits for
+        condition = None
+        ended = False
+        assumed = False
+        i = 0
+        while True:
+            for producer in waits:
+                self.gate_stack.append((path + (i,), producer))
+            try:
+                outs = self._invoke(pname, path + (i,), {**bind, **state}, stack)
+            finally:
+                for _producer in waits:
+                    self.gate_stack.pop()
+            for port in carry:
+                state[port] = outs.get(port)
+            for port, values in collected.items():
+                values.append(outs.get(port))
+            condition = outs.get(condition_port)
+            if condition is None:
+                if not any(d.severity == "error" for d in self.diags.items):
+                    self.diags.error(
+                        errors.LOOP_COUNT_UNKNOWN,
+                        f"{where}: its condition output {condition_port!r} has no value",
+                    )
+                return {}
+            settles = _waits_of(condition)
+            literal = (
+                condition.value
+                if isinstance(condition, _Literal) and settles is None
+                else None
+            )
+            limit_reached = bound is not None and i + 1 >= bound
+            if stated is not None and i + 1 < stated[0]:
+                if literal is not None and (literal is not True or limit_reached):
+                    return mismatch(i, "goes on")
+                go_on = True
+            elif stated is not None and stated[1]:
+                if literal is True and not limit_reached:
+                    return mismatch(i, "ends")
+                go_on = False
+                ended = True
+            elif literal is not None:
+                if literal is True and bound is None:
+                    self.undecided_loops[path] = (i + 1, _source_of(condition))
+                    self.diags.error(
+                        errors.LOOP_COUNT_UNKNOWN,
+                        f"{where}: its condition is the literal true, so it runs to "
+                        "max_iterations, which is not a literal; the run states the count "
+                        "in expansion.loops",
+                    )
+                    return {}
+                go_on = literal is True and not limit_reached
+                ended = not go_on
+            elif settles is not None and self.assume is not None:
+                go_on = False
+                assumed = True
+            else:
+                self.undecided_loops[path] = (i + 1, _source_of(condition))
+                self.diags.error(
+                    errors.LOOP_COUNT_UNKNOWN,
+                    f"{where}: whether invocation {i} is followed by another is "
+                    + ("an entry input's value, which the run states in expansion.loops"
+                       if settles is None else "decided only during the run")
+                    + ", and it is not stated",
+                )
+                return {}
+            if not go_on:
+                break
+            waits = tuple(sorted(settles or ()))
+            i += 1
+            if i >= _MAX_INVOCATIONS:  # pragma: no cover - a guard, not a limit
+                self.diags.error(errors.LOOP_COUNT_UNKNOWN, f"{where}: too many invocations")
+                return {}
+
+        last_waits = tuple(sorted(_waits_of(condition) or ()))
+        self.iterations[path] = i + 1
+        self.loops[path] = LoopGate(
+            condition=_source_of(condition),
+            waits=last_waits,
+            count=i + 1,
+            ended=ended,
+            assumed=assumed,
+            limit=_source_of(limit),
+        )
+        outputs: dict = {}
+        for port, mode in modes.items():
+            if mode == "carry":
+                outputs[port] = state.get(port)
+            elif mode == "collect":
+                outputs[port] = _Gathered(tuple(collected[port]))
+        outputs[_EXHAUSTED] = _NodeValue(path, _EXHAUSTED)
+        gates = frozenset(last_waits)
+        outputs = {port: _gated(value, gates) for port, value in outputs.items()}
+        self.structured[path] = outputs
+        return outputs
+
+    def _loop_modes(self, path, node, carry: set, target_outputs: dict) -> dict | None:
+        """Each target output's mode (v0 19.1, 19.2): `outputs` explicit and complete,
+        or else carry outputs as `carry` and every other one dropped. Refused where the
+        reading would drop what the document says to keep, with ofplang-validate's code:
+        a non-carry Object-bearing output, an entry with no mode or one `do_while`
+        does not take, a listing that is not complete, a carry not listed as `carry`,
+        and `exhausted` listed (it is the node's own, never listed)."""
+        where = f"do_while node {format_node_path(path)!r}"
+        objects = {
+            port for port, spec in target_outputs.items()
+            if _object_bearing(str((spec or {}).get("type", "")), self.domains)
+        }
+        if objects - carry:
+            self.diags.error(
+                v0.NONCARRY_OBJECT_OUTPUT_IN_DO_WHILE,
+                f"{where}: its target's Object-bearing output(s) {sorted(objects - carry)} "
+                "are not carried, which do_while forbids (spec 19)",
+            )
+            return None
+        section = node.get("outputs")
+        if not isinstance(section, dict):
+            return {port: ("carry" if port in carry else "drop") for port in target_outputs}
+        if _EXHAUSTED in section:
+            self.diags.error(
+                v0.RESERVED_OUTPUT_LISTED,
+                f"{where}: {_EXHAUSTED!r} is the node's own output and is never listed",
+            )
+            return None
+        modes = {}
+        for port, spec in section.items():
+            if isinstance(spec, dict) and "mode" not in spec:
+                self.diags.error(
+                    v0.MISSING_REQUIRED_KEY,
+                    f"{where}: output {port!r} has no mode; a listed output says carry, "
+                    "collect or drop (spec 21)",
+                )
+                return None
+            mode = spec.get("mode") if isinstance(spec, dict) else None
+            if mode not in ("carry", "collect", "drop") or (
+                mode == "carry" and port not in carry
+            ):
+                self.diags.error(
+                    v0.INVALID_OUTPUT_MODE,
+                    f"{where}: output {port!r} has no mode do_while takes for it (19.1)",
+                )
+                return None
+            modes[port] = mode
+        for port in target_outputs:
+            if port not in modes:
+                self.diags.error(
+                    v0.OUTPUT_NOT_LISTED,
+                    f"{where}: its target's output {port!r} is not listed in the outputs "
+                    "section, which lists every one (19.1)",
+                )
+                return None
+        for port in carry:
+            if modes.get(port) != "carry":
+                self.diags.error(
+                    v0.CARRY_OUTPUT_NOT_CARRY_MODE,
+                    f"{where}: carried output {port!r} is listed as {modes.get(port)!r}; a "
+                    "carry is exposed as carry (19.1)",
+                )
+                return None
+        return modes
 
     def _expand_map(self, path, pname, each, bind, length, stack) -> dict:
         """`map` (§17): invocation `i` gets element `i` of every `each` source and the
@@ -1602,6 +1974,8 @@ class _Expander:
             return self._structured_outputs(child, prefix, inputs_env, siblings, stack).get(right)
         if child_kind == "branch":
             return self._branch_outputs(child, prefix, inputs_env, siblings, stack).get(right)
+        if child_kind == "do_while":
+            return self._loop_outputs(child, prefix, inputs_env, siblings, stack).get(right)
         if child_kind is not None:
             return None  # a structured node this stage does not expand (reported)
         pname = child.get("process")
@@ -1668,6 +2042,25 @@ def _gated_outside(value, branch: NodePath, gates: frozenset[NodePath]):
     return _gated(value, gates)
 
 
+# More invocations of one `do_while` than any workflow writes; a guard against a defect.
+_MAX_INVOCATIONS = 100_000
+
+
+def _waits_of(value) -> tuple[NodePath, ...] | None:
+    """What a condition read from `value` waits for before it is settled, or None where
+    it is settled before the run: a literal or an entry input with nothing to wait for
+    (design.md D64, D65). An activity's output waits for that activity; a node's own
+    value (`exhausted`) and a value handed on untouched by a branch or loop not yet
+    decided wait for those decisions."""
+    if isinstance(value, _Producer):
+        return tuple(sorted({value.path} | value.gates))
+    if isinstance(value, _NodeValue):
+        return tuple(sorted(value.gates))
+    if isinstance(value, _Literal | _EntryInput):
+        return tuple(sorted(value.gates)) if value.gates else None
+    return None
+
+
 def _gates_of(value) -> frozenset[NodePath]:
     """Every producer a consumer of `value` waits for besides its own producers."""
     return frozenset().union(*(leaf.gates for _index, leaf in _leaves(value)))
@@ -1692,6 +2085,8 @@ def _source_of(producer) -> Source | None:
     sequence of its elements' sources, and an unconnected source (None) as nothing."""
     if isinstance(producer, _Producer):
         return SourceRef(producer.path, producer.port, producer.index)
+    if isinstance(producer, _NodeValue):
+        return SourceRef(producer.path, producer.port)
     if isinstance(producer, _EntryInput):
         return SourceRef((), producer.name, producer.index)
     if isinstance(producer, _Literal):

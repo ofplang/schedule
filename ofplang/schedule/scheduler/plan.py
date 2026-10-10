@@ -17,7 +17,13 @@ import yaml
 
 from ofplang.schedule.core import objective as objective_stages
 from ofplang.schedule.scheduler.instance import Instance
-from ofplang.schedule.scheduler.model import BranchGate, JobSpec, NodePath
+from ofplang.schedule.scheduler.model import (
+    BranchGate,
+    JobSpec,
+    LoopGate,
+    NodePath,
+    SourceRef,
+)
 from ofplang.schedule.scheduler.result import Solution
 
 
@@ -37,7 +43,9 @@ def render_plan(
     ignore_resources: bool = False,
     jobs: tuple[JobSpec, ...] = (),
     stopped: frozenset[str] = frozenset(),
-    gates: tuple[tuple[str, dict[NodePath, BranchGate]], ...] = (),
+    gates: tuple[
+        tuple[str, dict[NodePath, BranchGate], dict[NodePath, LoopGate]], ...
+    ] = (),
 ) -> dict:
     """Build the execution-document dict for `solution`.
 
@@ -58,8 +66,8 @@ def render_plan(
     promise; see `_job_entry`.
 
     `gates` are, per job id (`""` for a single workflow), the branches whose condition
-    is produced during the run (design.md D64); each one still waiting for it is
-    rendered as a `decision` (`_decisions`)."""
+    is produced during the run (design.md D64) and the loops (D65); each one still
+    waiting for a condition is rendered as a `decision` (`_decisions`)."""
     job_ids = tuple(job.id for job in jobs)
     activities: list[dict] = _decisions(solution, gates, job_ids, stopped)
 
@@ -275,46 +283,57 @@ def _job_entry(job: JobSpec, stopped: frozenset[str] = frozenset()) -> dict:
 
 def _decisions(
     solution: Solution,
-    gates: tuple[tuple[str, dict[NodePath, BranchGate]], ...],
+    gates: tuple[tuple[str, dict[NodePath, BranchGate], dict[NodePath, LoopGate]], ...],
     jobs: tuple[str, ...],
     stopped: frozenset[str],
 ) -> list[dict]:
-    """A `decision` for every branch still waiting for its condition (SPEC §6.14):
-    one whose condition's producer has not finished. It marks the moment nothing of
-    the branch may start before -- the producer's planned end -- and which arm was
-    planned, `assumed` where the run has not stated it yet.
+    """A `decision` for every branch or loop still waiting for a condition (SPEC
+    §6.14): one whose condition is not settled because something it waits for has not
+    finished. It marks the moment nothing that depends on it may start before -- the
+    last of those planned ends -- and what was planned there: a branch's arm, or that a
+    loop ends after its last invocation, `assumed` where the run has not stated it.
 
     Not an activity anything runs, and not read back: a replan derives it again from
-    the workflow, the way it derives relays. Once the producer has finished it is not
-    rendered at all, since the wait is over; neither is a stopped job's."""
+    the workflow, the way it derives relays. Once what it waits for has finished it is
+    not rendered at all, since the wait is over; neither is a stopped job's."""
     ends = {p.node: p for p in solution.processing if p.boundary is None and p.relay is None}
     entries: list[dict] = []
-    for job, branches in gates:
+
+    def entry(job: str, at: int, node, condition, fields: dict) -> dict:
+        rendered: dict[str, Any] = {"kind": "decision"}
+        _set_job(rendered, job or None)
+        rendered.update({"start": at, "end": at, "node": list(node), **fields})
+        if isinstance(condition, SourceRef):
+            where: dict[str, Any] = {"node": list(condition.node), "port": condition.port}
+            if condition.index:
+                where["index"] = list(condition.index)
+            rendered["condition"] = where
+        return rendered
+
+    for job, branches, loops in gates:
         if job in stopped:
             continue
         prefix = (job,) if job else ()
+
+        def settled_at(waits, prefix=prefix) -> int | None:
+            """When the last of `waits` is planned to end, or None where nothing is
+            left to wait for."""
+            producers = [ends[prefix + wait] for wait in waits if prefix + wait in ends]
+            if not any(p.status in (None, "running") for p in producers):
+                return None
+            return max(p.end for p in producers)
+
         for node, gate in branches.items():
-            producer = ends.get(prefix + gate.condition.node)
-            if producer is None or producer.status not in (None, "running"):
-                continue
-            entry: dict[str, Any] = {"kind": "decision"}
-            _set_job(entry, job or None)
-            condition: dict[str, Any] = {
-                "node": list(gate.condition.node), "port": gate.condition.port,
-            }
-            if gate.condition.index:
-                condition["index"] = list(gate.condition.index)
-            entry.update(
-                {
-                    "start": producer.end,
-                    "end": producer.end,
-                    "node": list(node),
-                    "arm": gate.arm,
-                    "assumed": gate.assumed,
-                    "condition": condition,
-                }
-            )
-            entries.append(entry)
+            at = settled_at(gate.waits)
+            if at is not None:
+                entries.append(entry(job, at, node, gate.condition,
+                                     {"arm": gate.arm, "assumed": gate.assumed}))
+        for node, loop in loops.items():
+            at = settled_at(loop.waits)
+            if at is not None:
+                entries.append(entry(job, at, node, loop.condition, {
+                    "iteration": loop.count - 1, "arm": "exit", "assumed": not loop.ended,
+                }))
     return entries
 
 

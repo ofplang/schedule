@@ -39,7 +39,7 @@ from ofplang.schedule.scheduler.instance import (
 )
 from ofplang.schedule.scheduler.interface import binding_elements, element_label
 from ofplang.schedule.scheduler.mobility import report_deadlocked_objects
-from ofplang.schedule.scheduler.model import JobSpec, SourceRef, Workflow
+from ofplang.schedule.scheduler.model import JobSpec, SourceLiteral, SourceRef, Workflow
 from ofplang.schedule.scheduler.normalize import normalize
 from ofplang.schedule.scheduler.plan import render_plan
 from ofplang.schedule.scheduler.plancheck import check_plan_inventories, check_schedule
@@ -1453,13 +1453,18 @@ def _arm_expansions(
     at a time, the rest as planned. A branch that only appears on that other arm is
     switched the same way, with the arm it lies in held where it is.
 
+    A loop planned to end at an invocation whose condition is settled only during the
+    run (design.md D65) is checked going on: one invocation more, not up to its limit.
+
     A branch appearing there whose condition is an entry input has no arm in the
     expansion: the run decides it from the boundary only once the arm around it is
     taken, and the scheduler is never told the value. It is not a guess to check both
-    of its arms, so both are: read on `then` first, then switched like the others.
+    of its arms, so both are: read on `then` first, then switched like the others. A
+    loop whose next decision is the boundary's is read ending where it is, then one
+    invocation longer.
 
-    Returns `(branches switched, workflow or None, reader errors)` per expansion; the
-    branches switched name it, outermost first."""
+    Returns `(what was switched, workflow or None, reader errors)` per expansion; what
+    was switched names it, outermost first, as phrases for a message."""
     found: list[tuple[tuple, Workflow | None, list]] = []
 
     def with_arm(expansion, path, arm) -> dict:
@@ -1470,9 +1475,19 @@ def _arm_expansions(
         arms.append({"node": list(path), "arm": arm})
         return {**(expansion or {}), "arms": arms}
 
+    def with_loop(expansion, path, count, ended) -> dict:
+        loops = [
+            entry for entry in (expansion or {}).get("loops") or []
+            if tuple(entry.get("node") or ()) != tuple(path)
+        ]
+        loops.append({"node": list(path), "count": count, "ended": ended})
+        return {**(expansion or {}), "loops": loops}
+
     def read(expansion):
         """`expansion` read, with every branch on an entry input it reaches undecided
-        put on `then`: the workflow, its errors, the expansion read, and those put."""
+        put on `then`, and every loop whose next decision is the boundary's ended where
+        it is: the workflow, its errors, the expansion read, and the points put there
+        (`("branch", path)` / `("loop", path, count)`)."""
         put: list = []
         for _round in range(1000):
             read_wf, diags = parse_workflow(
@@ -1483,24 +1498,47 @@ def _arm_expansions(
                 path for path, condition in (read_wf.undecided_branches if read_wf else {}).items()
                 if isinstance(condition, SourceRef) and condition.node == ()
             ]
-            if not errs or not entry:
+            loops = dict(read_wf.undecided_loops) if read_wf else {}
+            if not errs or not (entry or loops):
                 return read_wf, errs, expansion, put
             for path in entry:
                 expansion = with_arm(expansion, path, "then")
-                put.append(path)
+                put.append(("branch", path))
+            for path, (count, _condition) in loops.items():
+                expansion = with_loop(expansion, path, count, True)
+                put.append(("loop", path, count))
         raise RuntimeError("reading the switched arms did not settle")  # pragma: no cover
 
     def switch(expansion, workflow, put, chain, inside) -> None:
-        points = [(path, gate.arm) for path, gate in workflow.branch_gates.items() if gate.assumed]
-        points += [(path, "then") for path in put]
-        for path, arm in points:
+        # (what to read, the phrase for it, the prefix of what it newly reveals)
+        points = []
+        for path, gate in workflow.branch_gates.items():
+            if gate.assumed:
+                points.append((path, ("branch", path, gate.arm)))
+        for path, loop in workflow.loops.items():
+            limit = loop.limit.value if isinstance(loop.limit, SourceLiteral) else None
+            if loop.assumed and not (isinstance(limit, int) and loop.count >= limit):
+                points.append((path, ("loop", path, loop.count)))
+        for point in put:
+            points.append((point[1], ("branch", point[1], "then") if point[0] == "branch"
+                           else ("loop", point[1], point[2])))
+        for path, what in points:
             if inside is not None and (path[: len(inside)] != inside or path == inside):
                 continue
-            other = "else" if arm == "then" else "then"
-            read_wf, errs, switched, newly = read(with_arm(expansion, path, other))
-            found.append(((*chain, (path, other)), read_wf, errs))
+            if what[0] == "branch":
+                other = "else" if what[2] == "then" else "then"
+                changed = with_arm(expansion, path, other)
+                phrase = f"branch {format_node_path(path)!r} on its {other} arm"
+                reveals = path
+            else:
+                count = what[2]
+                changed = with_loop(expansion, path, count + 1, False)
+                phrase = f"loop {format_node_path(path)!r} going on to invocation {count + 1}"
+                reveals = path + (count,)
+            read_wf, errs, switched, newly = read(changed)
+            found.append(((*chain, phrase), read_wf, errs))
             if read_wf is not None and not errs:
-                switch(switched, read_wf, newly, (*chain, (path, other)), path)
+                switch(switched, read_wf, newly, (*chain, phrase), reveals)
 
     switch(expansion, workflow, [], (), None)
     return found
@@ -1516,7 +1554,9 @@ def _check_arms(
     `roots` are each job's `(interface, expansion)` as it was read."""
     found: list[Diagnostic] = []
     for j, (job, workflow, spec) in enumerate(zip(jobs, workflows, specs, strict=True)):
-        if not any(gate.assumed for gate in workflow.branch_gates.values()):
+        if not any(gate.assumed for gate in workflow.branch_gates.values()) and not any(
+            loop.assumed for loop in workflow.loops.values()
+        ):
             continue
         job_interface, job_expansion = roots[j]
         for chain, read, errs in _arm_expansions(
@@ -1531,9 +1571,7 @@ def _check_arms(
                     _i, _f, normalized, checked = _normalize_and_check(merged, root, env, fixed)
                     problems += [d for d in (*normalized, *checked) if d.severity == ERROR]
             if problems:
-                where = " with ".join(
-                    f"branch {format_node_path(path)!r} on its {arm} arm" for path, arm in chain
-                )
+                where = " with ".join(chain)
                 said = "; ".join(f"{d.code}: {d.message}" for d in problems)
                 found += _attribute(
                     [
@@ -2039,9 +2077,9 @@ def _run(
         jobs=settled,
         stopped=frozenset(_stopped_jobs(document_activities) - set(withdraw)),
         gates=tuple(
-            (job.id, workflow.branch_gates)
+            (job.id, workflow.branch_gates, workflow.loops)
             for job, workflow in zip(jobs, workflows, strict=True)
-            if workflow.branch_gates
+            if workflow.branch_gates or workflow.loops
         ),
     )
 

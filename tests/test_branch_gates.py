@@ -433,9 +433,9 @@ def test_a_branch_only_on_the_other_arm_is_switched_with_it():
     wf, _ = parse_workflow(workflow, interface=None, assume=ASSUMED_ARM)
     chains = [chain for chain, _read, _errs in _arm_expansions(workflow, None, None, wf)]
     assert sorted(chains) == sorted([
-        ((("H",), "else"),),
-        ((("H",), "else"), (("H", "T"), "else")),
-        ((("H", "S"), "else"),),
+        ("branch 'H' on its else arm",),
+        ("branch 'H' on its else arm", "branch 'H/T' on its else arm"),
+        ("branch 'H/S' on its else arm",),
     ])
 
 
@@ -493,8 +493,8 @@ def test_a_branch_on_an_entry_input_on_the_other_arm_is_checked_both_ways():
     wf, _ = parse_workflow(workflow, interface=None, assume=ASSUMED_ARM)
     found = _arm_expansions(workflow, None, None, wf)
     assert [chain for chain, _read, errs in found if not errs] == [
-        ((("H",), "else"),),
-        ((("H",), "else"), (("H", "S"), "else")),
+        ("branch 'H' on its else arm",),
+        ("branch 'H' on its else arm", "branch 'H/S' on its else arm"),
     ]
     document = {"interface": {"inputs": {"cup": "tray.a"}, "outputs": {"cup": "rack.a"}},
                 "activities": []}

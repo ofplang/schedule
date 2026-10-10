@@ -45,14 +45,15 @@ from ofplang.validate import errors as v0
 from ofplang.schedule.core.diagnostics import Diagnostics
 
 # The binding sections each node kind takes, and so the ones the reader reads (v0 21.0).
-# `do_while` is not expanded at all (reported as unsupported), so its sections are
-# nobody's to check here.
 _SECTIONS = {
     None: ("state", "bind"),
     "map": ("each", "bind"),
     "fold": ("each", "carry", "bind"),
     "branch": ("args",),
+    "do_while": ("carry", "bind"),
 }
+# A `do_while`'s own output (v0 19.3), which no target declares.
+_EXHAUSTED = "exhausted"
 _ALL_SECTIONS = ("state", "bind", "each", "carry", "args")
 
 
@@ -135,6 +136,12 @@ def check_body(
             condition = node.get("condition")
             if isinstance(condition, dict):
                 check_source(condition, f"{npath}.condition")
+        if kind == "do_while":
+            # The bound is a binding the reader resolves (a literal, or a value from the
+            # boundary); the condition names an output of the target, not a reference.
+            limit = node.get("max_iterations")
+            if isinstance(limit, dict):
+                check_source(limit, f"{npath}.max_iterations")
         allowed = _SECTIONS[kind]
         for section in _ALL_SECTIONS:
             if node.get(section) is not None and section not in allowed:
@@ -274,7 +281,10 @@ def _declared_outputs(node: dict, procs: dict) -> set[str]:
         return names
     target = procs.get(node.get("process"))
     outputs = target.get("outputs") if isinstance(target, dict) else None
-    return set(outputs) if isinstance(outputs, dict) else set()
+    names = set(outputs) if isinstance(outputs, dict) else set()
+    if node.get("kind") == "do_while":
+        names.add(_EXHAUSTED)  # the node's own (v0 19.3)
+    return names
 
 
 def _exposed_outputs(
@@ -309,6 +319,8 @@ def _exposed_outputs(
         if any(modes.get(port) != "common" for port in arms[0]):
             return None
         return {port for port, mode in modes.items() if mode == "common"}
+    if node.get("kind") == "do_while":
+        return _loop_exposed(node, procs, object_bearing)
     if node.get("kind") != "fold":
         return None
     target = procs.get(node.get("process"))
@@ -335,3 +347,38 @@ def _exposed_outputs(
     if set(modes) != set(outputs) or any(modes[port] == "drop" for port in objects):
         return None  # a listing that is not complete, or an Object dropped
     return {port for port, mode in modes.items() if mode in ("carry", "collect")}
+
+
+def _loop_exposed(
+    node: dict, procs: dict, object_bearing: Callable[[str], bool]
+) -> set[str] | None:
+    """What a `do_while` exposes (v0 19.1-19.3): its carry and collected outputs, by its
+    `outputs` section or -- without one -- its carried ports, and `exhausted` either
+    way. None where its own output rules are broken (`_Expander._loop_modes`), for the
+    reason a refused fold section gives None."""
+    target = procs.get(node.get("process"))
+    outputs = target.get("outputs") if isinstance(target, dict) else None
+    if not isinstance(outputs, dict):
+        return None
+    carry_section = node.get("carry")
+    carry = set(carry_section) if isinstance(carry_section, dict) else set()
+    objects = {
+        port for port, spec in outputs.items()
+        if object_bearing(str((spec or {}).get("type", "")) if isinstance(spec, dict) else "")
+    }
+    if objects - carry:
+        return None  # a non-carry Object-bearing output is forbidden (19, requirement 3)
+    section = node.get("outputs")
+    if not isinstance(section, dict):
+        return (set(outputs) & carry) | {_EXHAUSTED}
+    if _EXHAUSTED in section:
+        return None  # listing the node's own output is refused (19.3)
+    modes = {
+        port: spec.get("mode") if isinstance(spec, dict) else None
+        for port, spec in section.items()
+    }
+    if any(mode not in ("carry", "collect", "drop") for mode in modes.values()):
+        return None
+    if set(modes) != set(outputs) or any(modes[port] != "carry" for port in carry):
+        return None
+    return {port for port, mode in modes.items() if mode in ("carry", "collect")} | {_EXHAUSTED}

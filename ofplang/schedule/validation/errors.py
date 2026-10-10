@@ -255,6 +255,21 @@ BRANCH_ARM_UNKNOWN = "branch_arm_unknown"
 # arm the plan could not be made (an activity no machine can run, a move no route
 # serves, products with nowhere to rest, a stock that cannot last).
 ARM_UNPLANNABLE = "arm_unplannable"
+# A `do_while` (design.md D65) whose number of invocations is not known when the
+# workflow is expanded and the reader may not assume it: a condition that is an entry
+# input no `expansion.loops` entry decides, a literal `true` whose `max_iterations`
+# is not a literal, or a produced condition with nothing to assume.
+LOOP_COUNT_UNKNOWN = "loop_count_unknown"
+# An `expansion.loops` entry names no `do_while` node of this expansion. Not reported
+# for one inside an arm the expansion did not take, or inside an invocation that has
+# not happened -- it simply does not occur.
+LOOP_UNKNOWN_NODE = "loop_unknown_node"
+# An `expansion.loops` entry the loop cannot have: more invocations than a literal
+# `max_iterations`, `ended: false` at that limit, or a count a literal condition
+# contradicts.
+LOOP_COUNT_MISMATCH = "loop_count_mismatch"
+# Two entries of `expansion.loops` name the same loop (§6.13; schema).
+DUPLICATE_LOOP = "duplicate_loop"
 # An `expansion.arms` entry names no branch node: no branch at that path, or an
 # invocation the expansion does not have. Not reported for a branch inside an arm the
 # expansion did not choose -- it simply does not occur.
@@ -494,6 +509,10 @@ ERROR_CODES = frozenset(
         DUPLICATE_LENGTH,
         BRANCH_ARM_UNKNOWN,
         ARM_UNPLANNABLE,
+        LOOP_COUNT_UNKNOWN,
+        LOOP_UNKNOWN_NODE,
+        LOOP_COUNT_MISMATCH,
+        DUPLICATE_LOOP,
         ARM_UNKNOWN_NODE,
         ARM_MISMATCH,
         DUPLICATE_ARM,

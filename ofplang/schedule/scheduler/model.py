@@ -248,11 +248,37 @@ class BranchGate:
     consumer of a value the branch passes through untouched -- whichever arm is
     planned, and whether or not the arm is known. `arm` is the one expanded: the one
     `expansion.arms` states, or the one assumed (`assumed`) until the run states it.
-    Once the producer has finished, the wait is met and changes nothing."""
+    Once the producer has finished, the wait is met and changes nothing.
 
-    condition: SourceRef
+    `waits` are the producers it waits for: the condition's own, and those of every
+    branch or loop the value passed through untouched -- until they have finished, the
+    value the condition will have is not settled (design.md D65). `condition` is where
+    the value is read once it is: an activity's output, or a loop's `exhausted`."""
+
+    condition: Source
     arm: str
     assumed: bool
+    waits: tuple[NodePath, ...] = ()
+
+
+@dataclass(frozen=True)
+class LoopGate:
+    """A `do_while` node as expanded (design.md D65): `count` invocations, at
+    `[L, 0]` .. `[L, count - 1]`, and whether that is all of them (`ended`).
+
+    Each invocation's condition decides whether another follows. The last one's is
+    `condition`, settled once `waits` have finished; until then the loop is planned to
+    end there (`assumed`), and nothing of a next invocation, nor anything the loop hands
+    on, starts before it. `ended` and the count come from `expansion.loops`, which the
+    run writes as it decides, or from a literal condition. `limit` is where
+    `max_iterations` comes from (a literal, or a value at the boundary)."""
+
+    condition: Source | None
+    waits: tuple[NodePath, ...]
+    count: int
+    ended: bool
+    assumed: bool
+    limit: Source | None
 
 
 @dataclass(frozen=True)
@@ -428,6 +454,15 @@ class Workflow:
     # `branch` node path -> its wait, for every branch reached whose condition is
     # produced during the run (`BranchGate`, design.md D64).
     branch_gates: dict[NodePath, BranchGate] = field(default_factory=dict)
+    # `do_while` node path -> how it was expanded and what its last decision waits for
+    # (`LoopGate`, design.md D65), for every loop reached.
+    loops: dict[NodePath, LoopGate] = field(default_factory=dict)
+    # `do_while` node path -> (the invocations decided so far, where the condition of
+    # the last of them comes from), for every loop reached whose next decision the
+    # reader could not make and may not assume: an entry input's value, or a literal
+    # `true` with a `max_iterations` it is not given. The run decides these from the
+    # boundary and states them in `expansion.loops` (`loop_count_unknown` until then).
+    undecided_loops: dict[NodePath, tuple[int, Source | None]] = field(default_factory=dict)
     # The waits on moves: an Object arc (interior, entry, exit or through) -> the
     # producers whose end it may not depart before. An arc into a gated branch's arm,
     # or one carrying an Object the branch passes through untouched. The waits on

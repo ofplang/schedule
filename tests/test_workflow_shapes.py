@@ -169,21 +169,21 @@ def test_every_malformed_shape_is_answered_with_diagnostics() -> None:
         assert workflow is None
 
 
-def test_a_structured_node_is_still_reported_as_unsupported() -> None:
-    """Unchanged: a valid v0 workflow the scheduler does not support is a capability
-    finding, not a shape one.
+def test_a_do_while_is_read_now_and_refused_by_what_it_breaks() -> None:
+    """Every structured kind is expanded now (design.md D65), so turning a node into a
+    `do_while` is no longer a capability finding: this one creates a cup it does not
+    carry, which do_while forbids, and is refused with ofplang-validate's code -- not
+    with a shape one.
 
     Note what this one does *not* assert: the reader still returns the workflow it
-    built around the unsupported node. That is how it behaved before, and it is safe
-    because the entry point refuses any document with an error diagnostic
-    (`api.schedule`); the guards did not change it.
+    built around the refused node. That is safe because the entry point refuses any
+    document with an error diagnostic (`api.schedule`).
     """
     doc = copy.deepcopy(VALID)
-    # `do_while`: `map` and `fold` are expanded now (design.md D57); `do_while` and
-    # `branch` are what this reader still does not support.
-    doc["processes"]["main"]["body"]["nodes"][0]["kind"] = "do_while"
+    node = doc["processes"]["main"]["body"]["nodes"][0]
+    node.update({"kind": "do_while", "max_iterations": {"value": 3}})
     _workflow, diags = parse_workflow(doc)
-    assert {d.code for d in diags.items} == {"unsupported_feature"}
+    assert "noncarry_object_output_in_do_while" in {d.code for d in diags.items}
 
 
 @pytest.mark.parametrize(

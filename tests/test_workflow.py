@@ -481,7 +481,7 @@ def test_recursive_composite_is_reported(tmp_path):
     assert "recursive_composite" in {d.code for d in _errors(diags)}
 
 
-def test_structured_node_is_unsupported(tmp_path):
+def test_a_do_while_carrying_no_object_it_makes_is_refused(tmp_path):
     doc = tmp_path / "wf.yaml"
     doc.write_text(
         "types: {Cup: {domain: object}}\n"
@@ -498,8 +498,9 @@ def test_structured_node_is_unsupported(tmp_path):
     )
     wf, diags = parse_workflow(doc)
     codes = {d.code for d in _errors(diags)}
-    # `map` / `fold` are expanded (design.md D57); `do_while` and `branch` are not.
-    assert "unsupported_feature" in codes
+    # Every structured kind is expanded now (design.md D65); this one creates a cup it
+    # does not carry, which do_while forbids -- refused with ofplang-validate's code.
+    assert "noncarry_object_output_in_do_while" in codes
 
 
 def test_generic_process_is_unsupported(tmp_path):
