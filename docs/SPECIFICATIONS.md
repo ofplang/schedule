@@ -40,8 +40,6 @@ plan for the remaining work.
 The scheduler targets a subset of v0. The following are **out of scope** for the
 initial versions:
 
-- **`do_while` nodes** — `node_do_while`. How many times one runs is decided by
-  values the run produces, so it has no one graph to plan before the run.
 - **An atomic process with an Object-bearing Array port** — each element is an
   Object on a spot of its own, and a mode maps a port to one spot; traverse the
   Array with a `map` / `fold` instead.
@@ -90,6 +88,28 @@ In scope:
   untouched waits for the end of the condition's producer (§4.5). The plan marks each
   branch still waiting with a `decision` (§6.14). The arm not planned is not solved;
   it is checked without a solve instead (§9.3, `arm_unplannable`).
+- **`do_while` nodes** (`node_do_while`) — expanded invocation by invocation, as a
+  `fold` is: invocation `i` of a loop `L` is under `L, i` (§6.3), with the node's
+  `bind` values and the carry -- the node's `carry` bindings first, then the previous
+  invocation's carry outputs. How many invocations there are is what the conditions
+  decide so far: a literal condition decides here (`true` runs to a literal
+  `max_iterations`); one the run has stated in `expansion.loops` (§6.13); and one
+  settled only during the run is **assumed to end the loop** at the invocation it is
+  in, the loop growing by one each time the run says it goes on. Nothing of the next
+  invocation starts before an invocation's condition is settled, and nothing the loop
+  hands on -- its carry and collected outputs and `exhausted` -- before the last one's
+  (§4.5): an invocation's own work runs before its condition is known, so an Object it
+  made could otherwise leave for what follows. The plan marks the pending end with a
+  `decision` (§6.14). Going on is not solved; it is checked, one invocation more,
+  without a solve (§9.3). `exhausted` (v0 19.3) is the node's own value, read at the
+  node's path `[L]`, which the run records. A count no condition settles and nothing
+  states -- an entry input's, or a literal `true` up to a `max_iterations` that is not
+  a literal -- is `loop_count_unknown`.
+- **What a condition waits for.** A branch's or a loop's condition is settled when
+  what it is read from is: an activity's output once that activity ends, a loop's
+  `exhausted` once its last condition is -- and a value any branch or loop not yet
+  decided hands on untouched, whatever it is underneath (a literal, an entry input),
+  once that decision is made, since which value it will be waits for it.
 - **`python_script_processes`** — per v0 §22.1 these are Pure Data only (no
   Object-bearing ports, no `objects` section). They are treated as opaque
   Pure Data atomic steps: they take time but occupy no spot and are not
@@ -1895,6 +1915,29 @@ exactly as `lengths` is. A run that states an arm during a joint plan therefore 
 drops that job's `fingerprint` from the roster, and its `bound` with it — the promise
 was made for the arm assumed (§6.11) — and the next plan writes both again.
 
+#### `loops`
+
+```yaml
+  loops:
+    - node: [Clean]          # required: the node path of a do_while node
+      count: 3               # required: how many invocations are decided (>= 1)
+      ended: false           # required: whether that is all of them
+```
+
+A `do_while` is expanded with as many invocations as are decided (§2). Each entry
+says how many that is for one loop and whether the last of them ended it: `count: 3,
+ended: false` -- three invocations, and whether a fourth follows is not known yet;
+`ended: true` -- three, and that is all. The run writes it, as each condition is
+recorded -- one invocation more, or the end -- and before the run for a loop whose
+conditions it holds at the boundary. A loop with no entry has one invocation decided.
+
+**What is checked.** A count larger than a literal `max_iterations`, `ended: false` at
+that limit, or a count a literal condition contradicts is `loop_count_mismatch`; a path
+that names no `do_while` of this expansion is `loop_unknown_node` -- not one inside an
+arm not taken or inside an invocation not made, which does not occur. A loop is named
+once (`duplicate_loop`). A run that states a loop during a joint plan drops the job's
+`fingerprint` and `bound` exactly as for an arm.
+
 ### 6.14 Decision
 
 ```yaml
@@ -1906,7 +1949,21 @@ was made for the arm assumed (§6.11) — and the next plan writes both again.
   arm: then                     # the arm planned
   assumed: true                 # false where expansion.arms states it
   condition: {node: [Each, 0, Look], port: dirty}   # where the condition comes from
+
+- kind: decision                # a loop's (design.md D65)
+  start: 10
+  end: 10
+  node: [Clean]                 # the do_while
+  iteration: 0                  # after this invocation
+  arm: exit                     # planned to end there
+  assumed: true                 # false where expansion.loops says it ended
+  condition: {node: [Clean, 0, Read], port: dirty}
 ```
+
+A loop's marks the moment its last invocation's condition is settled, and that the
+loop is planned to end there (`arm: exit`) -- `assumed` until `expansion.loops` says
+it ended. Its time, like a branch's, is when everything the condition waits for is
+planned to have ended (§2).
 
 A `decision` marks a branch whose condition is produced during the run and has not
 been produced yet (§2): the moment nothing of the branch may start before — its
@@ -2151,7 +2208,11 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
   with a required `node` (a non-empty node path) and a required `arm` (`then` or
   `else`, `unknown_arm` otherwise); no other key is accepted, and no branch is named
   twice (`duplicate_arm`). (That the path is a branch of the workflow is
-  execution-layer.)
+  execution-layer.) `loops` (optional) is a list of mappings, each with a required
+  `node` (a non-empty node path), a required `count` (an integer of at least 1) and a
+  required `ended` (a boolean); no other key is accepted, and no loop is named twice
+  (`duplicate_loop`). A `decision`'s `arm` is `then` / `else` or `continue` / `exit`,
+  and its `iteration` (a loop's) a non-negative integer.
 - Each activity: `kind` is required and is `processing`, `transport`, `relay`,
   `replenishment` or `decision`; `job` (if present) is an identifier (§6.11) naming an entry of the
   `jobs` roster (`unknown_job`, which also covers a `job` in a document with no
@@ -2196,11 +2257,12 @@ solver instance. The catalog of codes these checks emit is §10.4.
 
 The scheduler is capability-driven by the processes it actually schedules: it
 expands the entry composite — flattening nested composite invocations by splicing
-dataflow across their boundaries, and `map` / `fold` nodes into their invocations —
+dataflow across their boundaries, and `map` / `fold` / `do_while` nodes into their
+invocations, `branch` nodes into an arm —
 into the atomic, in-scope invocations it will run and validates the capability of
 each. Existence, atomic-ness, and scope (§2) hold by construction for those
-invocations (a `do_while` or `branch` node, and an atomic process with an
-Object-bearing Array port, are diagnosed separately as `unsupported_feature`, a
+invocations (an atomic process with an
+Object-bearing Array port is diagnosed separately as `unsupported_feature`, a
 recursive composite definition as `recursive_composite`, and a traversal whose length
 is not known before the run as `array_length_unknown` / `each_length_mismatch`, none
 being scheduled). Capabilities declared in the
@@ -2269,7 +2331,14 @@ environment for processes the workflow never invokes are not checked.
   refilled, a process with no capability), beside the other jobs as they are. A finding
   there is `arm_unplannable`, naming the branch, the arm and what was found. A caller
   may skip the check (`check_arms`): a run does, on a replan where nothing it reads
-  has changed.
+  has changed. A loop planned to end where it is is checked going on, **one invocation
+  more** -- not up to its limit, and not at all once a literal limit is reached. A
+  branch or loop that appears only there and is the boundary's to decide is read both
+  ways: a branch on each arm, a loop ending where it is and going on one more.
+- **Loops** (§6.13): each entry of `expansion.loops` names a `do_while` of this
+  expansion, or one that does not occur (`loop_unknown_node` otherwise), with a count
+  the loop can have (`loop_count_mismatch` otherwise). A loop whose count nothing
+  settles or states is `loop_count_unknown`.
 - **Inventories** (§6.10): the resource model is in effect, unless it has been
   disabled (§4.7.3), when **some mode of some invoked process declares
   `consumption`**. Declaring `resources` on a device is not enough on its own: a
@@ -2482,8 +2551,12 @@ building the solver instance. Severity is `error` unless marked *warning*.
 
 | code | meaning |
 | --- | --- |
-| `unsupported_feature` | a workflow feature outside the scheduler's v0 subset (a `do_while` node, an atomic process with an Object-bearing Array port, §2), or an `expansion` length this stage does not read — one inside the workflow, or of one element of a nested Array (§6.13) |
+| `unsupported_feature` | a workflow feature outside the scheduler's v0 subset (an atomic process with an Object-bearing Array port, §2), or an `expansion` length this stage does not read — one inside the workflow, or of one element of a nested Array (§6.13) |
 | `branch_arm_unknown` | a `branch` the expansion reaches whose arm is not known: its condition is an entry input no `expansion.arms` entry decides (§2, §6.13) |
+| `loop_count_unknown` | a `do_while` whose number of invocations nothing settles or states: a condition from an entry input no `expansion.loops` entry decides, a literal `true` whose `max_iterations` is not a literal, or one produced during the run with nothing to assume (§2) |
+| `loop_unknown_node` | an `expansion.loops` entry names no `do_while` of this expansion — and none inside an arm not taken or an invocation not made (§6.13) |
+| `loop_count_mismatch` | an `expansion.loops` entry the loop cannot have: more invocations than a literal `max_iterations`, `ended: false` at that limit, or a count a literal condition contradicts (§6.13) |
+| `duplicate_loop` | two entries of `expansion.loops` name the same loop (§6.13) |
 | `arm_unplannable` | a `branch` planned on an assumed arm could not be planned on its other arm, which the run may yet take: the switched expansion fails a check settled without a solve (§9.3) |
 | `arm_unknown_node` | an `expansion.arms` entry names no branch of this expansion — no branch at that path, or an invocation that is not there — and no branch inside an arm not taken (§6.13) |
 | `arm_mismatch` | an `expansion.arms` entry states an arm other than the one its branch's literal condition takes (§6.13) |

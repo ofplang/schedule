@@ -238,7 +238,10 @@ def _workflow_layout(activities):
             # A branch still waiting for its condition (§6.14): a mark at the moment
             # nothing of it may start before, naming the arm planned. No device holds
             # it, so the device view has nothing to show for it.
-            label = f"decide {'/'.join(map(str, a.get('node') or []))}: {a.get('arm')}"
+            label = f"decide {'/'.join(map(str, a.get('node') or []))}"
+            if a.get("iteration") is not None:  # a loop's, after this invocation
+                label += f" after invocation {a['iteration']}"
+            label += f": {a.get('arm')}"
             if a.get("assumed"):
                 label += " (assumed)"
             lane_labels.append(label)

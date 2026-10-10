@@ -124,6 +124,16 @@ CASES = [
         EXAMPLES / "inspect_then_wash.document.yaml",
         41,
     ),
+    # A do_while on a reading made during the run (design.md D65): planned to end after
+    # the first rinse and read, the drying waiting for that reading. 20 = 2 + 4 + 2 + 2
+    # (in, rinse, to the reader, read) + 2 + 6 + 2 (to the oven, dry, out).
+    (
+        "rinse_until_clean",
+        EXAMPLES / "rinse_until_clean.workflow.yaml",
+        EXAMPLES / "rinse_until_clean.env.yaml",
+        EXAMPLES / "rinse_until_clean.document.yaml",
+        20,
+    ),
 ]
 
 

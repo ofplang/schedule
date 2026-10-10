@@ -277,6 +277,32 @@ Every cup is planned to be washed, the longer arm here, one after another on the
 sink; each wash starts only after its own inspection, and the next cup is inspected
 while the previous one is in the sink.
 
+## `rinse_until_clean` — a plate rinsed until a reading says it is clean (`do_while`)
+
+- `rinse_until_clean.workflow.yaml` — `main` rinses and reads a plate in a **`do_while`**
+  (`Clean`, at most 5 invocations) while the reading says `dirty`, then dries it; it also
+  returns the loop's `exhausted` as `gave_up`.
+- `rinse_until_clean.env.yaml` — a `sink`, a `reader`, an `oven`, a two-spot `rack`, one
+  arm.
+- `rinse_until_clean.document.yaml` — `interface` places the plate; no `expansion`.
+
+Whether another rinse follows is the reader's to say, during the run (SPEC §2, design.md
+D65). The scheduler plans the loop to end after the invocation it is in, and lets
+nothing that follows -- the next rinse, or the drying -- start before that reading: the
+plan marks the moment with a **`decision`** (`node: [Clean]`, `iteration: 0`, `arm:
+exit`, `assumed: true`). Going on one rinse more is checked without a solve. A run states
+how many invocations there have been in `expansion.loops` as each reading comes in, and
+replans.
+
+```sh
+ofp-schedule schedule rinse_until_clean.workflow.yaml --env rinse_until_clean.env.yaml \
+    --document rinse_until_clean.document.yaml
+```
+
+- `outputs/rinse_until_clean.plan.yaml` (makespan 20), with
+  `outputs/rinse_until_clean.device.svg`, `outputs/rinse_until_clean.lane.svg` and
+  `outputs/rinse_until_clean.workflow.svg` (which draws the decision).
+
 ## `stopped_job` — one job stops, and what it left behind is still there
 
 The example for a failure that is not the end of the world (SPEC §6.2) and for the

@@ -540,3 +540,66 @@ def test_without_the_wait_the_same_laboratory_plans():
     report = schedule(yaml.safe_load(SAMPLE_DECIDES), env,
                       document_path={"interface": _TWO, "activities": []})
     assert report.ok
+
+
+# The boundary's flag goes through a branch the sample decides: kept as it is on
+# `then`, worked out again on `else`. A second branch on the flag that comes out
+# cannot be decided before the first one is (design.md D65, a hole in D64).
+FLAG_THROUGH = f"""\
+spec_version: "0.5"
+types:
+  Cup: {{domain: object}}
+processes:
+{_ATOMICS}  keep_flag:
+    kind: composite
+    inputs: {{cup: {{type: Cup, phase: data}}, flag: {{type: Bool, phase: run}}}}
+    outputs: {{cup: {{type: Cup, phase: data}}, flag: {{type: Bool, phase: run}}}}
+    body:
+      nodes:
+        - {{id: W, process: wash, state: {{cup: {{from: inputs.cup}}}}}}
+      returns: {{cup: {{from: W.cup}}, flag: {{from: inputs.flag}}}}
+  new_flag:
+    kind: composite
+    inputs: {{cup: {{type: Cup, phase: data}}, flag: {{type: Bool, phase: run}}}}
+    outputs: {{cup: {{type: Cup, phase: data}}, flag: {{type: Bool, phase: run}}}}
+    body:
+      nodes:
+        - {{id: L, process: inspect, state: {{cup: {{from: inputs.cup}}}}}}
+      returns: {{cup: {{from: L.cup}}, flag: {{from: L.dirty}}}}
+  main:
+    kind: composite
+    inputs:
+      cup: {{type: Cup, phase: data}}
+      sample: {{type: Cup, phase: data}}
+      flag: {{type: Bool, phase: run}}
+    outputs: {{cup: {{type: Cup, phase: data}}, sample: {{type: Cup, phase: data}}}}
+    body:
+      nodes:
+        - {{id: I, process: inspect, state: {{cup: {{from: inputs.sample}}}}}}
+        - id: H
+          kind: branch
+          condition: {{from: I.dirty}}
+          args: {{cup: {{from: inputs.cup}}, flag: {{from: inputs.flag}}}}
+          then: {{process: keep_flag}}
+          else: {{process: new_flag}}
+          outputs: {{cup: {{mode: common}}, flag: {{mode: common}}}}
+        - id: K
+          kind: branch
+          condition: {{from: H.flag}}
+          args: {{cup: {{from: H.cup}}}}
+          then: {{process: soak}}
+      returns: {{cup: {{from: K.cup}}, sample: {{from: I.cup}}}}
+entry: main
+"""
+
+
+def test_a_condition_handed_on_by_an_undecided_branch_is_not_decided_before_it():
+    assert validate(yaml.safe_load(FLAG_THROUGH)).ok
+    wf, errs = _parse(FLAG_THROUGH)
+    assert errs == []
+    # On `then` the flag is the boundary's -- but it is not the run's to decide K from
+    # before H is decided: K waits for H's condition, like anything else H hands on.
+    gate = wf.branch_gates[("K",)]
+    assert gate.condition.node == () and gate.condition.port == "flag"
+    assert gate.waits == (("I",),) and gate.assumed
+    assert (("I",), ("K",)) in wf.precedence

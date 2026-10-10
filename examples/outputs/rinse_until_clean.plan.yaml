@@ -1,0 +1,139 @@
+time:
+  unit: second
+interface:
+  inputs:
+    plate: rack.in
+  outputs:
+    plate: rack.out
+outcome: optimal
+objective:
+  kind: makespan
+  value: 20
+activities:
+- kind: transport
+  start: 0
+  end: 2
+  from_spot: rack.in
+  to_spot: sink.basin
+  transporter: arm
+  arc:
+    from:
+      node: []
+      port: plate
+    to:
+      node:
+      - Clean
+      - 0
+      - Rinse
+      port: plate
+- kind: processing
+  start: 2
+  end: 6
+  process: rinse
+  mode: '0'
+  node:
+  - Clean
+  - 0
+  - Rinse
+  devices:
+  - sink
+  input_spots:
+    plate: sink.basin
+  output_spots:
+    plate: sink.basin
+- kind: transport
+  start: 6
+  end: 8
+  from_spot: sink.basin
+  to_spot: reader.slot
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Clean
+      - 0
+      - Rinse
+      port: plate
+    to:
+      node:
+      - Clean
+      - 0
+      - Read
+      port: plate
+- kind: processing
+  start: 8
+  end: 10
+  process: read
+  mode: '0'
+  node:
+  - Clean
+  - 0
+  - Read
+  devices:
+  - reader
+  input_spots:
+    plate: reader.slot
+  output_spots:
+    plate: reader.slot
+- kind: decision
+  start: 10
+  end: 10
+  node:
+  - Clean
+  iteration: 0
+  arm: exit
+  assumed: true
+  condition:
+    node:
+    - Clean
+    - 0
+    - Read
+    port: dirty
+- kind: transport
+  start: 10
+  end: 12
+  from_spot: reader.slot
+  to_spot: oven.shelf
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Clean
+      - 0
+      - Read
+      port: plate
+    to:
+      node:
+      - Dry
+      port: plate
+- kind: processing
+  start: 12
+  end: 18
+  process: dry
+  mode: '0'
+  node:
+  - Dry
+  devices:
+  - oven
+  input_spots:
+    plate: oven.shelf
+  output_spots:
+    plate: oven.shelf
+- kind: transport
+  start: 18
+  end: 20
+  from_spot: oven.shelf
+  to_spot: rack.out
+  transporter: arm
+  arc:
+    from:
+      node:
+      - Dry
+      port: plate
+    to:
+      node: []
+      port: plate
+meta:
+  workflow: examples/rinse_until_clean.workflow.yaml
+  environment: examples/rinse_until_clean.env.yaml
+  status: examples/rinse_until_clean.document.yaml
