@@ -259,6 +259,9 @@ class BranchGate:
     arm: str
     assumed: bool
     waits: tuple[NodePath, ...] = ()
+    # The branches and loops the condition's value passed through untouched (D65): it is
+    # not the value to decide on before each of them is decided, whatever has produced.
+    after: tuple[NodePath, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -279,6 +282,8 @@ class LoopGate:
     ended: bool
     assumed: bool
     limit: Source | None
+    # As `BranchGate.after`, for the last invocation's condition.
+    after: tuple[NodePath, ...] = ()
 
 
 @dataclass(frozen=True)

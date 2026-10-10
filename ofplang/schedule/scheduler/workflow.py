@@ -841,6 +841,7 @@ class _Producer:
     port: str
     index: tuple[int, ...] = ()
     gates: frozenset[NodePath] = frozenset()
+    via: frozenset[NodePath] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -856,6 +857,7 @@ class _EntryInput:
     name: str
     index: tuple[int, ...] = ()
     gates: frozenset[NodePath] = frozenset()
+    via: frozenset[NodePath] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -869,6 +871,7 @@ class _Literal:
 
     value: object
     gates: frozenset[NodePath] = frozenset()
+    via: frozenset[NodePath] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -880,6 +883,7 @@ class _NodeValue:
     path: NodePath
     port: str
     gates: frozenset[NodePath] = frozenset()
+    via: frozenset[NodePath] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -1384,12 +1388,13 @@ class _Expander:
             # before then.
             condition = _source_of(value)
             assert condition is not None  # a value with something to wait for has a source
+            after = _after_of(value)
             if stated is not None:
-                self.branch_gates[path] = BranchGate(condition, stated, False, waits)
+                self.branch_gates[path] = BranchGate(condition, stated, False, waits, after)
                 return stated
             self.undecided[path] = condition
             if self.assume is not None:
-                self.branch_gates[path] = BranchGate(condition, self.assume, True, waits)
+                self.branch_gates[path] = BranchGate(condition, self.assume, True, waits, after)
                 return self.assume
             self.diags.error(
                 errors.BRANCH_ARM_UNKNOWN,
@@ -1599,6 +1604,7 @@ class _Expander:
             ended=ended,
             assumed=assumed,
             limit=_source_of(limit),
+            after=_after_of(condition),
         )
         outputs: dict = {}
         for port, mode in modes.items():
@@ -1608,7 +1614,7 @@ class _Expander:
                 outputs[port] = _Gathered(tuple(collected[port]))
         outputs[_EXHAUSTED] = _NodeValue(path, _EXHAUSTED)
         gates = frozenset(last_waits)
-        outputs = {port: _gated(value, gates) for port, value in outputs.items()}
+        outputs = {port: _gated(value, gates, frozenset({path})) for port, value in outputs.items()}
         self.structured[path] = outputs
         return outputs
 
@@ -2016,30 +2022,32 @@ def _element(value, i: int):
     if isinstance(value, _Literal):
         items = value.value
         if isinstance(items, list) and i < len(items):
-            return _Literal(items[i], value.gates)
+            return _Literal(items[i], value.gates, value.via)
         return None
     return None
 
 
-def _gated(value, gates: frozenset[NodePath]):
-    """`value` with `gates` added to every marker it is made of (design.md D64)."""
-    if not gates or value is None:
+def _gated(value, gates: frozenset[NodePath], via: frozenset[NodePath] = frozenset()):
+    """`value` with `gates` added to every marker it is made of (design.md D64), and
+    `via` -- the branch or loop it passes through untouched (D65)."""
+    if (not gates and not via) or value is None:
         return value
     if isinstance(value, _Gathered):
-        return _Gathered(tuple(_gated(item, gates) for item in value.items))
-    return replace(value, gates=value.gates | gates)
+        return _Gathered(tuple(_gated(item, gates, via) for item in value.items))
+    return replace(value, gates=value.gates | gates, via=value.via | via)
 
 
 def _gated_outside(value, branch: NodePath, gates: frozenset[NodePath]):
     """`value` with `gates` added to every marker not produced under `branch` -- what
-    a branch hands on without having made it (design.md D64)."""
+    a branch hands on without having made it (design.md D64) -- and `branch` as what
+    it passed through (D65)."""
     if value is None:
         return None
     if isinstance(value, _Gathered):
         return _Gathered(tuple(_gated_outside(item, branch, gates) for item in value.items))
     if isinstance(value, _Producer) and value.path[: len(branch)] == branch:
         return value
-    return _gated(value, gates)
+    return _gated(value, gates, frozenset({branch}))
 
 
 # More invocations of one `do_while` than any workflow writes; a guard against a defect.
@@ -2059,6 +2067,11 @@ def _waits_of(value) -> tuple[NodePath, ...] | None:
     if isinstance(value, _Literal | _EntryInput):
         return tuple(sorted(value.gates)) if value.gates else None
     return None
+
+
+def _after_of(value) -> tuple[NodePath, ...]:
+    """The pending branches and loops a value passed through untouched (D65)."""
+    return tuple(sorted(frozenset().union(*(leaf.via for _index, leaf in _leaves(value)))))
 
 
 def _gates_of(value) -> frozenset[NodePath]:
