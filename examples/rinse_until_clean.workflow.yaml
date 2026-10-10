@@ -1,0 +1,99 @@
+# A do_while (design.md D65): a plate is rinsed and read, again and again, until the
+# reading says it is clean -- at most five times -- and then dried.
+#
+# Whether another rinse follows is the reader's to say, during the run. The scheduler
+# plans the loop to end after the invocation it is in, and lets nothing that follows
+# -- the next rinse, or the drying -- start before that reading: the plan marks the
+# moment with a `decision` (`arm: exit`, `assumed: true`). A run states how many
+# invocations there have been in `expansion.loops` each time a reading comes in, and
+# replans; on the fifth dirty reading it stops anyway and `gave_up` is true.
+#
+#   ofp-schedule schedule rinse_until_clean.workflow.yaml --env rinse_until_clean.env.yaml \
+#       --document rinse_until_clean.document.yaml
+spec_version: "0.5"
+
+types:
+  Plate:
+    domain: object
+
+processes:
+
+  rinse:                                        # at the sink
+    kind: atomic
+    inputs:
+      plate: { type: Plate, phase: data }
+    outputs:
+      plate: { type: Plate, phase: data }
+    objects:
+      map:
+        outputs.plate: inputs.plate
+
+  read:                                         # at the reader: is it still dirty?
+    kind: atomic
+    inputs:
+      plate: { type: Plate, phase: data }
+    outputs:
+      plate: { type: Plate, phase: data }
+      dirty: { type: Bool, phase: data }
+    objects:
+      map:
+        outputs.plate: inputs.plate
+
+  dry:                                          # in the oven
+    kind: atomic
+    inputs:
+      plate: { type: Plate, phase: data }
+    outputs:
+      plate: { type: Plate, phase: data }
+    objects:
+      map:
+        outputs.plate: inputs.plate
+
+  rinse_and_read:                               # one invocation of the loop
+    kind: composite
+    inputs:
+      plate: { type: Plate, phase: data }
+    outputs:
+      plate: { type: Plate, phase: data }
+      dirty: { type: Bool, phase: data }
+    body:
+      nodes:
+        - id: Rinse
+          process: rinse
+          state:
+            plate: { from: inputs.plate }
+        - id: Read
+          process: read
+          state:
+            plate: { from: Rinse.plate }
+      returns:
+        plate: { from: Read.plate }
+        dirty: { from: Read.dirty }
+
+  main:
+    kind: composite
+    inputs:
+      plate: { type: Plate, phase: data }
+    outputs:
+      plate:   { type: Plate, phase: data }
+      gave_up: { type: Bool, phase: data }
+    body:
+      nodes:
+        - id: Clean
+          kind: do_while
+          process: rinse_and_read
+          carry:
+            plate: { from: inputs.plate }
+          condition:
+            output: dirty
+          max_iterations:
+            value: 5
+        - id: Dry
+          process: dry
+          state:
+            plate: { from: Clean.plate }
+      returns:
+        plate:   { from: Dry.plate }
+        gave_up: { from: Clean.exhausted }
+
+entry: main

@@ -1553,7 +1553,7 @@ class _Expander:
                     return mismatch(i, "goes on")
                 go_on = True
             elif stated is not None and stated[1]:
-                if literal is True and not limit_reached:
+                if literal is True and bound is not None and not limit_reached:
                     return mismatch(i, "ends")
                 go_on = False
                 ended = True

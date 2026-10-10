@@ -1,0 +1,10 @@
+# Execution document for rinse_until_clean.workflow.yaml.
+#
+# `interface` (SPEC §6.8) puts the plate on the rack's `in` spot and the dried one on
+# `out`. No `expansion`: how many rinses there will be is read during the run.
+interface:
+  inputs:
+    plate: rack.in
+  outputs:
+    plate: rack.out
+activities: []
