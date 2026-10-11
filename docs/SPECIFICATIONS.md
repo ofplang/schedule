@@ -2419,7 +2419,16 @@ environment for processes the workflow never invokes are not checked.
   built and normalized, and put through the checks settled without a solve
   (`arc_unreachable`, the places for finished products, the stocks that cannot be
   refilled, a process with no capability), beside the other jobs as they are. A finding
-  there is `arm_unplannable`, naming the branch, the arm and what was found. A caller
+  there is `arm_unplannable`, naming the branch, the arm and what was found.
+  Each such branch is then **planned locally** (design.md D66): every outcome -- the
+  arm planned, the other, and the arms of branches inside it -- on its own, within the
+  spots it uses, with each Object it hands on left on a spot of its gate (§6.15) that
+  every outcome reaches in at most one move, or stays on. A branch with no such plan --
+  no spot all its outcomes reach, or an outcome that cannot be got through within its
+  own spots -- is `arm_unplannable` too. The local plans favour the arm planned, then
+  the others, and are carried over machines the region cannot tell apart; what they
+  find is what a later release keeps for the region, and this one only asks whether
+  there is one. A caller
   may skip the check (`check_arms`): a run does, on a replan where nothing it reads
   has changed. A loop planned to end where it is is checked going on, **one invocation
   more** -- not up to its limit, and not at all once a literal limit is reached. A
@@ -2647,7 +2656,7 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `loop_unknown_node` | an `expansion.loops` entry names no `do_while` of this expansion — and none inside an arm not taken or an invocation not made (§6.13) |
 | `loop_count_mismatch` | an `expansion.loops` entry the loop cannot have: more invocations than a literal `max_iterations`, `ended: false` at that limit, or a count a literal condition contradicts (§6.13) |
 | `duplicate_loop` | two entries of `expansion.loops` name the same loop (§6.13) |
-| `arm_unplannable` | a `branch` planned on an assumed arm could not be planned on its other arm, which the run may yet take: the switched expansion fails a check settled without a solve (§9.3) |
+| `arm_unplannable` | a `branch` planned on an assumed arm could not be planned on its other arm, which the run may yet take: the switched expansion fails a check settled without a solve, or the branch has no local plan that lets every outcome through on a common place to leave its Objects (§9.3) |
 | `arm_unknown_node` | an `expansion.arms` entry names no branch of this expansion — no branch at that path, or an invocation that is not there — and no branch inside an arm not taken (§6.13) |
 | `arm_mismatch` | an `expansion.arms` entry states an arm other than the one its branch's literal condition takes (§6.13) |
 | `array_length_unknown` | a `map` / `fold` none of whose `each` sources has a length known before the run (§2). One with no `each` source at all is `missing_each_source` (below) |

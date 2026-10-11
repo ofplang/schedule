@@ -29,6 +29,7 @@ from ofplang.schedule.core.identifiers import format_node_path
 from ofplang.schedule.core.yamlnode import YMap
 from ofplang.schedule.scheduler.envload import load_environment
 from ofplang.schedule.scheduler.instance import (
+    Instance,
     build_instance,
     job_membership,
     merge_instances,
@@ -43,6 +44,7 @@ from ofplang.schedule.scheduler.model import JobSpec, SourceLiteral, SourceRef, 
 from ofplang.schedule.scheduler.normalize import normalize
 from ofplang.schedule.scheduler.plan import render_plan
 from ofplang.schedule.scheduler.plancheck import check_plan_inventories, check_schedule
+from ofplang.schedule.scheduler.region import branch_candidates
 from ofplang.schedule.scheduler.result import Solution
 from ofplang.schedule.scheduler.stats import SolveStats
 from ofplang.schedule.scheduler.status import ActivityFixation, ArcFixation, Fixation
@@ -1513,6 +1515,18 @@ def _build_merged(jobs, workflows, specs, env, interface) -> tuple:
 def _arm_expansions(
     source, interface, expansion, workflow
 ) -> list[tuple[tuple, Workflow | None, list]]:
+    """`_switched_expansions` without the paths of what was switched."""
+    return [
+        (chain, read, errs)
+        for chain, read, errs, _paths in _switched_expansions(
+            source, interface, expansion, workflow
+        )
+    ]
+
+
+def _switched_expansions(
+    source, interface, expansion, workflow
+) -> list[tuple[tuple, Workflow | None, list, tuple]]:
     """The expansions the arm check reads (design.md D64): for every branch planned on
     an assumed arm, the same expansion with that branch on its other arm -- one branch
     at a time, the rest as planned. A branch that only appears on that other arm is
@@ -1528,9 +1542,10 @@ def _arm_expansions(
     loop whose next decision is the boundary's is read ending where it is, then one
     invocation longer.
 
-    Returns `(what was switched, workflow or None, reader errors)` per expansion; what
-    was switched names it, outermost first, as phrases for a message."""
-    found: list[tuple[tuple, Workflow | None, list]] = []
+    Returns `(what was switched, workflow or None, reader errors, the paths switched)`
+    per expansion; what was switched names it, outermost first, as phrases for a
+    message, and the paths say which branches and loops those are."""
+    found: list[tuple[tuple, Workflow | None, list, tuple]] = []
 
     def with_arm(expansion, path, arm) -> dict:
         arms = [
@@ -1574,7 +1589,7 @@ def _arm_expansions(
                 put.append(("loop", path, count))
         raise RuntimeError("reading the switched arms did not settle")  # pragma: no cover
 
-    def switch(expansion, workflow, put, chain, inside) -> None:
+    def switch(expansion, workflow, put, chain, inside, paths=()) -> None:
         # (what to read, the phrase for it, the prefix of what it newly reveals)
         points = []
         for path, gate in workflow.branch_gates.items():
@@ -1601,9 +1616,9 @@ def _arm_expansions(
                 phrase = f"loop {format_node_path(path)!r} going on to invocation {count + 1}"
                 reveals = path + (count,)
             read_wf, errs, switched, newly = read(changed)
-            found.append(((*chain, phrase), read_wf, errs))
+            found.append(((*chain, phrase), read_wf, errs, (*paths, path)))
             if read_wf is not None and not errs:
-                switch(switched, read_wf, newly, (*chain, phrase), reveals)
+                switch(switched, read_wf, newly, (*chain, phrase), reveals, (*paths, path))
 
     switch(expansion, workflow, [], (), None)
     return found
@@ -1624,7 +1639,10 @@ def _check_arms(
         ):
             continue
         job_interface, job_expansion = roots[j]
-        for chain, read, errs in _arm_expansions(
+        # Every expansion that could be planned, by the branches and loops switched to
+        # reach it: the outcomes each undecided branch is then planned locally on.
+        outcomes: list[tuple[tuple, Instance]] = []
+        for chain, read, errs, paths in _switched_expansions(
             job.workflow, job_interface, job_expansion, workflow
         ):
             problems = list(errs)
@@ -1635,6 +1653,8 @@ def _check_arms(
                     merged = merge_instances([*bases[:j], base, *bases[j + 1:]])
                     _i, _f, normalized, checked = _normalize_and_check(merged, root, env, fixed)
                     problems += [d for d in (*normalized, *checked) if d.severity == ERROR]
+                    if not problems:
+                        outcomes.append((paths, base))
             if problems:
                 where = " with ".join(chain)
                 said = "; ".join(f"{d.code}: {d.message}" for d in problems)
@@ -1650,6 +1670,42 @@ def _check_arms(
                     job,
                     jobs,
                 )
+        found += _region_candidates(job, jobs, workflow, bases[j], outcomes)
+    return found
+
+
+def _region_candidates(job, jobs, workflow, assumed, outcomes) -> list[Diagnostic]:
+    """`arm_unplannable` for every branch planned on an assumed arm that has no
+    candidate (design.md D66, stage 3): no way to plan each of its outcomes on its own,
+    within its own spots, with every Object it hands on left where all of them can
+    leave it in at most one move.
+
+    Its outcomes are the expansion as planned and every other one reached by switching
+    only that branch, or branches inside it (`region.branch_candidates`). The
+    candidates themselves are a later stage's to use; here they are only asked for."""
+    found: list[Diagnostic] = []
+    for path, gate in workflow.branch_gates.items():
+        if not gate.assumed:
+            continue
+        inside = [
+            instance for paths, instance in outcomes
+            if all(tuple(p)[: len(path)] == tuple(path) for p in paths)
+        ]
+        region = ((job.id,) if job.id else ()) + tuple(path)
+        candidates, why = branch_candidates(region, [assumed, *inside])
+        if not candidates:
+            found += _attribute(
+                [
+                    Diagnostic(
+                        errors.ARM_UNPLANNABLE,
+                        f"branch {format_node_path(path)!r} cannot be planned whichever arm "
+                        f"the run takes: {why}",
+                        "expansion",
+                    )
+                ],
+                job,
+                jobs,
+            )
     return found
 
 
