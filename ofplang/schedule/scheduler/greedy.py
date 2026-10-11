@@ -60,7 +60,7 @@ from ofplang.schedule.scheduler.result import (
     Solution,
     TransportResult,
 )
-from ofplang.schedule.scheduler.status import Fixation
+from ofplang.schedule.scheduler.status import Fixation, PreviousPlan
 
 # Shapes `construct` declines, and why each needs more than list scheduling.
 REFUSALS = {
@@ -943,6 +943,17 @@ def _build(
         order = mobility.find_order(instance)
         if order is not None:
             best = _replay(instance, order, floors)
+    # 🔴 **The settled case's own last resort** (design.md D66, stage 0). Where
+    # history is reported, the walk above is out of reach -- but the plan being
+    # replaced is not. It was a schedule; if nothing has changed shape since, only
+    # durations have moved, and the same order shifted later is still one. So when
+    # the passes find nothing, that order is laid out over the history.
+    #
+    # Like the walk, this runs only when everything else came out empty, so every
+    # replan that already worked gets exactly the schedule it got before.
+    previous = fixation.previous if fixation is not None else None
+    if best is None and settled_already and previous is not None:
+        best = _replay_previous(instance, previous, floors, history, now)
     return best
 
 
@@ -1338,6 +1349,122 @@ def _replay_place(
     return True
 
 
+def _replay_previous(
+    instance: Instance,
+    previous: PreviousPlan,
+    floors: dict[int, int],
+    history: _History,
+    now: int,
+) -> Solution | None:
+    """Lay the previous plan's pending order out over the reported history.
+
+    The history goes down first, exactly as a forward pass puts it down
+    (`_lay_out_history`, `_lay_out_held`). Then every pending step follows in the
+    order the previous plan ran them, in the mode or on the route it chose, each as
+    early as the resources and `now` allow -- the same `_replay_place` /
+    `_replay_move` the walk's order is laid out with.
+
+    **Why this holds when only durations moved.** A spot is taken only after
+    everything already booked in it, never in a gap, so each spot is used in the
+    order the previous plan used it. That plan was a schedule, so that order never
+    needed a spot something was still standing in; the history can only have made
+    things later, and later is something every step here can wait for. Devices and
+    transporters hold nothing while waiting, so they fill gaps freely.
+
+    It is not a proof against a changed shape, and is not asked to be one: the
+    previous plan is only offered when it covers this instance exactly
+    (`normalize._previous_plan`). A `None` here means the shape of the history did
+    something the argument above does not cover -- say, a running activity
+    reported on a spot the previous plan had given to something else -- and the
+    replan simply gets no constructed schedule, as before.
+
+    The refills are not laid out here (`construct` handles the stocks after the
+    schedule), and what they need is outside what this argument promises.
+    """
+    board = _Board()
+    leaving, arriving = _edges(instance)
+    counts, orders = _waiting(instance)
+    placed: dict[int, _Placement] = {}
+    moves: dict[int, _Move] = {}
+    settled: dict[int, int] = {}
+    resting: dict[int, int] = {}
+    floor = {index: floors.get(index, 0) for index in range(len(instance.activities))}
+    outputs: list[int] = []
+
+    if not _lay_out_history(
+        instance, history, now, board, placed, moves, settled, resting, counts, orders,
+        floor, leaving, outputs,
+    ):
+        return None
+    held = _lay_out_held(instance, now, board, placed, settled, orders, counts, floor)
+    if held is None:
+        return None
+
+    def place(index: int, mode_index: int) -> bool:
+        # Everything an activity receives has to have landed first; an order that
+        # says otherwise is not one this can lay out.
+        if any(arc not in moves for arc in arriving[index]):
+            return False
+        return _replay_place(
+            instance, board, index, mode_index, floor, arriving, leaving,
+            moves, placed, resting, outputs, orders,
+        )
+
+    for step in previous.steps:
+        if step.kind == "place":
+            if not place(step.index, step.choice):
+                return None
+            continue
+        arc = instance.arcs[step.index]
+        # Entry material is not work and has no step of its own: it is put down,
+        # pinned at its job's release, just before the first move that collects it.
+        # So is the relay a started move landed at, just before its hand-over.
+        if arc.src_activity not in placed:
+            mode_index = previous.implicit_modes.get(arc.src_activity)
+            if mode_index is None or not place(arc.src_activity, mode_index):
+                return None
+        if not _replay_move(
+            instance, board, step.index, step.choice, moves, resting, placed, now
+        ):
+            return None
+        # An output node settles when the last of its material has landed.
+        target = arc.dst_activity
+        boundary = instance.activities[target].boundary
+        if (
+            boundary is not None
+            and boundary.kind == "output"
+            and target not in placed
+            and all(index in moves for index in arriving[target])
+        ):
+            mode_index = previous.implicit_modes.get(target)
+            if mode_index is None or not place(target, mode_index):
+                return None
+
+    if len(placed) != len(instance.activities) or len(moves) != len(instance.arcs):
+        return None  # the order did not cover everything
+    makespan = _makespan(instance, placed, moves)
+    # Close what is held until the run is over, as a forward pass does: an occupied
+    # spot (§6.12) and an output's bay both end at the makespan.
+    for activity in held:
+        placement = placed[activity]
+        until = max(makespan, placement.start)
+        placed[activity] = _Placement(activity, placement.mode_index, placement.start, until)
+        for spot in _spots_of(instance.activities[activity].modes[placement.mode_index]):
+            line = board.spot(spot)
+            if line.pending is not None:
+                line.release(until)
+    for activity in outputs:
+        placement = placed[activity]
+        placed[activity] = _Placement(activity, placement.mode_index, placement.start, makespan)
+        for index in arriving[activity]:
+            bay = board.spot(moves[index].option.to_spot)
+            if bay.pending is not None:
+                bay.release(makespan)
+    if any(line.pending is not None for line in board.spots.values()):
+        return None  # material left resting with nothing to take it away
+    return _assemble(instance, placed, moves, makespan)
+
+
 def _replay_move(
     instance: Instance,
     board: _Board,
@@ -1346,11 +1473,15 @@ def _replay_move(
     moves: dict[int, _Move],
     resting: dict[int, int],
     placed: dict[int, _Placement],
+    now: int = 0,
 ) -> bool:
     """Send one move on the route the walk chose for it -- no earlier than the end of
-    everything it waits for (design.md D64), which the walk placed before it."""
+    everything it waits for (design.md D64), which the walk placed before it, and
+    no earlier than `now`: a pending move has not set off yet."""
     option = instance.arcs[index].options[option_index]
-    start = max([resting.pop(index, 0), *(placed[g].end for g in instance.arcs[index].gates)])
+    start = max(
+        [resting.pop(index, 0), now, *(placed[g].end for g in instance.arcs[index].gates)]
+    )
     if option.from_spot == option.to_spot:
         # A hand-off that stays put takes no time and names no arm (§Parameters).
         landed = start

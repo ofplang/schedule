@@ -64,6 +64,8 @@ from ofplang.schedule.scheduler.status import (
     ActivityFixation,
     ArcFixation,
     Fixation,
+    PreviousPlan,
+    PreviousStep,
     RefillFixation,
     arc_key,
     job_of,
@@ -283,7 +285,13 @@ def normalize(
             replenishments=_refill_candidates(instance, act_fix, env, set(refills)),
         )
 
-    fixation = Fixation(now, act_fix, arc_fix, levels, refills, stated_levels)
+    # 4. The previous plan's pending part, read onto this instance where it covers it
+    #    exactly (design.md D66, stage 0). Not a constraint: a schedule known to exist
+    #    when only durations moved, which `greedy` falls back on.
+    previous = _previous_plan(root, instance, act_fix, arc_fix)
+    fixation = Fixation(
+        now, act_fix, arc_fix, levels, refills, stated_levels, previous=previous
+    )
     return instance, fixation, diags
 
 
@@ -1305,6 +1313,201 @@ def _subject(job: str, path: NodePath) -> str:
     """
     where = format_node_path(path)
     return f"{where} (job {job!r})" if job else where
+
+
+# --------------------------------------------------------------------------
+# The previous plan's pending part (design.md D66, stage 0).
+# --------------------------------------------------------------------------
+
+
+def _previous_plan(
+    root: YNode | None,
+    instance: Instance,
+    act_fix: dict[int, ActivityFixation],
+    arc_fix: dict[int, ArcFixation],
+) -> PreviousPlan | None:
+    """Read the previous plan's still-pending entries onto `instance`, or None where
+    they do not cover it exactly.
+
+    A replan is handed the plan it is replacing, stamped: what started carries a
+    status and is history, and what did not still carries the mode, route and times
+    the previous plan chose for it. Everything here is about that second part.
+
+    🔴 **All or nothing.** The order is only worth something as a whole: it is a
+    schedule known to exist because the previous plan was one, and a pending
+    activity or leg it says nothing about -- a job that has just arrived, an arm a
+    decision has switched, a mode a stopped machine has taken away -- is exactly the
+    part that proof does not reach. So anything not found, found twice, or found in a
+    shape this instance no longer offers makes the whole answer None, and the
+    replan proceeds as it always has.
+
+    A move that has started but whose destination has not is history plus a little
+    that is not: a relay at the spot it delivered to, and a re-transport from there
+    to the destination (`_build_chain`). Neither is in the plan being replaced, and
+    neither needs to be -- the move was planned to deliver to the destination's spot,
+    so the re-transport is the no-op that hands it over, laid out where the delivery
+    ends. Anything else there (the destination's spot has moved) is a re-route the
+    previous plan did not make, and gives None.
+
+    Planned chains (a move of several legs, §6.4.1) are left out for now: their
+    relays are regenerated with one mode per route and spot, and reading the
+    previous choice back through them is a separate piece of work. A relay whose
+    delivering leg has not started therefore gives None.
+    """
+    if not isinstance(root, YMap):
+        return None
+    activities_node = root.get("activities")
+    items = activities_node.items if isinstance(activities_node, YSeq) else []
+
+    # The pending entries, keyed the way the instance names what they describe.
+    # Started ones are history and already in `act_fix` / `arc_fix`.
+    processing: dict[NodePath, YMap] = {}
+    transport: dict[tuple, YMap] = {}
+    for item in items:
+        if not isinstance(item, YMap) or status_of(item) != "pending":
+            continue
+        kind = text(item.get("kind"))
+        job = job_of(item)
+        if kind == "processing":
+            path = scoped(job, node_path(item.get("node")))
+            if path in processing:
+                return None  # two plans' worth of one activity: nothing to trust
+            processing[path] = item
+        elif kind == "transport":
+            key = arc_key(item.get("arc"), job)
+            if key is None:
+                return None
+            leg = (key, _seq_of(item))
+            if leg in transport:
+                return None
+            transport[leg] = item
+
+    # 1. Every pending activity, in the mode the previous plan gave it. A boundary
+    #    node (§6.8) is never rendered, so its mode is read off its moves below; a
+    #    held node is placed from the document's own claim, not from a plan.
+    chosen: dict[int, int] = {}
+    steps: list[PreviousStep] = []
+    implicit_modes: dict[int, int] = {}
+    delivering = {arc.dst_activity: r for r, arc in enumerate(instance.arcs)}
+    for i, act in enumerate(instance.activities):
+        if i in act_fix:
+            chosen[i] = act_fix[i].mode_index
+            continue
+        if act.relay is not None:
+            # A relay at the far end of a started move: it has one mode, and it is
+            # put down when the hand-over leaving it is (`greedy._replay_previous`).
+            # One fed by a pending leg belongs to a planned chain, which is not read
+            # back yet (docstring).
+            fed_by = delivering.get(i)
+            if fed_by is None or fed_by not in arc_fix:
+                return None
+            chosen[i] = 0
+            implicit_modes[i] = 0
+            continue
+        if act.boundary is not None:
+            continue
+        planned = processing.get(act.node)
+        if planned is None:
+            return None
+        mode_index = _mode_named(act, planned)
+        if mode_index is None:
+            return None
+        chosen[i] = mode_index
+        start, end = times(planned)
+        steps.append(PreviousStep("place", i, mode_index, start, end))
+
+    # 2. Every pending leg, on the route the previous plan gave it. The route has to
+    #    agree with the modes chosen at both of its ends, which is also how a
+    #    boundary node's mode is learnt: from the spot its move left or reached.
+    for r, arc in enumerate(instance.arcs):
+        if r in arc_fix:
+            continue
+        if instance.activities[arc.src_activity].relay is not None:
+            # The re-transport after a started move (docstring): the hand-over where
+            # the move landed, or nothing the previous plan says.
+            option_index = _hand_over(arc, chosen)
+            landing = arc_fix[delivering[arc.src_activity]].end
+            start, end = landing, landing
+        else:
+            moved = transport.get((_arc_key_of(arc.arc), arc.seq or 0))
+            if moved is None:
+                return None
+            option_index = _option_taken(instance, arc, moved, chosen)
+            start, end = times(moved)
+        if option_index is None:
+            return None
+        option = arc.options[option_index]
+        for end_index, mode_index in (
+            (arc.src_activity, option.src_mode_index),
+            (arc.dst_activity, option.dst_mode_index),
+        ):
+            if instance.activities[end_index].boundary is None or end_index in chosen:
+                continue
+            if implicit_modes.setdefault(end_index, mode_index) != mode_index:
+                return None  # two moves disagree about where one boundary sits
+        steps.append(PreviousStep("move", r, option_index, start, end))
+
+    # The order the previous plan ran them in. Ties at one start go to whatever ends
+    # first: a zero-length hand-off that lands at t comes before the activity that
+    # starts at t with what it landed.
+    steps.sort(key=lambda s: (s.start, s.end, 0 if s.kind == "move" else 1, s.index))
+    return PreviousPlan(tuple(steps), implicit_modes)
+
+
+def _hand_over(arc: ArcInstance, chosen: dict[int, int]) -> int | None:
+    """The index of the same-spot hand-over from a started move's relay to its
+    destination, in the mode chosen for the destination -- or None where that mode's
+    spot is not where the move landed, which is a re-route nothing planned.
+
+    The relay has one mode (the landing spot), so the source end always agrees. A
+    destination with no mode chosen yet is a boundary node; any hand-over agrees with
+    it, and the boundary's mode is then read off the option like every other move.
+    """
+    for index, option in enumerate(arc.options):
+        if option.from_spot != option.to_spot:
+            continue
+        if chosen.get(arc.dst_activity, option.dst_mode_index) != option.dst_mode_index:
+            continue
+        return index
+    return None
+
+
+def _mode_named(act: ActivityInstance, item: YMap) -> int | None:
+    """The index of the mode a plan entry names, provided it still binds the spots
+    the entry says it did -- the id alone is not enough after a pooled spot was
+    assigned, and a mode that no longer binds them is not the one that ran."""
+    mode_id = text(item.get("mode"))
+    stated_in = to_plain(item.get("input_spots")) or {}
+    stated_out = to_plain(item.get("output_spots")) or {}
+    for index, mode in enumerate(act.modes):
+        if mode.id != mode_id:
+            continue
+        if dict(mode.input_spots) == stated_in and dict(mode.output_spots) == stated_out:
+            return index
+    return None
+
+
+def _option_taken(
+    instance: Instance, arc: ArcInstance, item: YMap, chosen: dict[int, int]
+) -> int | None:
+    """The index of the route a plan entry took, among those agreeing with the modes
+    already chosen at the leg's two ends (a boundary end agrees with any)."""
+    from_spot = text(item.get("from_spot"))
+    to_spot = text(item.get("to_spot"))
+    # A same-spot move names no transporter (§6.4); a real one writes null when the
+    # route needs none. Both read back as None.
+    transporter = maybe_text(item.get("transporter"))
+    for index, option in enumerate(arc.options):
+        if (option.from_spot, option.to_spot, option.transporter) != (
+            from_spot, to_spot, transporter,
+        ):
+            continue
+        if chosen.get(arc.src_activity, option.src_mode_index) != option.src_mode_index:
+            continue
+        if chosen.get(arc.dst_activity, option.dst_mode_index) != option.dst_mode_index:
+            continue
+        return index
+    return None
 
 
 def _arc_key_of(arc: Arc) -> tuple:

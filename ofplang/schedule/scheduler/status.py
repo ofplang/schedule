@@ -73,6 +73,46 @@ COMPLETION, START = 0, 1
 
 
 @dataclass(frozen=True)
+class PreviousStep:
+    """One step of the previous plan's still-pending part, read onto this instance.
+
+    `kind` is `place` (an activity, `index` into the instance's activities, `choice`
+    a mode index) or `move` (a leg, `index` into its arcs, `choice` an option
+    index). `start` / `end` are the times the previous plan gave it: only their
+    **order** is used -- the times themselves are history's to move.
+    """
+
+    kind: str  # place | move
+    index: int
+    choice: int
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
+class PreviousPlan:
+    """The previous plan's still-pending part, in the instance's own terms
+    (design.md D66, stage 0).
+
+    A plan that was executable stays executable when the only thing that changed is
+    that some work took longer: shift what is left later, keeping the order in which
+    it used every spot, and nothing collides that did not collide before. So when
+    nothing in the instance has changed shape, the previous plan's order is a
+    schedule that is known to exist, and `greedy` lays times over it when its own
+    passes find nothing.
+
+    `steps` are the pending activities and legs, sorted the way the previous plan
+    ran them. `implicit_modes` are the modes of the nodes a plan never renders as
+    work -- the synthetic boundary nodes (§6.8), read off the moves that reach them,
+    and the relay at the far end of a started move (one mode, its landing spot).
+    Those are put down when the first move that needs them is.
+    """
+
+    steps: tuple[PreviousStep, ...]
+    implicit_modes: dict[int, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class Fixation:
     """Everything the solver needs to fix the executed part and re-optimise the
     rest at or after `now`. Keyed by the augmented instance's activity / arc
@@ -98,6 +138,11 @@ class Fixation:
     # next replan a number with `now`'s draws already in it, which it would then
     # replay again. Equal to `levels` unless something drew at exactly `now`.
     stated_levels: dict[tuple[str, str], int] = field(default_factory=dict)
+    # The previous plan's pending part, when every pending activity and leg of this
+    # instance can be found in it unchanged (`PreviousPlan`). None otherwise -- a
+    # machine went out of service, a decision changed the expansion, a job arrived --
+    # because an order that does not cover the instance proves nothing about it.
+    previous: PreviousPlan | None = None
 
 
 # --------------------------------------------------------------------------

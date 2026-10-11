@@ -1115,6 +1115,71 @@ def _construct_plan(
     )
 
 
+def _construct_after_solver(
+    instance, specs: tuple[JobSpec, ...], solve_kwargs: dict, unsolved: Solution
+) -> tuple[Solution, tuple[JobSpec, ...], list[Diagnostic]] | None:
+    """A constructed schedule for a replan the solver found nothing for, or None.
+
+    The solver running out of budget proves nothing about the instance, and on a
+    replan "nothing" means the run stops. Where only durations have moved, a schedule
+    is known to exist -- the previous plan, shifted (`greedy._replay_previous`) -- so
+    handing one back is better than stopping (design.md D66, stage 0).
+
+    The promises are tried as they stand first. If the construction cannot keep them,
+    it is asked again without them, and each job that then finishes past its bound is
+    relaxed and re-promised -- here without the search `_solve_within_bounds` uses to
+    keep as many as possible, since a search is what just failed. Read back against
+    the constraints before it is handed out, like every constructed plan.
+    """
+    from ofplang.schedule.scheduler import greedy
+
+    fixation = solve_kwargs["fixation"]
+    if greedy._refuse(instance, fixation, specs) is not None:
+        return None
+    unbounded = tuple(replace(spec, bound=None) for spec in specs)
+    for trial in (specs, unbounded):
+        built = greedy.construct(
+            instance,
+            fixation=fixation,
+            jobs=trial,
+            objective=solve_kwargs["objective"],
+            running_task_margin=solve_kwargs["running_task_margin"],
+        )
+        if built is not None:
+            break
+    if built is None or check_schedule(instance, built, fixation):
+        return None
+
+    relaxed = [
+        spec
+        for spec in specs
+        if spec.bound is not None and built.job_completions.get(spec.id, 0) > spec.bound
+    ]
+    kept = tuple(replace(spec, bound=None) if spec in relaxed else spec for spec in specs)
+    diagnostics = [
+        Diagnostic(
+            errors.PLAN_CONSTRUCTED_AFTER_SOLVER,
+            "the solver found no schedule within its budget, so this replan's plan was "
+            "constructed instead: it is a schedule and nothing more, and a shorter one "
+            "may exist",
+            severity=WARNING,
+        )
+    ]
+    diagnostics += [
+        Diagnostic(
+            errors.JOB_BOUND_RELAXED,
+            f"job {spec.id!r} could no longer finish by {spec.bound}, the completion it "
+            "was promised; its bound was re-derived",
+            "jobs",
+            severity=WARNING,
+        )
+        for spec in relaxed
+    ]
+    # The solve's own measurements are kept: what the attempt cost is still what it
+    # cost, and the plan says how it was actually obtained through the warning.
+    return replace(built, stats=unsolved.stats), _promised(kept, built), diagnostics
+
+
 def _solve_within_bounds(
     instance, specs: tuple[JobSpec, ...], solve_kwargs: dict
 ) -> tuple[Solution, tuple[JobSpec, ...], list[Diagnostic]]:
@@ -2044,6 +2109,13 @@ def _run(
         solution, settled, relax_diags = _construct_plan(instance, named, solve_kwargs)
     else:
         solution, settled, relax_diags = _solve_within_bounds(instance, named, solve_kwargs)
+        # A replan the solver came back from empty-handed is a run that would stop,
+        # and a constructed schedule is better than stopping (design.md D66, stage 0).
+        # Only on a replan: a first plan that times out says so, as it always has.
+        if solution.outcome == "unknown" and had_now:
+            fallback = _construct_after_solver(instance, named, solve_kwargs, solution)
+            if fallback is not None:
+                solution, settled, relax_diags = fallback
     diagnostics += relax_diags
     if solution.outcome not in _SOLVED:
         # Only a *proof* is reported as one. `infeasible` says the solver showed

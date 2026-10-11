@@ -517,6 +517,31 @@ are fixed to their actual times and assignments; unstarted activities are
 re-optimised. Durations are otherwise deterministic, though a replan may supply
 revised estimates.
 
+**What a replan can count on when only durations moved.** A plan that was a
+schedule stays one when some of its work takes longer: shift what is left later,
+keeping the order in which it used every spot, and nothing collides that did not
+collide before (no constraint here bounds a time from above except a job's promise,
+§6.11, which is relaxed rather than broken). So when the document is the stamped plan
+being replaced (§7) and its still-pending entries cover the remaining work exactly
+-- every pending activity in a mode it names, every pending leg on a route it took,
+nothing pending that it does not mention -- that order is a schedule known to exist.
+It is used in two places, and in neither does it change a plan that was already
+coming out:
+
+- the constructed planner (`planner: greedy`, see the README) lays it out over
+  the history when its own forward passes find nothing;
+- a replan the solver comes back from with nothing within its budget (`unknown`) is
+  handed a constructed plan instead, read back against the constraints like every
+  constructed plan, with `plan_constructed_after_solver` (§10.4). A promise the
+  constructed plan cannot keep is relaxed and re-derived (`job_bound_relaxed`). A
+  **first** plan that times out still comes back `unknown`: there is nothing to
+  stop.
+
+Nothing is claimed where the shape changed -- a machine went out of service, a
+decision switched an arm, a job arrived -- since the previous order does not cover
+the instance then. Planned chains (§6.4.1) are not read back yet either, and the
+refills are outside the claim (`construct` places them afterwards).
+
 ## 5. Execution environment definition schema
 
 The execution environment definition is a YAML document with the following
@@ -2617,6 +2642,7 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `objects_deadlocked` | **error**: the Objects cannot all be got to the end. Material is always somewhere -- it rests in the spot it was made in until a move takes it away, and a move needs its destination empty before it sets off (§4.4, FORMULATION §7) -- so a laboratory with few enough places can reach a state where every remaining move is into a place something else is standing in, and then no schedule exists whatever the durations are. Settled by walking the placements and moves with time erased: a walk that never reaches the end proves there is no order that does. Generalises `final_outputs_crowded`, which is the special case where the places that never free up are the finished products' alone. **A necessary condition, not a sufficient one**: silence says the Objects can be got to the end, not that a schedule exists -- nothing here is weighed against a duration, a device, a transporter or a promise. Silence is also what a walk too large to finish returns, so an instance is never refused on a partial search. Reported before the solve and the solve is not run, which is the point -- measured on the RNA-seq minimal laboratory at two jobs, the solver spent two minutes and returned `unknown`, having proved nothing, where the walk settles it in milliseconds |
 | `plan_constructed` | **warning**: this plan was built rather than searched for, the `greedy` planner having been asked for. It is a schedule and nothing more — no claim is made that a shorter one does not exist, and none could be, since nothing searched |
 | `planner_unsupported` | **warning**: the planner asked for does not handle some shape of this plan, so it produced nothing. **A statement about the planner, not about the plan**: the instance may be perfectly schedulable, and asking for `cpsat` is the remedy |
+| `plan_constructed_after_solver` | **warning**: a replan the solver came back from with nothing within its budget was handed a constructed plan instead (§4.9). On a replan no plan stops the run; where only durations moved a schedule is known to exist, so one is built and read back against the constraints. It is a schedule and nothing more. Never on a first plan, which still reports `unknown` |
 | `plan_not_constructed` | **warning**: the constructed planner ran and came back with nothing. **Not a proof either way.** Where nothing is yet settled, an instance with no schedule is refused before this point and told which of `arc_unreachable`, `final_outputs_crowded`, `stock_cannot_last` or `objects_deadlocked` it fell to. Where history has been reported (§7) or a spot is held since a stated time (§6.12), it may not be: those checks walk with the clock erased (the `objects_deadlocked` entry above), so they cannot see the order the history fixed, and an instance can pass them and still have no schedule -- two samples already placed so that each needs the other's instrument is such a state, refused by none of them and proved infeasible by the solver. The solver is what settles the question. Also reported where a constructed schedule failed to survive being read back against the constraints, which is a defect in this package and not in the plan |
 | `infeasible` | the solver proved the instance has no feasible schedule |
 

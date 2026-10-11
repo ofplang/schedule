@@ -132,6 +132,10 @@ PLANNER_UNSUPPORTED = "planner_unsupported"
 # had the instance been impossible, the checks before the solve would have said
 # so and named the reason.
 PLAN_NOT_CONSTRUCTED = "plan_not_constructed"
+# A replan the solver came back from with nothing within its budget, handed a
+# constructed schedule instead of no plan: on a replan no plan stops the run, and
+# where only durations moved a schedule is known to exist (design.md D66).
+PLAN_CONSTRUCTED_AFTER_SOLVER = "plan_constructed_after_solver"
 INFEASIBLE = "infeasible"
 
 # Consumable resources (§4.7, §6.10, §9.3). The model is in effect when some mode
