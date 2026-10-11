@@ -403,7 +403,7 @@ def test_once_the_condition_is_in_the_decision_is_gone():
               **{"expansion": arms((("Each", 0, "Choose"), "else"))}}
     report = schedule(workflow, env, document_path=status)
     assert report.ok, [(d.code, d.message) for d in report.diagnostics]
-    nodes = [d["node"] for d in _decisions(report.plan)]
+    nodes = sorted(d["node"] for d in _decisions(report.plan))
     assert nodes == [["Each", 1, "Choose"], ["Each", 2, "Choose"]]
     polish = [a for a in report.plan["activities"]
               if a["kind"] == "processing" and a["node"] == ["Each", 0, "Choose"]]
@@ -439,8 +439,13 @@ def test_the_arm_not_planned_is_checked():
     assert [d.code for d in found] == ["arm_unplannable"] * 3
     assert "'Each/0/Choose' on its else arm" in found[0].message
     assert "arc_unreachable" in found[0].message
-    # Asked not to -- a replan where nothing it reads has changed -- it plans.
-    assert schedule(workflow, blocked, document_path=document, check_arms=False).ok
+    # Asked not to -- a replan where nothing it reads has changed -- the checks of the
+    # switched expansion are skipped, but each branch is still planned locally on every
+    # plan, since what it keeps for itself comes from that (design.md D66): an arm with
+    # no way in is still no way to plan the branch.
+    skipped = schedule(workflow, blocked, document_path=document, check_arms=False)
+    assert not skipped.ok
+    assert {d.code for d in skipped.diagnostics if d.severity == ERROR} == {"arm_unplannable"}
 
 
 def test_a_branch_only_on_the_other_arm_is_switched_with_it():

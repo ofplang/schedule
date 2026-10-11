@@ -117,7 +117,13 @@ DECISION_KEYS = {
 # its node path (`[P, "@out", port]`), when, and -- for an Object -- the spot it waits
 # on. Rendered from the workflow, never run, and never read back.
 GATE_KEYS = {"kind", "job", "status", "start", "end", "node", "spot"}
-ACTIVITY_KINDS = {"processing", "transport", "relay", "replenishment", "decision", "gate"}
+# A reservation (§6.16) is what a region decided only during the run keeps for itself:
+# the region's node path, the window, and the spots. Rendered on every plan, never run,
+# never read back.
+RESERVATION_KEYS = {"kind", "job", "status", "start", "end", "node", "spots"}
+ACTIVITY_KINDS = {
+    "processing", "transport", "relay", "replenishment", "decision", "gate", "reservation",
+}
 ARC_ENDPOINT_KEYS = {"node", "port", "index"}
 
 
@@ -663,7 +669,8 @@ def _check_activity(
     ):
         diags.error(
             errors.UNKNOWN_ACTIVITY_KIND,
-            "kind must be processing, transport, relay, replenishment, decision or gate",
+            "kind must be processing, transport, relay, replenishment, decision, gate or "
+            "reservation",
             shape.join(base, "kind"),
             at=kind_node,
         )
@@ -677,6 +684,7 @@ def _check_activity(
         "replenishment": REPLENISHMENT_KEYS,
         "decision": DECISION_KEYS,
         "gate": GATE_KEYS,
+        "reservation": RESERVATION_KEYS,
     }[kind]
     shape.unknown_keys(amap, allowed, base, diags)
     _check_job(amap.get("job"), base, kind, job_ids, diags)
@@ -693,6 +701,8 @@ def _check_activity(
         _check_decision(amap, base, diags)
     elif kind == "gate":
         _check_gate(amap, base, diags)
+    elif kind == "reservation":
+        _check_reservation(amap, base, diags)
     else:
         _check_relay(amap, base, diags)
 
@@ -994,6 +1004,21 @@ def _check_gate(amap: YMap, base: str, diags: Diagnostics) -> None:
     spot = amap.get("spot")
     if spot is not None:
         _check_qualified_spot(spot, shape.join(base, "spot"), diags)
+
+
+def _check_reservation(amap: YMap, base: str, diags: Diagnostics) -> None:
+    """A `reservation` (§6.16): a region's node path and the spots it keeps, a
+    non-empty list of qualified spots."""
+    _check_node_path(shape.require(amap, "node", base, diags), shape.join(base, "node"), diags)
+    spots = shape.require(amap, "spots", base, diags)
+    where = shape.join(base, "spots")
+    if spots is None:
+        return
+    if not isinstance(spots, YSeq) or not spots.items:
+        diags.error(errors.WRONG_TYPE, "spots must be a non-empty list", where, at=spots)
+        return
+    for i, spot in enumerate(spots.items):
+        _check_qualified_spot(spot, f"{where}[{i}]", diags)
 
 
 def _check_relay(amap: YMap, base: str, diags: Diagnostics) -> None:

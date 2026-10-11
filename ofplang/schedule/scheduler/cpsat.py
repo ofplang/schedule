@@ -42,6 +42,7 @@ from ofplang.schedule.scheduler.model import JobSpec, Mode
 from ofplang.schedule.scheduler.result import (  # noqa: E402
     ProcessingResult,
     RefillResult,
+    ReservationResult,
     Solution,
     TransportResult,
 )
@@ -133,6 +134,15 @@ def solve(
         interchangeable = interchangeable_classes(instance, fixation)
     pools = aggregatable_transporters(instance, interchangeable)
     spot_pools = aggregatable_spots(instance, interchangeable)
+    # A spot a region may keep for itself (design.md D66) is kept as *that* spot, so its
+    # class is not collapsed: which bay a stay gets is decided after the solve, and a
+    # reservation has to know before.
+    reserved = frozenset().union(
+        *(r.possible_spots(instance) for r in instance.reservations)
+    ) if instance.reservations else frozenset()
+    if reserved:
+        tainted = {spot_pools[s][0] for s in reserved if s in spot_pools}
+        spot_pools = {s: p for s, p in spot_pools.items() if p[0] not in tainted}
 
     # Which job each activity belongs to (§6.11), and what each job asks of the model.
     # With no roster this is one implicit job named `""`, so the per-job machinery
@@ -198,13 +208,18 @@ def solve(
     def add(mapping: dict[str, list], key: str, interval) -> None:
         mapping.setdefault(key, []).append(interval)
 
-    def hold_spot(spot: str, interval) -> None:
+    # Who holds each spot interval -- `("a", activity)` or `("r", arc)` -- so a region's
+    # reservation can keep everything *but* its own work off its spots (D66).
+    spot_owned: dict[str, list] = {}
+
+    def hold_spot(spot: str, interval, owner: tuple[str, int]) -> None:
         """Put an interval into the resource that spot belongs to: its own
         non-overlap, or its class's capacity resource where one was collapsed.
         Which bay it ends up being is decided after the solve (`spotpool`)."""
         pool = spot_pools.get(spot)
         if pool is None:
             add(spot_iv, spot, interval)
+            spot_owned.setdefault(spot, []).append((interval, owner))
         else:
             add(pool_iv, pool[0], interval)
 
@@ -259,7 +274,7 @@ def solve(
             if fx is not None and fx.status == "cancelled":
                 continue
             for spot in set(mode.input_spots.values()) | set(mode.output_spots.values()):
-                hold_spot(spot, iv)
+                hold_spot(spot, iv, ("a", i))
             # A non-accessing mode holds no device (§4.4.2): its spots are bound
             # above like any other mode's, but nothing here enters a device's
             # NoOverlap, so the machine stays free while the material rests on it.
@@ -401,11 +416,13 @@ def solve(
             hold_spot(
                 opt.from_spot,
                 model.NewOptionalIntervalVar(e_src, src_size, b, present, f"si{r}_{k}"),
+                ("r", r),
             )
             dst_size = model.NewIntVar(0, horizon, f"ds{r}_{k}")
             hold_spot(
                 opt.to_spot,
                 model.NewOptionalIntervalVar(a, dst_size, s_dst, present, f"di{r}_{k}"),
+                ("r", r),
             )
         model.AddExactlyOne(lits)
         if fr is not None:
@@ -457,6 +474,12 @@ def solve(
         model, instance, fixation, mode_lits, horizon, now, device_iv, running_task_margin
     )
     _add_resources(model, instance, fixation, mode_lits, starts, refills)
+
+    # --- what each undecided region keeps for itself (design.md D66) ---
+    kept = _add_reservations(
+        model, instance, fixation, now, horizon, starts, ends, arc_starts, mode_lits,
+        spot_owned,
+    )
 
     # --- resource non-overlap ---
     for intervals in spot_iv.values():
@@ -722,7 +745,125 @@ def solve(
         job_completions={
             job_id: solver.Value(c) for job_id, c in completions.items() if job_id
         },
+        reservations=tuple(
+            ReservationResult(
+                region,
+                solver.Value(start),
+                solver.Value(end),
+                tuple(sorted(p for p, present in spots.items() if solver.Value(present))),
+            )
+            for region, start, end, open_, spots in kept
+            if solver.Value(open_)
+        ),
     )
+
+
+def _add_reservations(
+    model, instance, fixation, now, horizon, starts, ends, arc_starts, mode_lits, spot_owned
+) -> list:
+    """Keep every undecided region's spots free of everything but its own work while
+    its outcome is open (design.md D66), and return what was kept, per region:
+    `(region, window start, window end, open, {spot: kept})` -- each a model variable.
+
+    The window opens at the region's decision (a branch: the end of its condition's
+    producers) or its first start (a loop), never before `now` -- the past is history
+    and is not re-decided -- and closes at the start of the last of its gates. A window
+    that has closed by `now` keeps nothing. Which spots are kept is read off the plan:
+    a branch's from the candidate chosen for it, one of them exactly, its assumed
+    outcome held to that candidate's modes; a loop's from the modes its last invocation
+    runs in, and the candidates of the branches inside it.
+
+    Each kept spot gets the window as an interval, and a non-overlap with every interval
+    on the spot that is not the region's own. The windows of two regions keeping one
+    spot, neither inside the other, do not overlap either -- two regions keeping one
+    spot take turns -- which is a constraint of its own: another region's window has
+    that region's own work inside it, so the two can never share one non-overlap."""
+    if not instance.reservations:
+        return []
+    chosen: dict = {}
+    for res in instance.reservations:
+        lits = []
+        for c, (_spots, pins) in enumerate(res.candidates):
+            x = model.NewBoolVar(f"cand{len(chosen)}_{c}")
+            for i, m in pins:
+                model.AddImplication(x, mode_lits[i][m])
+            lits.append(x)
+        if lits:
+            model.AddExactlyOne(lits)
+        chosen[res.region] = lits
+
+    kept: list = []
+    windows: dict[str, list] = {}
+    for n, res in enumerate(instance.reservations):
+        opened = model.NewIntVar(0, horizon, f"rs{n}")
+        if res.opens_after:
+            model.AddMaxEquality(opened, [ends[i] for i in res.opens_after])
+        else:
+            firsts = [starts[i] for i in sorted(res.members)]
+            firsts += [arc_starts[r] for r in sorted(res.arcs)]
+            model.AddMinEquality(opened, firsts)
+        start = model.NewIntVar(0, horizon, f"rss{n}")
+        model.AddMaxEquality(start, [opened, model.NewConstant(now)])
+        closed = model.NewIntVar(0, horizon, f"re{n}")
+        model.AddMaxEquality(closed, [starts[g] for g in res.closes] or [start])
+        end = model.NewIntVar(0, horizon, f"ree{n}")
+        model.AddMaxEquality(end, [closed, start])
+        open_ = model.NewBoolVar(f"ro{n}")
+        model.Add(closed > start).OnlyEnforceIf(open_)
+        model.Add(closed <= start).OnlyEnforceIf(open_.Not())
+        size = model.NewIntVar(0, horizon, f"rz{n}")
+
+        sources: dict[str, list] = {}
+        for c, (spots, _pins) in enumerate(res.candidates):
+            for spot in spots:
+                sources.setdefault(spot, []).append(chosen[res.region][c])
+        for i in res.derived:
+            for m, mode in enumerate(instance.activities[i].modes):
+                for spot in set(mode.input_spots.values()) | set(mode.output_spots.values()):
+                    sources.setdefault(spot, []).append(mode_lits[i][m])
+        for inner in res.borrowed:
+            inner_lits = chosen.get(inner, [])
+            inner_res = next(r for r in instance.reservations if r.region == inner)
+            for c, (spots, _pins) in enumerate(inner_res.candidates):
+                for spot in spots:
+                    sources.setdefault(spot, []).append(inner_lits[c])
+        for (i, a), (j, b) in res.excluded:
+            model.AddBoolOr([mode_lits[i][a].Not(), mode_lits[j][b].Not()])
+
+        presence: dict[str, object] = {}
+        for spot, lits in sorted(sources.items()):
+            unique = list(dict.fromkeys(lits))
+            wanted = unique[0] if len(unique) == 1 else model.NewBoolVar(f"rw{n}_{spot}")
+            if len(unique) > 1:
+                model.AddMaxEquality(wanted, unique)
+            present = model.NewBoolVar(f"rp{n}_{spot}")
+            model.AddBoolAnd([wanted, open_]).OnlyEnforceIf(present)
+            model.AddBoolOr([wanted.Not(), open_.Not()]).OnlyEnforceIf(present.Not())
+            presence[spot] = present
+            window = model.NewOptionalIntervalVar(start, size, end, present, f"rv{n}_{spot}")
+            windows.setdefault(spot, []).append((res, window))
+        kept.append((res.region, start, end, open_, presence))
+
+    def own(res, owner) -> bool:
+        kind, index = owner
+        return index in (res.members if kind == "a" else res.arcs)
+
+    def nested(a, b) -> bool:
+        return (tuple(a.region[: len(b.region)]) == tuple(b.region)
+                or tuple(b.region[: len(a.region)]) == tuple(a.region))
+
+    for spot, entries in windows.items():
+        for res, window in entries:
+            others = [iv for iv, owner in spot_owned.get(spot, []) if not own(res, owner)]
+            model.AddNoOverlap([*others, window])
+        if not any(nested(a, b) for k, (a, _w) in enumerate(entries) for b, _x in entries[k + 1:]):
+            model.AddNoOverlap([window for _res, window in entries])
+            continue
+        for k, (a, first) in enumerate(entries):
+            for b, second in entries[k + 1:]:
+                if not nested(a, b):
+                    model.AddNoOverlap([first, second])
+    return kept
 
 
 class _SolutionRecorder(cp_model.CpSolverSolutionCallback):

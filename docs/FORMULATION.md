@@ -1387,6 +1387,36 @@ What is *not* in the model is the judgement: whether anything of the job is stil
 the laboratory is a fact about the room, so leaving is instructed and refused only
 where the document contradicts the instruction (SPEC §6.11, §10.4).
 
+## J9. Reservations of undecided regions (adds to §6)
+
+A region $\rho$ -- a branch or `do_while` whose condition is produced during the run and
+is not decided yet (SPEC §6.16, design.md D66) -- has its own activities and moves
+$T_\rho$, $R_\rho$ (everything under its node path, and every move into, inside or out of
+it), and a window
+
+$$w^s_\rho = \max\Big(now,\; \max_{k \in K_\rho} e_k\Big) \text{ (a branch)},\qquad
+w^s_\rho = \max\Big(now,\; \min_{i \in T_\rho} s_i,\ \min_{r \in R_\rho} a_r\Big)
+\text{ (a loop)},\qquad
+w^e_\rho = \max\Big(w^s_\rho,\; \max_{g \in G_\rho} s_g\Big),$$
+
+$K_\rho$ the producers of its condition and $G_\rho$ its gates. The spots it keeps are a
+choice: for a branch, exactly one candidate $c \in C_\rho$ is taken ($y_{\rho c}$,
+$\sum_c y_{\rho c} = 1$), which fixes the modes of its assumed outcome
+($y_{\rho c} \Rightarrow x_{im}$ for each pinned $(i, m)$) and keeps the candidate's spots
+$U_c$; for a loop, a spot is kept where a mode of its last invocation that binds it is
+taken, or a candidate of an undecided branch inside it that contains it. With
+$z_{\rho p}$ the resulting "spot $p$ is kept" literal and $o_\rho \Leftrightarrow
+w^e_\rho > w^s_\rho$, the interval $[w^s_\rho, w^e_\rho]$ present under
+$z_{\rho p} \wedge o_\rho$ joins
+
+$$\textsc{NoOverlap}\big(\{\text{every interval on } p \text{ not of } T_\rho \cup R_\rho\}
+\cup \{[w^s_\rho, w^e_\rho]\}\big),$$
+
+and the windows on $p$ of two regions neither of which contains the other share a
+$\textsc{NoOverlap}$ of their own. A loop's holding gate and the activity its Object
+goes to first in the next invocation may not take a pair of modes with no route between
+their spots. Without an undecided region none of this exists and §6 is unchanged.
+
 ## Reduction to Part I
 
 With one job, everything above is vacuous or identical to Part I:

@@ -166,7 +166,9 @@ def check_plan_inventories(plan: dict, env, inventories: dict | None) -> list[st
 
 def _claims(instance: Instance, solution: Solution):
     """Every claim the schedule makes on a resource, as
-    `(kind, resource, start, end, what)`.
+    `(kind, resource, start, end, what, owner)` -- `owner` is `("a", activity)` or
+    `("r", move)`, which a region's reservation needs to tell its own work from the
+    rest (design.md D66).
 
     Read off the formulation: an activity holds each spot its mode binds and each
     device it runs on for its duration; a move holds its arm for its duration, its
@@ -175,34 +177,84 @@ def _claims(instance: Instance, solution: Solution):
     """
     # `what` is only ever printed, so it is whatever names the claim best: a node
     # path for an activity, a made-up label for a move's several claims.
-    claims: list[tuple[str, str, int, int, object]] = []
+    claims: list[tuple[str, str, int, int, object, tuple[str, int]]] = []
     by_activity = {p.activity: p for p in solution.processing}
     for placement in solution.processing:
         spots = {
             *placement.mode.input_spots.values(),
             *placement.mode.output_spots.values(),
         }
+        owner = ("a", placement.activity)
         for spot in spots:
-            claims.append(("spot", spot, placement.start, placement.end, placement.node))
+            claims.append(("spot", spot, placement.start, placement.end, placement.node, owner))
         if placement.mode.device_access:
             for device in placement.mode.devices:
-                claims.append(("device", device, placement.start, placement.end, placement.node))
+                claims.append(
+                    ("device", device, placement.start, placement.end, placement.node, owner)
+                )
     for index, move in enumerate(solution.transport):
         arc = instance.arcs[index]
         option = move.option
+        owner = ("r", index)
         if option.transporter is not None:
-            claims.append(("arm", option.transporter, move.start, move.end, f"arc{index}"))
+            claims.append(("arm", option.transporter, move.start, move.end, f"arc{index}", owner))
         if option.from_spot != option.to_spot:
             # A move reaches inside both machines, so it holds both for as long as
             # it takes -- once where they are the same machine, because an interval
             # registered twice would overlap itself.
             for device in {option.from_spot.split(".")[0], option.to_spot.split(".")[0]}:
-                claims.append(("device", device, move.start, move.end, f"arc{index}.dev"))
+                claims.append(("device", device, move.start, move.end, f"arc{index}.dev", owner))
             source = by_activity[arc.src_activity]
-            claims.append(("spot", option.from_spot, source.end, move.end, f"arc{index}.from"))
+            claims.append(
+                ("spot", option.from_spot, source.end, move.end, f"arc{index}.from", owner)
+            )
             target = by_activity[arc.dst_activity]
-            claims.append(("spot", option.to_spot, move.start, target.start, f"arc{index}.to"))
+            claims.append(
+                ("spot", option.to_spot, move.start, target.start, f"arc{index}.to", owner)
+            )
     return claims
+
+
+def _clash(start: int, end: int, other_start: int, other_end: int) -> bool:
+    """Whether two claims overlap: they may touch, and a zero-length one strictly
+    inside the other is a clash -- which is what `AddNoOverlap` does with a point."""
+    if start == end:
+        return other_start < start < other_end
+    if other_start == other_end:
+        return start < other_start < end
+    return start < other_end and other_start < end
+
+
+def _reservation_wrongs(instance: Instance, solution: Solution, claims) -> list[str]:
+    """What the plan does against the reservations it reports (design.md D66): work
+    that is not a region's own on a spot it keeps, inside its window, and two regions
+    -- neither inside the other -- keeping one spot at once."""
+    wrong: list[str] = []
+    by_region = {res.region: res for res in instance.reservations}
+    for kept in solution.reservations:
+        res = by_region.get(kept.region)
+        if res is None:
+            wrong.append(f"reservation of {kept.region}: no such region in this instance")
+            continue
+        for kind, name, start, end, what, (owner_kind, index) in claims:
+            if kind != "spot" or name not in kept.spots:
+                continue
+            if index in (res.members if owner_kind == "a" else res.arcs):
+                continue
+            if _clash(kept.start, kept.end, start, end):
+                wrong.append(
+                    f"spot {name}: {what} [{start},{end}] is inside the window "
+                    f"[{kept.start},{kept.end}] {kept.region} keeps it for"
+                )
+    for i, a in enumerate(solution.reservations):
+        for b in solution.reservations[i + 1:]:
+            nested = (tuple(a.region[: len(b.region)]) == tuple(b.region)
+                      or tuple(b.region[: len(a.region)]) == tuple(a.region))
+            if nested or not set(a.spots) & set(b.spots):
+                continue
+            if _clash(a.start, a.end, b.start, b.end):
+                wrong.append(f"{a.region} and {b.region} keep a spot at once")
+    return wrong
 
 
 def check_schedule(
@@ -302,19 +354,13 @@ def check_schedule(
     # zero-length claim strictly inside another is a clash too -- which is what
     # `AddNoOverlap` does with a point (§Parameters, design.md D54).
     claims = _claims(instance, solution)
-    for i, (kind, name, start, end, what) in enumerate(claims):
-        for other_kind, other_name, other_start, other_end, other in claims[i + 1 :]:
+    for i, (kind, name, start, end, what, _owner) in enumerate(claims):
+        for other_kind, other_name, other_start, other_end, other, _o in claims[i + 1 :]:
             if (kind, name) != (other_kind, other_name):
                 continue
-            if start == end:
-                clash = other_start < start < other_end
-            elif other_start == other_end:
-                clash = start < other_start < end
-            else:
-                clash = start < other_end and other_start < end
-            if clash:
+            if _clash(start, end, other_start, other_end):
                 wrong.append(
                     f"{kind} {name}: {what} [{start},{end}] overlaps {other} "
                     f"[{other_start},{other_end}]"
                 )
-    return wrong
+    return wrong + _reservation_wrongs(instance, solution, claims)

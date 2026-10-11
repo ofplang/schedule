@@ -29,7 +29,6 @@ from ofplang.schedule.core.identifiers import format_node_path
 from ofplang.schedule.core.yamlnode import YMap
 from ofplang.schedule.scheduler.envload import load_environment
 from ofplang.schedule.scheduler.instance import (
-    Instance,
     build_instance,
     job_membership,
     merge_instances,
@@ -44,7 +43,13 @@ from ofplang.schedule.scheduler.model import JobSpec, SourceLiteral, SourceRef, 
 from ofplang.schedule.scheduler.normalize import normalize
 from ofplang.schedule.scheduler.plan import render_plan
 from ofplang.schedule.scheduler.plancheck import check_plan_inventories, check_schedule
-from ofplang.schedule.scheduler.region import branch_candidates
+from ofplang.schedule.scheduler.region import (
+    branch_candidates,
+    branch_reservation,
+    cannot_go_on,
+    loop_reservation,
+    region_members,
+)
 from ofplang.schedule.scheduler.result import Solution
 from ofplang.schedule.scheduler.stats import SolveStats
 from ofplang.schedule.scheduler.status import ActivityFixation, ArcFixation, Fixation
@@ -1625,7 +1630,7 @@ def _switched_expansions(
 
 
 def _check_arms(
-    jobs, workflows, specs, bases, env, interface, roots, root, fixed
+    jobs, workflows, specs, bases, env, interface, roots, root, fixed, built=None
 ) -> list[Diagnostic]:
     """`arm_unplannable` for every branch planned on an assumed arm whose other arm
     could not be planned (design.md D64). Each such expansion goes through what the
@@ -1638,23 +1643,14 @@ def _check_arms(
             loop.assumed for loop in workflow.loops.values()
         ):
             continue
-        job_interface, job_expansion = roots[j]
-        # Every expansion that could be planned, by the branches and loops switched to
-        # reach it: the outcomes each undecided branch is then planned locally on.
-        outcomes: list[tuple[tuple, Instance]] = []
-        for chain, read, errs, paths in _switched_expansions(
-            job.workflow, job_interface, job_expansion, workflow
+        for chain, _read, errs, _paths, base, made in _switched_bases(
+            j, job, workflow, spec, env, interface, roots, jobs, built
         ):
-            problems = list(errs)
-            if read is not None and not errs:
-                base, built = _build_one(job, read, spec, env, interface, jobs)
-                problems += [d for d in built if d.severity == ERROR]
-                if base is not None:
-                    merged = merge_instances([*bases[:j], base, *bases[j + 1:]])
-                    _i, _f, normalized, checked = _normalize_and_check(merged, root, env, fixed)
-                    problems += [d for d in (*normalized, *checked) if d.severity == ERROR]
-                    if not problems:
-                        outcomes.append((paths, base))
+            problems = list(errs) + [d for d in made if d.severity == ERROR]
+            if base is not None:
+                merged = merge_instances([*bases[:j], base, *bases[j + 1:]])
+                _i, _f, normalized, checked = _normalize_and_check(merged, root, env, fixed)
+                problems += [d for d in (*normalized, *checked) if d.severity == ERROR]
             if problems:
                 where = " with ".join(chain)
                 said = "; ".join(f"{d.code}: {d.message}" for d in problems)
@@ -1670,43 +1666,112 @@ def _check_arms(
                     job,
                     jobs,
                 )
-        found += _region_candidates(job, jobs, workflow, bases[j], outcomes)
     return found
 
 
-def _region_candidates(job, jobs, workflow, assumed, outcomes) -> list[Diagnostic]:
-    """`arm_unplannable` for every branch planned on an assumed arm that has no
-    candidate (design.md D66, stage 3): no way to plan each of its outcomes on its own,
-    within its own spots, with every Object it hands on left where all of them can
-    leave it in at most one move.
+def _switched_bases(j, job, workflow, spec, env, interface, roots, jobs, built=None) -> list:
+    """`_switched_expansions` of job `j`, each built: `(chain, read, reader errors, paths
+    switched, instance or None, what building said)`. Kept in `built` by job, so the arm
+    check and the reservations read the same expansions once."""
+    if built is not None and j in built:
+        return built[j]
+    job_interface, job_expansion = roots[j]
+    found = []
+    for chain, read, errs, paths in _switched_expansions(
+        job.workflow, job_interface, job_expansion, workflow
+    ):
+        base, made = (None, [])
+        if read is not None and not errs:
+            base, made = _build_one(job, read, spec, env, interface, jobs)
+        found.append((chain, read, errs, paths, base, made))
+    if built is not None:
+        built[j] = found
+    return found
 
-    Its outcomes are the expansion as planned and every other one reached by switching
-    only that branch, or branches inside it (`region.branch_candidates`). The
-    candidates themselves are a later stage's to use; here they are only asked for."""
-    found: list[Diagnostic] = []
-    for path, gate in workflow.branch_gates.items():
-        if not gate.assumed:
+
+def _reservations(
+    jobs, workflows, specs, bases, env, interface, roots, instance, fixation, built
+) -> tuple[tuple, list[Diagnostic]]:
+    """What every undecided region keeps for itself in `instance` (design.md D66, stage
+    4), and `arm_unplannable` for each undecided branch with no candidate.
+
+    A branch is planned locally on its outcomes -- the expansion as planned and every one
+    reached by switching only it or branches inside it (`region.branch_candidates`) --
+    and keeps the spots of the candidate the solve chooses. A loop keeps what its last
+    invocation runs on, the candidates of the branches inside that invocation included,
+    with its holding gates held to spots the next invocation can be reached from (read
+    off the expansion one invocation longer).
+
+    A branch something of which has already started keeps nothing: nothing of it starts
+    before its decision, so it is decided in all but name -- a run states it before the
+    next plan, and a document that does not is planned as the history says."""
+    found: list = []
+    diagnostics: list[Diagnostic] = []
+    for j, (job, workflow, spec) in enumerate(zip(jobs, workflows, specs, strict=True)):
+        branches = {p: g for p, g in workflow.branch_gates.items() if g.assumed}
+        loops = {p: loop for p, loop in workflow.loops.items() if not loop.ended}
+        if not branches and not loops:
             continue
-        inside = [
-            instance for paths, instance in outcomes
-            if all(tuple(p)[: len(path)] == tuple(path) for p in paths)
-        ]
-        region = ((job.id,) if job.id else ()) + tuple(path)
-        candidates, why = branch_candidates(region, [assumed, *inside])
-        if not candidates:
-            found += _attribute(
-                [
-                    Diagnostic(
-                        errors.ARM_UNPLANNABLE,
-                        f"branch {format_node_path(path)!r} cannot be planned whichever arm "
-                        f"the run takes: {why}",
-                        "expansion",
-                    )
-                ],
-                job,
-                jobs,
+        prefix = (job.id,) if job.id else ()
+        outcomes = [
+            (paths, base)
+            for _chain, _read, errs, paths, base, made in _switched_bases(
+                j, job, workflow, spec, env, interface, roots, jobs, built
             )
-    return found
+            if base is not None and not errs and not [d for d in made if d.severity == ERROR]
+        ]
+        for path, gate in branches.items():
+            inside = [
+                base for paths, base in outcomes
+                if all(tuple(p)[: len(path)] == tuple(path) for p in paths)
+            ]
+            region = prefix + tuple(path)
+            members, _arcs = region_members(instance, region)
+            if any(i in fixation.activities for i in members):
+                continue
+            candidates, why = branch_candidates(region, [bases[j], *inside])
+            kept = (
+                branch_reservation(instance, region, [prefix + tuple(w) for w in gate.waits],
+                                   candidates)
+                if candidates else None
+            )
+            if kept is None:
+                diagnostics += _attribute(
+                    [
+                        Diagnostic(
+                            errors.ARM_UNPLANNABLE,
+                            f"branch {format_node_path(path)!r} cannot be planned whichever "
+                            f"arm the run takes: {why or 'no candidate fits this plan'}",
+                            "expansion",
+                        )
+                    ],
+                    job,
+                    jobs,
+                )
+                continue
+            found.append(kept)
+        for path, loop in loops.items():
+            last = tuple(path) + (loop.count - 1,)
+            going_on = next((base for paths, base in outcomes if paths == (path,)), None)
+            borrowed = [prefix + tuple(p) for p in branches if tuple(p[: len(last)]) == last]
+            kept = loop_reservation(instance, prefix + tuple(path), loop.count, borrowed, going_on)
+            if cannot_go_on(kept, instance):
+                diagnostics += _attribute(
+                    [
+                        Diagnostic(
+                            errors.ARM_UNPLANNABLE,
+                            f"loop {format_node_path(path)!r} cannot go on to invocation "
+                            f"{loop.count + 1}: no move takes what an invocation leaves to where "
+                            "the next one starts",
+                            "expansion",
+                        )
+                    ],
+                    job,
+                    jobs,
+                )
+                continue
+            found.append(kept)
+    return tuple(found), diagnostics
 
 
 def _normalize_and_check(base, root, env, fixed: _Fixed):
@@ -2074,13 +2139,25 @@ def _run(
     # may yet take the other, so that one is held to the same checks. Asked for by the
     # caller, who knows when the answer can have changed -- a run, at its first plan and
     # whenever a machine goes down or comes back, not on every replan.
+    built: dict = {}
     if check_arms:
         unplannable = _check_arms(
-            jobs, workflows, specs, job_bases, env, interface, readings, root, fixed
+            jobs, workflows, specs, job_bases, env, interface, readings, root, fixed, built
         )
         diagnostics += unplannable
         if unplannable:
             return ScheduleReport(None, None, None, diagnostics)
+
+    # What each region decided only during the run keeps for itself (design.md D66):
+    # asked on every plan, since what a plan places has to leave those spots free.
+    reservations, unplannable = _reservations(
+        jobs, workflows, specs, job_bases, env, interface, readings, instance, fixation, built
+    )
+    diagnostics += unplannable
+    if unplannable:
+        return ScheduleReport(None, None, None, diagnostics)
+    if reservations:
+        instance = replace(instance, reservations=reservations)
 
     # Which of this laboratory's resources this instance never tells apart (§10.4).
     # After reachability, so the classes are read off the routes that actually

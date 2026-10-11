@@ -195,6 +195,17 @@ def render_plan(
             entry["seq"] = t.seq
         activities.append(entry)
 
+    # What each region decided only during the run keeps for itself (§6.16, design.md
+    # D66): the region, the window, and the spots. Nothing runs it.
+    for kept in solution.reservations:
+        entry = {"kind": "reservation"}
+        job, node = _split_job(kept.region, job_ids)
+        _set_job(entry, job)
+        entry.update(
+            {"start": kept.start, "end": kept.end, "node": node, "spots": list(kept.spots)}
+        )
+        activities.append(entry)
+
     # A stable, readable order: by time, then processing before transport.
     for r in solution.replenishment:
         # A refill has no workflow provenance -- the scheduler decided to run it --

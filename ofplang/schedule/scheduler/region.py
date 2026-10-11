@@ -430,3 +430,212 @@ def _mode_image(shape: _Shape, path: NodePath, mode: Mode, swap) -> Mode | None:
         return None
     wanted = _mode_key(mode, swap)
     return next((m for m in act.modes if _mode_key(m, _IDENTITY) == wanted), None)
+
+
+# --------------------------------------------------------------------------
+# What the plan keeps for a region (design.md D66, stage 4).
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Reservation:
+    """The spots an undecided region keeps for itself, and when, by index into one
+    instance (design.md D66).
+
+    While the region's outcome is open, nothing outside it may be on those spots: what
+    the region may yet need is then always free when it needs it, whichever outcome
+    happens, and the plan only gets later -- never stuck -- when it is not the one
+    assumed.
+
+    **When.** A branch keeps them from its decision -- the end of its condition's
+    producers (`opens_after`) -- to its exit, the start of the last of its gates
+    (`closes`); a loop from its first start to its exit (`opens_with_start`), since the
+    next invocation may want any of them at any moment until the last condition says.
+
+    **What.** Read off the plan, so a reservation can be an outcome of the same solve:
+    a branch keeps the spots of the candidate chosen for it (`candidates`, one chosen,
+    each with the modes its assumed outcome is held to, `pins`); a loop the spots of
+    the modes its last invocation runs in (`derived`), and those of the candidate
+    chosen for each undecided branch inside it (`borrowed`). `excluded` are pairs of
+    mode choices that cannot both be taken -- a loop's holding gate on a spot its next
+    invocation cannot be reached from.
+
+    Its own activities and moves (`members`, `arcs`) are on those spots as much as they
+    like; only the rest is kept off."""
+
+    region: NodePath
+    members: frozenset[int]
+    arcs: frozenset[int]
+    opens_after: tuple[int, ...] = ()
+    opens_with_start: bool = False
+    closes: tuple[int, ...] = ()
+    candidates: tuple[tuple[frozenset[str], tuple[tuple[int, int], ...]], ...] = ()
+    derived: tuple[int, ...] = ()
+    borrowed: tuple[NodePath, ...] = ()
+    excluded: tuple[tuple[tuple[int, int], tuple[int, int]], ...] = ()
+
+    def possible_spots(self, instance: Instance) -> frozenset[str]:
+        """Every spot this reservation may come to keep, whichever choices are made."""
+        spots: set[str] = set()
+        for chosen, _pins in self.candidates:
+            spots |= chosen
+        for i in self.derived:
+            for mode in instance.activities[i].modes:
+                spots.update(mode.input_spots.values())
+                spots.update(mode.output_spots.values())
+        return frozenset(spots)
+
+
+def _occupies(mode: Mode) -> tuple:
+    """What a mode occupies: its devices and the spots of its ports."""
+    return (
+        tuple(mode.devices),
+        tuple(sorted(mode.input_spots.items())),
+        tuple(sorted(mode.output_spots.items())),
+    )
+
+
+def region_members(
+    instance: Instance, region: NodePath
+) -> tuple[frozenset[int], frozenset[int]]:
+    """The activities and moves of `region` in `instance`: everything under its path --
+    its gates included -- the relays of its moves, and every move into, inside or out
+    of it."""
+
+    def inside(path: NodePath) -> bool:
+        return tuple(path[: len(region)]) == tuple(region)
+
+    arcs = frozenset(
+        r for r, arc in enumerate(instance.arcs)
+        if inside(arc.arc.src.node) or inside(arc.arc.dst.node)
+    )
+    members = frozenset(
+        i for i, act in enumerate(instance.activities)
+        if (act.boundary is None and act.relay is None and inside(act.node))
+        or (act.relay is not None
+            and (inside(act.relay.arc.src.node) or inside(act.relay.arc.dst.node)))
+    )
+    return members, arcs
+
+
+def branch_reservation(
+    instance: Instance,
+    region: NodePath,
+    waits: Sequence[NodePath],
+    candidates: Sequence[Candidate],
+) -> Reservation | None:
+    """What an undecided branch at `region` keeps, from its candidates -- each held to
+    the modes its assumed outcome runs in and the spots its gates wait on. A candidate
+    whose modes this instance does not offer is left out; None where none is left."""
+    members, arcs = region_members(instance, region)
+    index = {instance.activities[i].node: i for i in members}
+    kept: list[tuple[frozenset[str], tuple[tuple[int, int], ...]]] = []
+    for candidate in candidates:
+        pins: list[tuple[int, int]] = []
+        for path, mode in candidate.plans[0].items():
+            i = index.get(path)
+            if i is None:
+                break
+            modes = instance.activities[i].modes
+            spot = candidate.exits.get(path)
+            if spot is not None:
+                found = [k for k, x in enumerate(modes) if x.input_spots.get(GATE_IN) == spot]
+            else:
+                # By what the mode occupies, not by the object: a member the history has
+                # fixed carries its mode as read back from the plan (`normalize`).
+                found = [k for k, x in enumerate(modes) if _occupies(x) == _occupies(mode)]
+            if not found:
+                break
+            pins.append((i, found[0]))
+        else:
+            kept.append((candidate.spots, tuple(sorted(pins))))
+    if not kept:
+        return None
+    by_path = {act.node: i for i, act in enumerate(instance.activities) if act.relay is None}
+    return Reservation(
+        region=region,
+        members=members,
+        arcs=arcs,
+        opens_after=tuple(by_path[w] for w in waits if w in by_path),
+        closes=tuple(sorted(i for i in members if instance.activities[i].gate)),
+        candidates=tuple(kept),
+    )
+
+
+def loop_reservation(
+    instance: Instance,
+    region: NodePath,
+    count: int,
+    borrowed: Sequence[NodePath],
+    going_on: Instance | None,
+) -> Reservation:
+    """What an undecided loop at `region` keeps: the spots of the modes its last
+    invocation runs in, and its holding gates' -- the next invocation runs the same
+    modes (design.md D66 D3) -- with each undecided branch inside that invocation's
+    candidate spots (`borrowed`).
+
+    `going_on` is the instance with one invocation more, where the moves from the last
+    holding gates into the next invocation exist: a gate spot the next invocation's
+    first steps cannot be reached from, in the modes the last one ran, is excluded."""
+    members, arcs = region_members(instance, region)
+    last = tuple(region) + (count - 1,)
+    derived = tuple(sorted(
+        i for i in members
+        if tuple(instance.activities[i].node[: len(last)]) == last
+    ))
+    return Reservation(
+        region=region,
+        members=members,
+        arcs=arcs,
+        opens_with_start=True,
+        closes=tuple(sorted(i for i in members if instance.activities[i].gate)),
+        derived=derived,
+        borrowed=tuple(borrowed),
+        excluded=_unreachable_pairs(instance, region, count, going_on),
+    )
+
+
+def cannot_go_on(reservation: Reservation, instance: Instance) -> bool:
+    """Whether a loop's `excluded` pairs leave some holding gate and the activity its
+    Object goes to next with no choice at all: then the loop can never go on, whatever
+    the plan chooses."""
+    pairs: dict[tuple[int, int], int] = {}
+    for (gate, _g), (receiver, _m) in reservation.excluded:
+        pairs[(gate, receiver)] = pairs.get((gate, receiver), 0) + 1
+    return any(
+        count == len(instance.activities[gate].modes) * len(instance.activities[receiver].modes)
+        for (gate, receiver), count in pairs.items()
+    )
+
+
+def _unreachable_pairs(
+    instance: Instance, region: NodePath, count: int, going_on: Instance | None
+) -> tuple[tuple[tuple[int, int], tuple[int, int]], ...]:
+    """(gate mode, receiver mode) pairs with no move between them: the last invocation's
+    holding gate on a spot, and the activity that takes the Object first in the next
+    invocation -- read as its counterpart in the last one -- on a spot it cannot be
+    moved to from there."""
+    if going_on is None:
+        return ()
+    index = {act.node: i for i, act in enumerate(instance.activities) if act.relay is None}
+    nxt = tuple(region) + (count,)
+    env = instance.env
+    pairs: list[tuple[tuple[int, int], tuple[int, int]]] = []
+    for arc in going_on.arcs:
+        src, dst = arc.arc.src, arc.arc.dst
+        if GATE_OUT not in src.node or tuple(dst.node[: len(nxt)]) != nxt:
+            continue
+        gate = index.get(src.node)
+        receiver = index.get(tuple(region) + (count - 1,) + tuple(dst.node[len(nxt):]))
+        if gate is None or receiver is None:
+            continue
+        key = slot_key(dst)
+        for g, gm in enumerate(instance.activities[gate].modes):
+            held = gm.output_spots.get(GATE_OUT_PORT)
+            for m, rm in enumerate(instance.activities[receiver].modes):
+                wanted = rm.input_spots.get(key)
+                if held is None or wanted is None:
+                    continue
+                if held != wanted and not routes(env, held, wanted):
+                    pairs.append(((gate, g), (receiver, m)))
+    return tuple(pairs)

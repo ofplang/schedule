@@ -178,7 +178,9 @@ activity for each Object-bearing arc (§4.5), and a **replenishment** activity
 refilling a device's consumable resources (§4.7.1). Transport activities may be
 joined by **relay** activities where a move is re-routed (§6.4.1), and a region
 decided only during the run hands on what it makes through **gates** (§6.15):
-zero-length activities the plan places like any other and nothing runs.
+zero-length activities the plan places like any other and nothing runs. While such a
+region is open, the plan keeps the spots it may yet need for it (a **reservation**,
+§6.16).
 
 The first two come from the workflow — one per atomic node, one per Object-bearing
 arc — so how many there are is fixed before scheduling begins. Replenishments do
@@ -2067,6 +2069,45 @@ workflow with a region decided during the run has a different fingerprint (§6.1
 from 0.17.0 on than it had before: a document planned by an earlier release
 re-promises such a job on its first replan. A workflow without one is unchanged.
 
+### 6.16 Reservation
+
+```yaml
+- kind: reservation
+  job: a                        # as on any activity (§6.11)
+  start: 13                     # the window: the region's decision, or its first start
+  end: 25                       # ... to the start of the last of its gates
+  node: [Clean]                 # the region: a branch or do_while decided during the run
+  spots: [reader.slot, sink.basin]
+```
+
+What a branch or `do_while` whose condition is produced during the run (§2) keeps for
+itself while its outcome is open (design.md D66). Nothing that is not the region's own
+work is on those spots inside the window, so whichever outcome the run sees, what the
+region may yet need is free when it needs it: a plan made on an assumed outcome can only
+get later when the outcome is another, never stuck. The region's own work -- its
+activities and gates, every move into, inside or out of it -- is on them as it likes.
+
+- **The window.** A branch keeps its spots from its decision (the end of its
+  condition's producer) to its exit (the start of the last of its gates, §6.15); a loop
+  from its first start to its exit, since its next invocation may want any of them
+  until the last condition says it ends. Never from before `now`: what has run is
+  history. A window that has closed keeps nothing and is not rendered.
+- **The spots.** A branch keeps the spots of one of its **candidates** (§9.3, the local
+  plan): both arms', and the spot each gate's Object waits on -- the arm planned is held
+  to the candidate's modes, and which candidate is the solve's choice, among those the
+  environment's interchangeable machines offer. A loop keeps the spots of the modes its
+  last invocation runs in -- the next runs the same -- and those of the candidates of
+  the undecided branches inside it; and its holding gates wait only on spots its next
+  invocation can be reached from. A loop that cannot be reached from anywhere it leaves
+  its Objects is `arm_unplannable`.
+- **Two regions** keeping one spot, neither inside the other, take turns: their windows
+  do not overlap. A region inside another keeps its spots within the outer one's.
+
+A region decided -- a branch whose arm is stated, a loop that has ended -- keeps nothing;
+neither does a branch something of which has started (it is decided in all but name).
+A plan with no undecided region has no reservation and is what it always was. Rendered
+on every plan, from the workflow and the solve; never run, and never read back.
+
 ## 7. Execution status
 
 The execution status is the replanning input. It is the **same document as the
@@ -2427,8 +2468,8 @@ environment for processes the workflow never invokes are not checked.
   no spot all its outcomes reach, or an outcome that cannot be got through within its
   own spots -- is `arm_unplannable` too. The local plans favour the arm planned, then
   the others, and are carried over machines the region cannot tell apart; what they
-  find is what a later release keeps for the region, and this one only asks whether
-  there is one. A caller
+  find is what the plan keeps for the region (§6.16), so the local plan is made on
+  **every** plan, whether or not the checks above are asked for. A caller
   may skip the check (`check_arms`): a run does, on a replan where nothing it reads
   has changed. A loop planned to end where it is is checked going on, **one invocation
   more** -- not up to its limit, and not at all once a literal limit is reached. A

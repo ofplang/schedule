@@ -63,6 +63,17 @@ class RefillResult:
 
 
 @dataclass(frozen=True)
+class ReservationResult:
+    """What a region decided only during the run keeps for itself in this plan
+    (design.md D66): its node path, the window, and the spots kept over it."""
+
+    region: NodePath
+    start: int
+    end: int
+    spots: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Solution:
     outcome: str  # optimal | feasible | infeasible | unknown
     makespan: int | None
@@ -86,3 +97,6 @@ class Solution:
     # not a value derived some other way (design.md D38) -- so the caller needs it per
     # job rather than folded into `objective_values`. Empty for a single workflow.
     job_completions: dict[str, int] = field(default_factory=dict)
+    # What each undecided region keeps for itself (design.md D66): one per region
+    # whose window is still ahead. Empty for a plan without one.
+    reservations: tuple[ReservationResult, ...] = ()

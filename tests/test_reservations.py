@@ -1,0 +1,171 @@
+"""What an undecided region keeps for itself (design.md D66, stage 4).
+
+While a branch or loop decided only during the run is open, the plan keeps the spots
+it may yet need free of everything else: a branch from its decision to its exit, a
+loop from its first start to its exit. Then whichever outcome the run sees, nothing
+outside the region is standing where the region has to go, and a replan only has to
+make things later. These tests pin that on the plan: the `reservation` entries, what
+nothing else does inside them, and the regions that cannot be kept.
+"""
+
+from __future__ import annotations
+
+import copy
+from pathlib import Path
+
+import pytest
+import yaml
+
+from ofplang.schedule import JobInput, schedule, schedule_jobs, validate_document
+from tests.schedutil import kinds
+
+EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
+
+
+def _example(name: str):
+    def load(kind: str):
+        return yaml.safe_load((EXAMPLES / f"{name}.{kind}.yaml").read_text(encoding="utf-8"))
+
+    return load("workflow"), load("env"), load("document")
+
+
+def _two_rinses():
+    """Two jobs of the rinse-until-clean loop on one sink and one reader, with
+    nowhere to wait -- the laboratory where planning on an assumed end used to lock."""
+    workflow, env, document = _example("rinse_until_clean")
+    env = copy.deepcopy(env)
+    env["devices"] = [
+        d if d["id"] != "rack" else {**d, "spots": [*d["spots"], "in2", "out2"]}
+        for d in env["devices"]
+    ]
+    extra = []
+    for t in env["transports"]:
+        if t["from"] == "rack.in":
+            extra.append({**t, "from": "rack.in2"})
+        if t["to"] == "rack.out":
+            extra.append({**t, "to": "rack.out2"})
+    env["transports"] += extra
+    jobs = [
+        JobInput("a", copy.deepcopy(workflow)),
+        JobInput("b", copy.deepcopy(workflow)),
+    ]
+    roster = {
+        "activities": [],
+        "jobs": [
+            {"id": "a", "release": 0, "interface": document["interface"]},
+            {"id": "b", "release": 0, "interface": {
+                "inputs": {"plate": "rack.in2"}, "outputs": {"plate": "rack.out2"}}},
+        ],
+    }
+    return jobs, env, roster
+
+
+def _occupies(entry: dict, spot: str) -> bool:
+    if entry["kind"] == "processing":
+        spots = {*entry.get("input_spots", {}).values(), *entry.get("output_spots", {}).values()}
+        return spot in spots
+    if entry["kind"] == "transport":
+        moved = entry["from_spot"] != entry["to_spot"]
+        return moved and spot in (entry["from_spot"], entry["to_spot"])
+    return False
+
+
+def _inside(entry: dict, start: int, end: int) -> bool:
+    return entry["start"] < end and start < entry["end"]
+
+
+# --- loops -----------------------------------------------------------------------------
+
+
+def test_each_loop_keeps_its_spots_and_nothing_else_is_on_them():
+    jobs, env, roster = _two_rinses()
+    report = schedule_jobs(jobs, env, document_path=roster, random_seed=0)
+    assert report.ok, [(d.code, d.message) for d in report.diagnostics]
+    kept = kinds(report.plan, "reservation")
+    assert sorted(entry["job"] for entry in kept) == ["a", "b"]
+    for entry in kept:
+        assert entry["node"] == ["Clean"]
+        assert "sink.basin" in entry["spots"] and "reader.slot" in entry["spots"]
+        # Nothing of the other job is on a kept spot inside the window.
+        for other in report.plan["activities"]:
+            if other.get("job") == entry["job"] or "start" not in other:
+                continue
+            for spot in entry["spots"]:
+                if _occupies(other, spot):
+                    assert not _inside(other, entry["start"], entry["end"]), (entry, other)
+    # Two loops keeping the one sink take turns.
+    (first, second) = sorted(kept, key=lambda e: e["start"])
+    assert first["end"] <= second["start"]
+
+
+def test_the_plan_with_reservations_is_a_valid_document():
+    jobs, env, roster = _two_rinses()
+    plan = schedule_jobs(jobs, env, document_path=roster, random_seed=0).plan
+    result = validate_document(plan)
+    assert result.ok, [(d.code, d.message) for d in result.diagnostics]
+
+
+def test_a_loop_that_has_ended_keeps_nothing():
+    workflow, env, document = _example("rinse_until_clean")
+    ended = {**document, "expansion": {"loops": [{"node": ["Clean"], "count": 2, "ended": True}]}}
+    report = schedule(workflow, env, document_path=ended, random_seed=0)
+    assert report.ok and not kinds(report.plan, "reservation")
+
+
+# --- branches ----------------------------------------------------------------------------
+
+
+def test_each_undecided_branch_keeps_both_arms_and_its_exit():
+    workflow, env, document = _example("inspect_then_wash")
+    report = schedule(workflow, env, document_path=document, random_seed=0)
+    assert report.ok, [(d.code, d.message) for d in report.diagnostics]
+    kept = {tuple(entry["node"]): entry for entry in kinds(report.plan, "reservation")}
+    assert set(kept) == {("Each", i, "Choose") for i in range(3)}
+    for i, entry in enumerate(kept[("Each", i, "Choose")] for i in range(3)):
+        # The arm planned (the sink), the other (the buffer), and the rack slot the
+        # cup will be delivered to, which both arms reach in one move.
+        assert {"sink.basin", "buffer.pad", f"rack.{'abc'[i]}"} <= set(entry["spots"])
+    windows = sorted((e["start"], e["end"]) for e in kept.values())
+    for (_s, end), (start, _e) in zip(windows, windows[1:], strict=False):
+        assert end <= start  # the sink is kept by one cup at a time
+
+
+def test_a_branch_decided_keeps_nothing():
+    workflow, env, document = _example("inspect_then_wash")
+    stated = {**document, "expansion": {"arms": [
+        {"node": ["Each", i, "Choose"], "arm": "then"} for i in range(3)
+    ]}}
+    report = schedule(workflow, env, document_path=stated, random_seed=0)
+    assert report.ok and not kinds(report.plan, "reservation")
+
+
+@pytest.mark.parametrize("name", ["simple", "wash_or_polish", "storage"])
+def test_a_plan_with_nothing_undecided_keeps_nothing(name):
+    workflow, env, document = (
+        _example(name) if (EXAMPLES / f"{name}.document.yaml").is_file()
+        else (*_example_without_document(name), None)
+    )
+    report = schedule(workflow, env, document_path=document, random_seed=0)
+    assert report.ok and not kinds(report.plan, "reservation")
+
+
+def _example_without_document(name: str):
+    load = lambda kind: yaml.safe_load(  # noqa: E731
+        (EXAMPLES / f"{name}.{kind}.yaml").read_text(encoding="utf-8")
+    )
+    return load("workflow"), load("env")
+
+
+# --- the document --------------------------------------------------------------------------
+
+
+def test_a_reservation_entry_names_real_spots():
+    document = {
+        "time": {"unit": "second"},
+        "activities": [
+            {"kind": "reservation", "start": 0, "end": 5, "node": ["Clean"], "spots": []},
+            {"kind": "reservation", "start": 0, "end": 5, "node": ["Clean"], "spots": ["sink"]},
+        ],
+    }
+    codes = [d.code for d in validate_document(document).diagnostics]
+    assert "wrong_type" in codes and "malformed_qualified_spot" in codes

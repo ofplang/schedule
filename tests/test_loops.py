@@ -386,8 +386,12 @@ def test_going_on_is_checked_one_invocation_more():
     report = schedule(copy.deepcopy(RINSE), stuck, document_path=copy.deepcopy(DOCUMENT))
     (found_one,) = [d.message for d in report.diagnostics if d.code == "arm_unplannable"]
     assert found_one.startswith("loop 'Clean' going on to invocation 2 could not be planned")
-    assert schedule(copy.deepcopy(RINSE), stuck, document_path=copy.deepcopy(DOCUMENT),
-                    check_arms=False).ok
+    # Asked not to check, the loop is still held to going on where it is planned to be
+    # able to: what it keeps for itself needs the next invocation reachable (D66).
+    skipped = schedule(copy.deepcopy(RINSE), stuck, document_path=copy.deepcopy(DOCUMENT),
+                       check_arms=False)
+    assert [d.code for d in skipped.diagnostics if d.severity == ERROR] == ["arm_unplannable"]
+    assert "cannot go on to invocation 2" in skipped.diagnostics[-1].message
 
 
 def test_a_loop_inside_the_arm_planned_is_checked_going_on():

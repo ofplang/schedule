@@ -1411,23 +1411,38 @@ def _replay_previous(
             moves, placed, resting, outputs, orders,
         )
 
-    for step in previous.steps:
-        if step.kind == "place":
-            if not place(step.index, step.choice):
-                return None
-            continue
-        arc = instance.arcs[step.index]
-        # Entry material is not work and has no step of its own: it is put down,
-        # pinned at its job's release, just before the first move that collects it.
-        # So is the relay a started move landed at, just before its hand-over.
-        if arc.src_activity not in placed:
-            mode_index = previous.implicit_modes.get(arc.src_activity)
-            if mode_index is None or not place(arc.src_activity, mode_index):
-                return None
-        if not _replay_move(
-            instance, board, step.index, step.choice, moves, resting, placed, now
-        ):
-            return None
+    # 🔴 **The order, with what each step needs put first.** Sorting by time cannot
+    # settle every tie: a zero-length hand-off out of a gate and the gate itself share
+    # one instant, and either order of two such ties can be the wrong one. So a step
+    # whose source has not been put down yet puts it down first, from its own step,
+    # and a step whose material has not landed yet sends it first -- each once. Entry
+    # material and the relay a started move landed at have no step of their own: they
+    # are put down the same way, when the first move that needs them is sent.
+    planned_place = {s.index: s.choice for s in previous.steps if s.kind == "place"}
+    planned_move = {s.index: s.choice for s in previous.steps if s.kind == "move"}
+
+    def put(index: int) -> bool:
+        """Put activity `index` down, after what it receives."""
+        if index in placed:
+            return True
+        choice = planned_place.get(index, previous.implicit_modes.get(index))
+        if choice is None:
+            return False
+        for arc_index in arriving[index]:
+            if arc_index not in moves and not send(arc_index):
+                return False
+        return place(index, choice)
+
+    def send(arc_index: int) -> bool:
+        """Send move `arc_index`, after its source is down."""
+        if arc_index in moves:
+            return True
+        choice = planned_move.get(arc_index)
+        arc = instance.arcs[arc_index]
+        if choice is None or not put(arc.src_activity):
+            return False
+        if not _replay_move(instance, board, arc_index, choice, moves, resting, placed, now):
+            return False
         # An output node settles when the last of its material has landed.
         target = arc.dst_activity
         boundary = instance.activities[target].boundary
@@ -1437,9 +1452,12 @@ def _replay_previous(
             and target not in placed
             and all(index in moves for index in arriving[target])
         ):
-            mode_index = previous.implicit_modes.get(target)
-            if mode_index is None or not place(target, mode_index):
-                return None
+            return put(target)
+        return True
+
+    for step in previous.steps:
+        if not (put(step.index) if step.kind == "place" else send(step.index)):
+            return None
 
     if len(placed) != len(instance.activities) or len(moves) != len(instance.arcs):
         return None  # the order did not cover everything
