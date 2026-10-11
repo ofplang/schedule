@@ -57,7 +57,7 @@ from ofplang.schedule.scheduler.instance import (
     routes,
     transport_options,
 )
-from ofplang.schedule.scheduler.model import Arc, Mode, NodePath, slot_key
+from ofplang.schedule.scheduler.model import GATE_IN, Arc, Mode, NodePath, slot_key
 from ofplang.schedule.scheduler.status import (
     COMPLETION,
     START,
@@ -192,12 +192,20 @@ def normalize(
         fixed_proc, legs_by_arc = {}, {}
     if _has_error(diags):
         return None, None, diags
+    # A gate (design.md D66) is not run and so never reported: it is passed once
+    # everything it waits for has completed, which the history says.
+    passed = _passed_gates(base, fixed_proc, legs_by_arc)
 
     # 1. Augmented activities: fixed processing frozen from its reported echo,
     #    pending processing kept with the environment's modes.
     activities: list[ActivityInstance] = []
     act_fix: dict[int, ActivityFixation] = {}
     for i, act in enumerate(base.activities):
+        if i in passed:
+            at, passed_in = passed[i]
+            activities.append(ActivityInstance(act.node, act.process, (passed_in,), gate=True))
+            act_fix[i] = ActivityFixation("completed", at, at, 0)
+            continue
         fp = fixed_proc.get(act.node)
         if fp is None:
             activities.append(act)  # pending: environment modes
@@ -227,10 +235,13 @@ def normalize(
     #    deriving relays and (when the destination is pending) a re-transport.
     arcs: list[ArcInstance] = []
     arc_fix: dict[int, ArcFixation] = {}
+    # What a started move may leave from or deliver straight to: fixed processing, and
+    # the gates already passed.
+    settled = {**fixed_proc, **{base.activities[i].node: None for i in passed}}
     for arc_inst in base.arcs:
         key = _arc_key_of(arc_inst.arc)
         _build_chain(
-            arc_inst, legs_by_arc.get(key, []), fixed_proc, node_index,
+            arc_inst, legs_by_arc.get(key, []), settled, node_index,
             now, env, activities, act_fix, arcs, arc_fix, diags,
             hops, max_transport_legs,
         )
@@ -1128,6 +1139,10 @@ def _build_chain(
     logical = arc_inst.arc
     src_i, dst_i = arc_inst.src_activity, arc_inst.dst_activity
     dst_fixed = _node_of(activities, dst_i) in fixed_proc
+    # A region's exit move is at most one move (design.md D66): into a gate, never a
+    # chain, whatever the caller allows elsewhere.
+    if activities[dst_i].gate:
+        max_legs = 1
 
     legs = sorted(legs, key=lambda leg: leg.seq)
 
@@ -1316,6 +1331,68 @@ def _subject(job: str, path: NodePath) -> str:
 
 
 # --------------------------------------------------------------------------
+# Gates the history has passed (design.md D66).
+# --------------------------------------------------------------------------
+
+
+def _passed_gates(
+    base: Instance,
+    fixed_proc: dict[NodePath, _FixedProc],
+    legs_by_arc: dict[tuple, list[_Leg]],
+) -> dict[int, tuple[int, Mode]]:
+    """The gates everything they wait for has completed: gate index -> (when it was
+    passed, the one mode it was passed in).
+
+    Nothing runs a gate, so no status ever names one; whether it has been passed is
+    read off what it waits for. Once every activity before it has completed -- the
+    condition's producer among them -- and its Object has landed, it is behind the run,
+    at the latest of those ends, and it is fixed there like any history. Otherwise it
+    is still ahead, and planned like any pending work.
+
+    Gates are read in the order they were made, so one waiting for another finds it
+    already settled. A holding gate is passed on the spot its Object landed on; a gate
+    whose Object has not landed, or landed on a spot none of its modes holds, is not
+    passed.
+    """
+    preceding: dict[int, list[int]] = defaultdict(list)
+    for src, dst in base.precedence:
+        preceding[dst].append(src)
+    feeding: dict[int, ArcInstance] = {
+        arc.dst_activity: arc for arc in base.arcs if base.activities[arc.dst_activity].gate
+    }
+    passed: dict[int, tuple[int, Mode]] = {}
+    for i, act in enumerate(base.activities):
+        if not act.gate:
+            continue
+        ends: list[int] = []
+        for src in preceding[i]:
+            before = base.activities[src]
+            if before.gate:
+                if src not in passed:
+                    break
+                ends.append(passed[src][0])
+                continue
+            done = fixed_proc.get(before.node)
+            if done is None or done.status != "completed":
+                break
+            ends.append(done.end)
+        else:
+            mode = act.modes[0] if act.modes else None
+            arc = feeding.get(i)
+            if arc is not None:
+                legs = sorted(legs_by_arc.get(_arc_key_of(arc.arc), []), key=lambda leg: leg.seq)
+                if not legs or legs[-1].status != "completed":
+                    continue  # its Object has not landed yet
+                landed = legs[-1].to_spot
+                mode = next((m for m in act.modes if m.input_spots.get(GATE_IN) == landed), None)
+                ends.append(legs[-1].end)
+            if mode is None:
+                continue
+            passed[i] = (max(ends, default=0), mode)
+    return passed
+
+
+# --------------------------------------------------------------------------
 # The previous plan's pending part (design.md D66, stage 0).
 # --------------------------------------------------------------------------
 
@@ -1368,7 +1445,9 @@ def _previous_plan(
             continue
         kind = text(item.get("kind"))
         job = job_of(item)
-        if kind == "processing":
+        if kind in ("processing", "gate"):
+            # A gate (design.md D66) is named by its node path like an activity; the
+            # two kinds never share one, `@` being in no node id.
             path = scoped(job, node_path(item.get("node")))
             if path in processing:
                 return None  # two plans' worth of one activity: nothing to trust
@@ -1409,7 +1488,7 @@ def _previous_plan(
         planned = processing.get(act.node)
         if planned is None:
             return None
-        mode_index = _mode_named(act, planned)
+        mode_index = _gate_mode(act, planned) if act.gate else _mode_named(act, planned)
         if mode_index is None:
             return None
         chosen[i] = mode_index
@@ -1469,6 +1548,16 @@ def _hand_over(arc: ArcInstance, chosen: dict[int, int]) -> int | None:
         if chosen.get(arc.dst_activity, option.dst_mode_index) != option.dst_mode_index:
             continue
         return index
+    return None
+
+
+def _gate_mode(act: ActivityInstance, item: YMap) -> int | None:
+    """The index of the mode a gate entry was planned in: the one holding the spot it
+    names, or the only one for a gate that holds nothing."""
+    spot = text(item.get("spot"))
+    for index, mode in enumerate(act.modes):
+        if mode.input_spots.get(GATE_IN, "") == spot:
+            return index
     return None
 
 

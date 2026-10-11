@@ -84,10 +84,15 @@ In scope:
   makes. Its arm is the one the run states in `expansion.arms` once the value exists
   (§6.13), and until then the one the scheduler **assumes**, which is `then`. Either
   way nothing of the branch starts before the condition exists: every activity of the
-  arm, every move into the arm, and every consumer of a value the branch hands on
-  untouched waits for the end of the condition's producer (§4.5). The plan marks each
-  branch still waiting with a `decision` (§6.14). The arm not planned is not solved;
-  it is checked without a solve instead (§9.3, `arm_unplannable`).
+  arm and every move into the arm waits for the end of the condition's producer
+  (§4.5). Everything the branch hands on -- what its arm made, and an argument it
+  returns untouched alike -- leaves through one of its **gates** (§6.15), which start
+  only after that producer has ended, so whatever reads past the branch waits for its
+  decision by reading from a gate. The gates are part of the branch's shape whichever
+  arm is expanded and whether or not the arm is stated yet, so a decision changes what
+  is in the arm and never what surrounds it. The plan marks each branch still waiting
+  with a `decision` (§6.14). The arm not planned is not solved; it is checked without
+  a solve instead (§9.3, `arm_unplannable`).
 - **`do_while` nodes** (`node_do_while`) — expanded invocation by invocation, as a
   `fold` is: invocation `i` of a loop `L` is under `L, i` (§6.3), with the node's
   `bind` values and the carry -- the node's `carry` bindings first, then the previous
@@ -96,20 +101,25 @@ In scope:
   `max_iterations`); one the run has stated in `expansion.loops` (§6.13); and one
   settled only during the run is **assumed to end the loop** at the invocation it is
   in, the loop growing by one each time the run says it goes on. Nothing of the next
-  invocation starts before an invocation's condition is settled, and nothing the loop
-  hands on -- its carry and collected outputs and `exhausted` -- before the last one's
-  (§4.5): an invocation's own work runs before its condition is known, so an Object it
-  made could otherwise leave for what follows. The plan marks the pending end with a
-  `decision` (§6.14). Going on is not solved; it is checked, one invocation more,
-  without a solve (§9.3). `exhausted` (v0 19.3) is the node's own value, read at the
-  node's path `[L]`, which the run records. A count no condition settles and nothing
-  states -- an entry input's, or a literal `true` up to a `max_iterations` that is not
-  a literal -- is `loop_count_unknown`.
+  invocation starts before an invocation's condition is settled (§4.5). Where the
+  condition is settled only during the run, the loop has gates (§6.15): at the end of
+  every invocation each carried Object is moved into a holding gate of that
+  invocation, `[L, i, "@out", port]`, which waits for the invocation's condition -- the
+  next invocation takes it from there, and so does what follows the loop -- and every
+  Pure Data output (carried, collected, and `exhausted`) leaves through a gate of the
+  loop's own, `[L, "@out", port]`, after the last condition. An invocation's own work
+  runs before its condition is known, so an Object it made could otherwise leave for
+  what follows. The plan marks the pending end with a `decision` (§6.14). Going on is
+  not solved; it is checked, one invocation more, without a solve (§9.3). `exhausted`
+  (v0 19.3) is the node's own value, read at the node's path `[L]`, which the run
+  records. A count no condition settles and nothing states -- an entry input's, or a
+  literal `true` up to a `max_iterations` that is not a literal -- is
+  `loop_count_unknown`.
 - **What a condition waits for.** A branch's or a loop's condition is settled when
-  what it is read from is: an activity's output once that activity ends, a loop's
-  `exhausted` once its last condition is -- and a value any branch or loop not yet
-  decided hands on untouched, whatever it is underneath (a literal, an entry input),
-  once that decision is made, since which value it will be waits for it.
+  what it is read from has been made: an activity's output once that activity ends --
+  and what a branch or loop not yet decided hands on once it has come out of that
+  region's gate, which is after its decision. Nothing is carried on the value to say
+  so: the value's producer *is* the gate (§6.15).
 - **`python_script_processes`** — per v0 §22.1 these are Pure Data only (no
   Object-bearing ports, no `objects` section). They are treated as opaque
   Pure Data atomic steps: they take time but occupy no spot and are not
@@ -166,7 +176,9 @@ three kinds: a **processing** activity for each atomic process invocation (compo
 processes are structural and expand into their atomic invocations), a **transport**
 activity for each Object-bearing arc (§4.5), and a **replenishment** activity
 refilling a device's consumable resources (§4.7.1). Transport activities may be
-joined by **relay** activities where a move is re-routed (§6.4.1).
+joined by **relay** activities where a move is re-routed (§6.4.1), and a region
+decided only during the run hands on what it makes through **gates** (§6.15):
+zero-length activities the plan places like any other and nothing runs.
 
 The first two come from the workflow — one per atomic node, one per Object-bearing
 arc — so how many there are is fixed before scheduling begins. Replenishments do
@@ -278,11 +290,13 @@ activity start `s_j`:
 (This three-device occupation is the conservative formulation of ofp-scheduler's
 final model; a looser alternative would occupy only the transporter.)
 
-Ordering: `a >= e_i` and `s_j >= b`. A move into a `branch` whose condition is produced
-during the run, or one carrying an Object the branch hands on untouched, also waits
-for that condition (§2): `a >= e_k`, `k` the activity producing it. So does every
-activity of the branch's arm, as a dependency (`s_j >= e_k`). A move that has already
-happened is history and is not held to it.
+Ordering: `a >= e_i` and `s_j >= b`. A move that enters a `branch` or `do_while` whose
+condition is produced during the run from outside -- into its arm, or into one of its
+gates (§6.15) -- also waits for that condition (§2): `a >= e_k`, `k` the activity
+producing it. So does every activity of the branch's arm, and every gate, as a
+dependency (`s_j >= e_k`). What leaves the region leaves from a gate, so it waits
+through the gate. Which moves wait is read off the structure, once, never carried on
+values. A move that has already happened is history and is not held to it.
 
 **Relay (transport junction).** A single arc's Object may be moved in more than
 one leg — delivered to an intermediate spot by one transport, then picked up from
@@ -959,6 +973,13 @@ environment.
     the branch's own path (`[Choose]`), a composite arm's nodes are under it
     (`[Choose, rinse]`). Which arm ran is `expansion.arms` (§6.13) and the activity's
     `process`.
+  - **Gate.** A gate (§6.15) is named by its region's path -- the branch's, the
+    `do_while`'s, or one invocation of it -- then the reserved element `"@out"`, then
+    the port, then, for one element of an Array, its element index (as many as the
+    Array nests): `[Choose, "@out", cup]`, `[Clean, 0, "@out", plate]`,
+    `[Clean, "@out", exhausted]`, `[Choose, "@out", cups, 1]`. Nothing else follows
+    `"@out"`. `@` is in no identifier, so no node is ever named so, and a processing
+    activity's `node` never names a gate. Written as text it is `Choose/@out/cup`.
 - `devices`, `input_spots`, `output_spots` (optional) — derivable echo of the
   mode's devices and qualified spot mappings. A Pure-Data-only activity has none.
 - `device_access` (optional) — derivable echo of the mode's `device_access` (§5.5).
@@ -2001,6 +2022,50 @@ solve, from the workflow, the way it renders relays. A document given to the
 scheduler may carry them, as any plan fed back does; whatever they say — a `status`
 included — is not read. Once the producer has finished there is nothing left to wait
 for, and the branch has no `decision` in the plan.
+
+### 6.15 Gate
+
+```yaml
+- kind: gate
+  job: one                      # as on any activity (§6.11)
+  start: 9                      # = end: a gate takes no time
+  end: 9
+  node: [Each, 0, Choose, "@out", cup]   # the region's path, "@out", the port
+  spot: scope.stage             # an Object's gate: where it waits
+
+- kind: gate                    # a Pure Data gate holds nothing
+  start: 10
+  end: 10
+  node: [Clean, "@out", exhausted]
+```
+
+A gate is where a branch or `do_while` whose condition is produced during the run
+(§2) hands something on (design.md D66). An Object leaves through a **holding** gate:
+it is moved there by at most one move -- a single leg, never a chain (§6.4.1) -- and
+waits there, on `spot`, until what follows takes it. A Pure Data value leaves through a
+gate that holds nothing. Every gate starts after the region's decision -- the end of its
+condition's producer -- and after what it hands on was made, so whatever takes from a
+gate is after the decision too, read off the structure. Its ports are `in` and `out`;
+a move into a holding gate ends at its `in`, a move out of it starts at its `out`, as
+any arc endpoint (§6.4) does.
+
+**Planned, never run, never stamped.** The plan renders one for every gate of the
+expansion, from the workflow, as it renders relays. Nothing dispatches one and no
+status is ever written on one; a replan reads whether one has been passed off its
+history instead: a gate is behind the run once everything it waits for has completed
+and its Object, if any, has landed, at the latest of those ends -- and it is planned
+at or after `now` otherwise. Whatever a document given to the scheduler says on a gate
+entry is not read.
+
+In this stage a holding gate keeps its Object where it was left: one candidate spot
+per spot the region's last step can leave it on, reached by a same-spot hand-over. A
+region decided before the run -- a literal condition, or one the boundary decides --
+has no gates, and its plan is what it always was.
+
+🔴 **A different fingerprint.** The gates are part of the expanded graph, so a
+workflow with a region decided during the run has a different fingerprint (§6.11)
+from 0.17.0 on than it had before: a document planned by an earlier release
+re-promises such a job on its first replan. A workflow without one is unchanged.
 
 ## 7. Execution status
 

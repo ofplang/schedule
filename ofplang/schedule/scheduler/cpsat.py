@@ -673,6 +673,7 @@ def solve(
             status=act_fix[i].status if i in act_fix else None,
             relay=act.relay,
             boundary=act.boundary,
+            gate=act.gate,
         )
         for i, act in enumerate(instance.activities)
     )

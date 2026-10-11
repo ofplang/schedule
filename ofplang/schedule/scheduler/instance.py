@@ -25,6 +25,8 @@ from ofplang.schedule.scheduler.interface import (
     element_label,
 )
 from ofplang.schedule.scheduler.model import (
+    GATE_IN,
+    GATE_OUT_PORT,
     Arc,
     Endpoint,
     Environment,
@@ -91,13 +93,19 @@ class ActivityInstance:
     mode and `relay` set — so the solver treats it exactly like any processing
     activity; only construction (`normalize`) and rendering (`plan`) are aware of
     it. A boundary node (§6.8) is likewise an ActivityInstance with `boundary` set.
-    `node` / `process` are unused on a relay or boundary node."""
+    `node` / `process` are unused on a relay or boundary node.
+
+    A **gate** (`gate`, design.md D66) is one too: a node of a region not decided
+    before the run, with a real node path (`[P, "@out", port]`) and no process. A
+    holding gate has one 0-duration, device-less mode per spot it may hold its Object
+    on; a Pure Data one has a single mode that holds nothing."""
 
     node: NodePath
     process: str
     modes: tuple[Mode, ...]
     relay: RelayInfo | None = None
     boundary: BoundaryInfo | None = None
+    gate: bool = False
 
 
 @dataclass(frozen=True)
@@ -219,28 +227,17 @@ def build_instance(
         activities.append(ActivityInstance(act.path, act.process, capability.modes))
 
     arcs: list[ArcInstance] = []
+    # An arc with a gate at either end (design.md D66) waits until the gates exist,
+    # which is after the boundary inputs: a gate's modes are the spots its Object can
+    # be left on, which is read off whatever feeds it -- an entry input included.
+    gate_paths = {gate.path for gate in workflow.gates}
+    gated_arcs = [
+        arc for arc in workflow.arcs if arc.src.node in gate_paths or arc.dst.node in gate_paths
+    ]
     for arc in workflow.arcs:
-        si = index_by_node.get(arc.src.node)
-        di = index_by_node.get(arc.dst.node)
-        if si is None or di is None:
-            diags.error(
-                errors.PROCESS_NOT_DEFINED,
-                "arc references an unknown node: "
-                f"{format_endpoint(arc.src.node, arc.src.port, arc.src.index)}"
-                f" -> {format_endpoint(arc.dst.node, arc.dst.port, arc.dst.index)}",
-            )
+        if arc.src.node in gate_paths or arc.dst.node in gate_paths:
             continue
-        options = transport_options(
-            activities[si], slot_key(arc.src), activities[di], slot_key(arc.dst), env
-        )
-        if not options and check_reachability:
-            diags.error(
-                errors.ARC_UNREACHABLE,
-                "no route can serve the arc "
-                f"{format_endpoint(arc.src.node, arc.src.port, arc.src.index)}"
-                f" -> {format_endpoint(arc.dst.node, arc.dst.port, arc.dst.index)}",
-            )
-        arcs.append(ArcInstance(arc, si, di, tuple(options)))
+        _add_arc(arc, activities, arcs, index_by_node, env, check_reachability, diags)
 
     # Interface is required (SPEC §6.8): every Object-bearing entry input must be
     # bound, otherwise the upstream activity's mode would be unconstrained. (Outputs
@@ -271,6 +268,11 @@ def build_instance(
         entered = _add_boundary_inputs(
             workflow, env, interface, activities, arcs, index_by_node, check_reachability, diags
         )
+    if workflow.gates:
+        _add_gates(
+            workflow, env, activities, arcs, gated_arcs, entered, index_by_node,
+            check_reachability, diags,
+        )
     _add_boundary_outputs(
         workflow, env, interface or {}, activities, arcs, index_by_node, check_reachability,
         diags, entered,
@@ -298,6 +300,129 @@ def build_instance(
     if any(d.severity == "error" for d in diags.items):
         return None, diags
     return Instance(env, env.time_unit, tuple(activities), tuple(arcs), precedence), diags
+
+
+def _add_arc(
+    arc: Arc,
+    activities: list[ActivityInstance],
+    arcs: list[ArcInstance],
+    index_by_node: dict[NodePath, int],
+    env: Environment,
+    check_reachability: bool,
+    diags: Diagnostics,
+) -> None:
+    """Append the arc between two scheduled nodes, with every route that can serve it,
+    or say which end it names that is not one."""
+    si = index_by_node.get(arc.src.node)
+    di = index_by_node.get(arc.dst.node)
+    if si is None or di is None:
+        diags.error(
+            errors.PROCESS_NOT_DEFINED,
+            "arc references an unknown node: "
+            f"{format_endpoint(arc.src.node, arc.src.port, arc.src.index)}"
+            f" -> {format_endpoint(arc.dst.node, arc.dst.port, arc.dst.index)}",
+        )
+        return
+    options = transport_options(
+        activities[si], slot_key(arc.src), activities[di], slot_key(arc.dst), env
+    )
+    if not options and check_reachability:
+        diags.error(
+            errors.ARC_UNREACHABLE,
+            "no route can serve the arc "
+            f"{format_endpoint(arc.src.node, arc.src.port, arc.src.index)}"
+            f" -> {format_endpoint(arc.dst.node, arc.dst.port, arc.dst.index)}",
+        )
+    arcs.append(ArcInstance(arc, si, di, tuple(options)))
+
+
+def _add_gates(
+    workflow: Workflow,
+    env: Environment,
+    activities: list[ActivityInstance],
+    arcs: list[ArcInstance],
+    gated_arcs: list[Arc],
+    entered: dict[Endpoint, tuple[int, str]],
+    index_by_node: dict[NodePath, int],
+    check_reachability: bool,
+    diags: Diagnostics,
+) -> None:
+    """Append the gate nodes of the regions not decided before the run (design.md
+    D66), then every arc with a gate at either end.
+
+    A holding gate keeps its Object **where it was left**: one mode per spot its
+    source can leave the Object on, so the move into it is a same-spot hand-over --
+    no move at all -- whichever mode the source runs in. Which common spot the
+    region's outcomes share is a later stage's choice; until then the gate stays put.
+    A Pure Data gate holds nothing and has one mode.
+
+    Gates come in the order they were made, an inner region's before the outer's, so a
+    gate fed by another gate finds it already here.
+    """
+    feeding = {arc.dst.node: arc for arc in gated_arcs if arc.dst.port == GATE_IN}
+    entering = _entering_gates(workflow, entered)
+    bound_at = {consumer.node: spot for _node, spot, consumer in entering.values()}
+    for gate in workflow.gates:
+        if gate.object_bearing:
+            spots = _gate_spots(gate.path, feeding, bound_at, activities, index_by_node)
+            modes = tuple(
+                Mode(
+                    id=f"gate:{spot}",
+                    devices=(),
+                    duration=0,
+                    input_spots={GATE_IN: spot},
+                    output_spots={GATE_OUT_PORT: spot},
+                )
+                for spot in sorted(spots)
+            )
+        else:
+            modes = (Mode(id="gate", devices=(), duration=0, input_spots={}, output_spots={}),)
+        index_by_node[gate.path] = len(activities)
+        activities.append(ActivityInstance(gate.path, "", modes, gate=True))
+
+    for arc in gated_arcs:
+        _add_arc(arc, activities, arcs, index_by_node, env, check_reachability, diags)
+    # A gate fed by an entry input: the input node's arc to it, which the input side
+    # left for here because the gate did not exist yet.
+    for boundary, (node_index, _spot, consumer) in entering.items():
+        di = index_by_node[consumer.node]
+        options = transport_options(
+            activities[node_index], slot_key(boundary), activities[di], slot_key(consumer), env
+        )
+        arcs.append(ArcInstance(Arc(boundary, consumer), node_index, di, tuple(options)))
+
+
+def _gate_spots(
+    path: NodePath,
+    feeding: dict[NodePath, Arc],
+    bound_at: dict[NodePath, str],
+    activities: list[ActivityInstance],
+    index_by_node: dict[NodePath, int],
+) -> set[str]:
+    """The spots a holding gate's Object can be left on: wherever its source leaves it,
+    in any of its source's modes -- an activity, another gate, or the spot an entry
+    input is bound to."""
+    arc = feeding.get(path)
+    if arc is not None:
+        si = index_by_node.get(arc.src.node)
+        if si is None:
+            return set()  # a source that could not be built; reported where it was
+        key = slot_key(arc.src)
+        return {mode.output_spots[key] for mode in activities[si].modes if key in mode.output_spots}
+    return {bound_at[path]} if path in bound_at else set()
+
+
+def _entering_gates(
+    workflow: Workflow, entered: dict[Endpoint, tuple[int, str]]
+) -> dict[Endpoint, tuple[int, str, Endpoint]]:
+    """The entry inputs that go straight into a gate: entry endpoint -> (the input
+    node, its spot, the gate's input)."""
+    gate_paths = {gate.path for gate in workflow.gates}
+    return {
+        arc.src: (*entered[arc.src], arc.dst)
+        for arc in workflow.entry_arcs
+        if arc.dst.node in gate_paths and arc.src in entered
+    }
 
 
 def prefix_instance(instance: Instance, prefix: tuple[str, ...]) -> Instance:
@@ -678,10 +803,12 @@ def _add_boundary_inputs(
     node_index = len(activities)
     activities.append(ActivityInstance((), "", (mode,), boundary=BoundaryInfo("input")))
 
+    gate_paths = {gate.path for gate in workflow.gates}
     passed_through: dict[Endpoint, tuple[int, str]] = {}
     for boundary, spot, consumer in valid:
-        if consumer.node == ():
-            # Returned untouched: its arc ends on an output node (see the docstring).
+        if consumer.node == () or consumer.node in gate_paths:
+            # Returned untouched: its arc ends on an output node (see the docstring) --
+            # or on a gate (design.md D66), which the gates' own step draws.
             passed_through[boundary] = (node_index, spot)
             continue
         di = index_by_node.get(consumer.node)

@@ -155,10 +155,13 @@ same schedule without interacting.
   $R$ (SPEC §4.3, §4.5). A **boundary arc** (one endpoint is a boundary node) is
   an ordinary member of $R$; nothing below special-cases it.
 - $G_r \subseteq T$, for $r \in R$: the activities a move waits for besides its
-  source -- the producers of the conditions of the branches decided during the run
-  that it moves into, or that hand its Object on untouched (SPEC §2, design.md D64).
-  Empty for every arc of a workflow without such a branch. (The arm's activities wait
-  through ordinary dependencies in $A$.)
+  source -- the producers of the conditions of the regions decided during the run
+  that it enters from outside, into an arm or into one of the region's gates (SPEC
+  §2, §6.15, design.md D64, D66). Empty for every arc of a workflow without such a
+  region. (The arm's activities and the gates wait through ordinary dependencies in
+  $A$; a gate is an ordinary activity of $T$ with zero duration and, for an Object, one
+  candidate spot per mode -- what leaves a region leaves from one, so it needs nothing
+  of its own here.)
 - $L$: device set. A device is an exclusive resource that owns spots and carries
   out work (SPEC §4.4).
 - $L^{\mathrm{tr}} \subseteq L$: transporters — individual devices used for moves

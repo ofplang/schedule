@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from ofplang.schedule.core import identifiers
 from ofplang.schedule.core.identifiers import format_element
 
 # A node path (SPECIFICATIONS.md §6.3): node ids from the entry composite's body
@@ -240,28 +241,59 @@ Source = SourceRef | SourceLiteral | SourceSeq
 
 
 @dataclass(frozen=True)
+class Gate:
+    """A gate node of a branch or `do_while` whose condition is produced during the
+    run (design.md D66): everything that leaves the region passes through one.
+
+    A region's outcome is not known when it is planned, so nothing downstream may
+    take what it hands on before the decision -- and what it hands on has to be in
+    the same place whichever way the decision goes. Both are said by a node rather
+    than by marks carried on values: an Object leaves through a **holding** gate
+    (`object_bearing`), a zero-length activity on one spot that it is moved to by at
+    most one move, and a Pure Data value through a gate with no spot at all. Either
+    starts only after the decision (`waits`), so whatever reads past it does too, and
+    the runner reads the value through it only once the decision is made.
+
+    `path` is the gate's own node path: the region's path, `@out`, the port, and the
+    element index of an Array's element (`[P, "@out", port, i]`); a `do_while`'s
+    holding gate between invocations is `[L, i, "@out", port]`. `@` is not in any
+    identifier, so no workflow node is ever named so. The gate's ports are `in` and
+    `out`. Its input's source is in `Workflow.input_sources`, as an atomic's is.
+    """
+
+    path: NodePath
+    region: NodePath
+    object_bearing: bool
+    waits: tuple[NodePath, ...] = ()
+
+
+# The reserved node-path element a gate's path carries after its region's (`Gate`),
+# and the gate's two ports.
+GATE_OUT = identifiers.GATE_OUT
+GATE_IN = "in"
+GATE_OUT_PORT = "out"
+
+
+@dataclass(frozen=True)
 class BranchGate:
     """A branch whose condition is produced during the run (design.md D64).
 
     Nothing of it may start before the condition exists: its arm's activities wait
-    for `condition`'s producer, and so does every move into the arm and every
-    consumer of a value the branch passes through untouched -- whichever arm is
-    planned, and whether or not the arm is known. `arm` is the one expanded: the one
-    `expansion.arms` states, or the one assumed (`assumed`) until the run states it.
-    Once the producer has finished, the wait is met and changes nothing.
+    for `condition`'s producer, and so does every move into the arm -- whichever arm
+    is planned, and whether or not the arm is known. Everything it hands on leaves
+    through its gates (`Gate`, D66), which wait for the same. `arm` is the one
+    expanded: the one `expansion.arms` states, or the one assumed (`assumed`) until
+    the run states it. Once the producer has finished, the wait is met.
 
-    `waits` are the producers it waits for: the condition's own, and those of every
-    branch or loop the value passed through untouched -- until they have finished, the
-    value the condition will have is not settled (design.md D65). `condition` is where
-    the value is read once it is: an activity's output, or a loop's `exhausted`."""
+    `waits` is the condition's producer: an activity, or a gate of a region the
+    condition's value came out of -- which itself waits for that region's decision,
+    so a condition handed on by another branch is settled only after it (D66).
+    `condition` is where the value is read once it is."""
 
     condition: Source
     arm: str
     assumed: bool
     waits: tuple[NodePath, ...] = ()
-    # The branches and loops the condition's value passed through untouched (D65): it is
-    # not the value to decide on before each of them is decided, whatever has produced.
-    after: tuple[NodePath, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -282,8 +314,6 @@ class LoopGate:
     ended: bool
     assumed: bool
     limit: Source | None
-    # As `BranchGate.after`, for the last invocation's condition.
-    after: tuple[NodePath, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -298,15 +328,13 @@ class LengthCheck:
     error for a run-phase value and a runtime data error for a data-phase one).
 
     `node` is the structured node's path, `port` the `each` port, `source` where that
-    port's Array comes from. `gates` are the producers it waits for besides its own
-    (design.md D64): where the Array was handed on untouched by a branch whose
-    condition is produced during the run, what it will be is not settled before them."""
+    port's Array comes from. An Array handed on by a region not yet decided comes
+    through its gate (`Gate`), so its source is only there once the decision is."""
 
     node: NodePath
     port: str
     source: Source
     length: int
-    gates: frozenset[NodePath] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -319,16 +347,13 @@ class CompositeIO:
     is otherwise lost. This records it, as `Source` trees: each input / output port ->
     the value it reads (an atomic's output, the workflow boundary, a literal, an Array
     assembled element by element). Runner-only, under the INVARIANTS stated with
-    `Workflow.input_sources`.
-
-    `gates` are the producers its values wait for besides their own (design.md D64):
-    a value handed on untouched by a branch whose condition is produced during the run
-    is not settled before that condition, so neither is a contract over it."""
+    `Workflow.input_sources`. A value handed on by a region not yet decided comes
+    through its gate (`Gate`), so a contract over it waits for the decision as any
+    reader of that gate does."""
 
     process: str
     input_sources: dict[str, Source] = field(default_factory=dict)
     output_sources: dict[str, Source] = field(default_factory=dict)
-    gates: frozenset[NodePath] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -472,7 +497,13 @@ class Workflow:
         default_factory=dict
     )
     # The waits on moves: an Object arc (interior, entry, exit or through) -> the
-    # producers whose end it may not depart before. An arc into a gated branch's arm,
-    # or one carrying an Object the branch passes through untouched. The waits on
-    # activities are ordinary edges in `precedence`.
+    # producers whose end it may not depart before. Read off the structure once, never
+    # carried on values: an arc that enters an undecided region from outside -- into
+    # an arm, or into one of its gates -- departs only after the decision. The waits
+    # on activities are ordinary edges in `precedence`.
     arc_gates: dict[Arc, frozenset[NodePath]] = field(default_factory=dict)
+    # The gate nodes of the regions not decided before the run, in the order they were
+    # made -- an inner region's before the outer's, so each gate's source exists by the
+    # time it is reached (`Gate`, design.md D66). The planner places them like
+    # activities; their paths join the same naming the runner keys values by.
+    gates: tuple[Gate, ...] = ()

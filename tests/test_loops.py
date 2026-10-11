@@ -22,7 +22,7 @@ from ofplang.validate import validate
 from ofplang.schedule import schedule, validate_document
 from ofplang.schedule.core.diagnostics import ERROR
 from ofplang.schedule.scheduler.api import ASSUMED_ARM, _arm_expansions
-from ofplang.schedule.scheduler.model import SourceLiteral, SourceRef
+from ofplang.schedule.scheduler.model import Endpoint, Gate, SourceLiteral, SourceRef
 from ofplang.schedule.scheduler.workflow import parse_workflow
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
@@ -100,12 +100,22 @@ def test_a_measured_loop_is_planned_to_end_where_it_is():
     assert loop.waits == (("Clean", 0, "Read"),)
     assert loop.condition == SourceRef(("Clean", 0, "Read"), "dirty")
     assert loop.limit == SourceLiteral(5)
-    # What follows the loop waits for the reading, and so does the plate's move to it.
-    assert (("Clean", 0, "Read"), ("Dry",)) in wf.precedence
-    gated = [arc for arc in wf.arcs if arc.dst.node == ("Dry",)]
-    assert [wf.arc_gates.get(arc) for arc in gated] == [frozenset({("Clean", 0, "Read")})]
-    # `exhausted` is the node's own value, waited for the same way.
-    assert wf.output_sources["gave_up"] == SourceRef(("Clean",), "exhausted")
+    # The plate leaves the invocation through its holding gate (design.md D66), which
+    # waits for the reading: what follows the loop takes it from there.
+    plate = ("Clean", 0, "@out", "plate")
+    exhausted = ("Clean", "@out", "exhausted")
+    reading = (("Clean", 0, "Read"),)
+    assert wf.gates == (
+        Gate(plate, ("Clean",), True, reading),
+        Gate(exhausted, ("Clean",), False, reading),
+    )
+    assert {(("Clean", 0, "Read"), plate), (plate, ("Dry",))} <= set(wf.precedence)
+    assert [arc.src.node for arc in wf.arcs if arc.dst.node == ("Dry",)] == [plate]
+    # Made inside the loop and taken from its gate: no move needs a wait of its own.
+    assert not wf.arc_gates
+    # `exhausted` is the node's own value, read through the loop's own gate.
+    assert wf.input_sources[Endpoint(exhausted, "in")] == SourceRef(("Clean",), "exhausted")
+    assert wf.output_sources["gave_up"] == SourceRef(exhausted, "out")
 
 
 def test_each_invocation_waits_for_the_last_reading():
@@ -301,9 +311,16 @@ COLLECTED_ENV["processes"]["log"] = {"modes": [{"devices": ["logger"], "duration
 def test_a_collected_output_is_as_long_as_the_loop_and_waits_for_it():
     wf, errs = _parse(COLLECTED, loops((("Clean",), 3, False)))
     assert errs == []
+    # The readings leave through the loop's gate, which keeps the list's shape -- the
+    # map still knows it makes three invocations -- and waits for the last reading.
     assert wf.iterations[("Log",)] == 3
+    collected = ("Clean", "@out", "dirty")
+    assert (("Clean", 2, "Read"), collected) in wf.precedence
     for i in range(3):
-        assert (("Clean", 2, "Read"), ("Log", i)) in wf.precedence
+        assert (("Clean", i, "Read"), collected) in wf.precedence
+        assert (collected, ("Log", i)) in wf.precedence
+        source = wf.input_sources[Endpoint(("Log", i), "reading")]
+        assert source == SourceRef(collected, "out", (i,))
 
 
 # --- the plan --------------------------------------------------------------------------
@@ -455,7 +472,10 @@ def test_a_condition_handed_on_by_an_undecided_branch_waits_for_it():
     assert validate(copy.deepcopy(doc)).ok
     wf, errs = _parse(doc)
     assert errs == []
+    # Not before the loop has ended: `exhausted` comes out of the loop's gate, which
+    # waits for its last reading, so the branch on it waits for that gate (D66).
+    exhausted = ("Clean2", "@out", "exhausted")
     gate = wf.branch_gates[("Then",)]
-    assert gate.condition == SourceRef(("Clean2",), "exhausted")
-    assert gate.waits == (("Clean2", 0, "Read"),)
-    assert gate.after == (("Clean2",),)  # not before the loop has ended
+    assert gate.condition == SourceRef(exhausted, "out")
+    assert gate.waits == (exhausted,)
+    assert Gate(exhausted, ("Clean2",), False, (("Clean2", 0, "Read"),)) in wf.gates

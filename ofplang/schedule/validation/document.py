@@ -10,6 +10,7 @@ from __future__ import annotations
 from ofplang.schedule.core import yamlnode
 from ofplang.schedule.core.diagnostics import Diagnostics, ValidationResult
 from ofplang.schedule.core.identifiers import (
+    GATE_OUT,
     is_identifier,
     is_iteration_index,
     node_path_problem,
@@ -112,7 +113,11 @@ DECISION_KEYS = {
     "kind", "job", "status", "start", "end", "node", "arm", "assumed", "condition",
     "iteration",
 }
-ACTIVITY_KINDS = {"processing", "transport", "relay", "replenishment", "decision"}
+# A gate (§6.15) is where a region decided only during the run hands something on:
+# its node path (`[P, "@out", port]`), when, and -- for an Object -- the spot it waits
+# on. Rendered from the workflow, never run, and never read back.
+GATE_KEYS = {"kind", "job", "status", "start", "end", "node", "spot"}
+ACTIVITY_KINDS = {"processing", "transport", "relay", "replenishment", "decision", "gate"}
 ARC_ENDPOINT_KEYS = {"node", "port", "index"}
 
 
@@ -658,7 +663,7 @@ def _check_activity(
     ):
         diags.error(
             errors.UNKNOWN_ACTIVITY_KIND,
-            "kind must be processing, transport, relay, replenishment or decision",
+            "kind must be processing, transport, relay, replenishment, decision or gate",
             shape.join(base, "kind"),
             at=kind_node,
         )
@@ -671,6 +676,7 @@ def _check_activity(
         "relay": RELAY_KEYS,
         "replenishment": REPLENISHMENT_KEYS,
         "decision": DECISION_KEYS,
+        "gate": GATE_KEYS,
     }[kind]
     shape.unknown_keys(amap, allowed, base, diags)
     _check_job(amap.get("job"), base, kind, job_ids, diags)
@@ -685,6 +691,8 @@ def _check_activity(
         _check_replenishment(amap, base, diags)
     elif kind == "decision":
         _check_decision(amap, base, diags)
+    elif kind == "gate":
+        _check_gate(amap, base, diags)
     else:
         _check_relay(amap, base, diags)
 
@@ -817,6 +825,14 @@ def _check_node_path(node: YNode | None, path: str, diags: Diagnostics) -> None:
         return
     if not seq.items:
         diags.error(errors.EMPTY_NODE_PATH, "node path is empty", path, at=seq)
+        return
+    # A gate's path (design.md D66) is judged whole, by the one statement of the
+    # grammar: what may follow its `@out` depends on where in the path it stands.
+    values = [x.value for x in seq.items if isinstance(x, YScalar)]
+    if GATE_OUT in values and len(values) == len(seq.items):
+        problem = node_path_problem(values)
+        if problem is not None:
+            diags.error(errors.INVALID_NODE_PATH, problem, path, at=seq)
         return
     # Each element is a node id, or an iteration index straight after the id of the
     # `map` / `fold` node whose invocation it counts (§6.3). Elements are reported
@@ -960,6 +976,24 @@ def _check_decision(amap: YMap, base: str, diags: Diagnostics) -> None:
             shape.join(base, "condition"),
             at=condition,
         )
+
+
+def _check_gate(amap: YMap, base: str, diags: Diagnostics) -> None:
+    """A `gate` (§6.15): a gate's node path -- one that names a gate, `@out` and all --
+    and, for an Object's gate, the spot it waits on."""
+    node = shape.require(amap, "node", base, diags)
+    where = shape.join(base, "node")
+    _check_node_path(node, where, diags)
+    if isinstance(node, YSeq) and not any(
+        isinstance(x, YScalar) and x.value == GATE_OUT for x in node.items
+    ):
+        diags.error(
+            errors.INVALID_NODE_PATH, f"a gate's node path names a gate ({GATE_OUT})", where,
+            at=node,
+        )
+    spot = amap.get("spot")
+    if spot is not None:
+        _check_qualified_spot(spot, shape.join(base, "spot"), diags)
 
 
 def _check_relay(amap: YMap, base: str, diags: Diagnostics) -> None:

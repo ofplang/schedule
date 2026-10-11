@@ -32,6 +32,9 @@ class ProcessingResult:
     relay: RelayInfo | None = None
     # Set when this activity is a synthetic boundary node (§6.8); rendering skips it.
     boundary: BoundaryInfo | None = None
+    # Set when this activity is a gate of a region not decided before the run
+    # (design.md D66); rendered as `kind: gate`.
+    gate: bool = False
 
 
 @dataclass(frozen=True)

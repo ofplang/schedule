@@ -18,6 +18,7 @@ import yaml
 from ofplang.schedule.core import objective as objective_stages
 from ofplang.schedule.scheduler.instance import Instance
 from ofplang.schedule.scheduler.model import (
+    GATE_IN,
     BranchGate,
     JobSpec,
     LoopGate,
@@ -98,6 +99,21 @@ def render_plan(
                     "arc": _arc(p.relay.arc, job_ids),
                 }
             )
+            activities.append(entry)
+            continue
+        if p.gate:
+            # A gate of a region not decided before the run (design.md D66): its
+            # identity is its own node path (`[P, "@out", port]`). Nothing runs it; it
+            # says when what the region hands on is there, and -- for an Object --
+            # which spot it waits on.
+            entry = {"kind": "gate"}
+            job, node = _split_job(p.node, job_ids)
+            _set_job(entry, job)
+            if p.status is not None:
+                entry["status"] = p.status
+            entry.update({"start": p.start, "end": p.end, "node": node})
+            if p.mode.input_spots:
+                entry["spot"] = p.mode.input_spots[GATE_IN]
             activities.append(entry)
             continue
 

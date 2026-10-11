@@ -23,7 +23,7 @@ from ofplang.validate import validate
 from ofplang.schedule import JobInput, schedule, schedule_jobs, validate_document
 from ofplang.schedule.core.diagnostics import ERROR
 from ofplang.schedule.scheduler.api import ASSUMED_ARM, _arm_expansions
-from ofplang.schedule.scheduler.model import Arc, Endpoint
+from ofplang.schedule.scheduler.model import Arc, Endpoint, Gate, SourceRef
 from ofplang.schedule.scheduler.workflow import parse_workflow
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
@@ -249,19 +249,34 @@ def test_the_assumed_arm_waits_for_the_condition():
     assert (("I",), ("H",)) in wf.precedence
     into_arm = Arc(Endpoint((), "cup"), Endpoint(("H",), "cup"))
     assert wf.arc_gates[into_arm] == frozenset({("I",)})
-    # What the arm made needs no wait of its own: it was made after the condition.
-    assert Arc(Endpoint(("H",), "cup"), Endpoint(("F",), "cup")) not in wf.arc_gates
+    # What the branch hands on leaves through its gate (design.md D66): the wash's cup
+    # is moved into it -- made after the condition, so the move needs no wait -- and F
+    # takes it from there.
+    gate = ("H", "@out", "cup")
+    assert wf.gates == (Gate(gate, ("H",), True, (("I",),)),)
+    into_gate = Arc(Endpoint(("H",), "cup"), Endpoint(gate, "in"))
+    assert into_gate in wf.arcs and into_gate not in wf.arc_gates
+    assert Arc(Endpoint(gate, "out"), Endpoint(("F",), "cup")) in wf.arcs
+    assert {(("I",), gate), (("H",), gate), (gate, ("F",))} <= set(wf.precedence)
 
 
 def test_a_value_handed_on_untouched_waits_too():
-    # On `else` (none written) the cup passes straight from the boundary to F: F may
-    # still not have it before the sample is inspected -- the branch could have washed it.
+    # On `else` (none written) the cup is handed on untouched -- and still through the
+    # gate, which waits for the inspection: F cannot have it before the sample is
+    # inspected, since the branch could have washed it. The gate is there whichever
+    # arm is expanded (design.md D66).
     wf, errs = _parse(SAMPLE_DECIDES, arms((("H",), "else")))
     assert errs == []
     assert [a.path for a in wf.activities] == [("I",), ("F",)]
-    assert (("I",), ("F",)) in wf.precedence
-    through = Arc(Endpoint((), "cup"), Endpoint(("F",), "cup"))
-    assert wf.arc_gates[through] == frozenset({("I",)})
+    gate = ("H", "@out", "cup")
+    assert wf.gates == (Gate(gate, ("H",), True, (("I",),)),)
+    assert {(("I",), gate), (gate, ("F",))} <= set(wf.precedence)
+    # The move into the gate comes from outside the branch, so it waits for the
+    # decision; the one out of it is after the gate already.
+    into_gate = Arc(Endpoint((), "cup"), Endpoint(gate, "in"))
+    assert wf.arc_gates[into_gate] == frozenset({("I",)})
+    assert Arc(Endpoint(gate, "out"), Endpoint(("F",), "cup")) not in wf.arc_gates
+    assert wf.input_sources[Endpoint(("F",), "cup")] == SourceRef(gate, "out")
     assert not wf.branch_gates[("H",)].assumed
 
 
@@ -283,16 +298,16 @@ SAMPLE_THEN_COMPOSITE = SAMPLE_DECIDES.replace(
 )
 
 
-def test_a_composite_reading_a_value_handed_on_untouched_says_what_it_waits_for():
+def test_a_composite_reading_what_an_undecided_branch_hands_on_reads_its_gate():
     # Its contracts read that value, which is not settled before the sample is
-    # inspected -- the run holds them until then (design.md D64).
+    # inspected: it is read through the branch's gate on either arm, so the run holds
+    # them until the decision as it holds anything read there (design.md D66).
     assert validate(yaml.safe_load(SAMPLE_THEN_COMPOSITE)).ok
-    wf, errs = _parse(SAMPLE_THEN_COMPOSITE, arms((("H",), "else")))
-    assert errs == []
-    assert wf.composites[("F",)].gates == frozenset({("I",)})
-    # On `then` the cup it reads is the wash's, made after the condition: no wait.
-    wf, errs = _parse(SAMPLE_THEN_COMPOSITE)
-    assert errs == [] and wf.composites[("F",)].gates == frozenset()
+    gate = SourceRef(("H", "@out", "cup"), "out")
+    for stated in (arms((("H",), "else")), None):
+        wf, errs = _parse(SAMPLE_THEN_COMPOSITE, stated)
+        assert errs == []
+        assert wf.composites[("F",)].input_sources == {"cup": gate}
 
 
 def test_an_inner_branch_waits_for_both_conditions():
@@ -598,10 +613,12 @@ def test_a_condition_handed_on_by_an_undecided_branch_is_not_decided_before_it()
     wf, errs = _parse(FLAG_THROUGH)
     assert errs == []
     # On `then` the flag is the boundary's -- but it is not the run's to decide K from
-    # before H is decided: K waits for H's condition, like anything else H hands on.
+    # before H is decided: it comes out of H's gate, which waits for H's condition, so
+    # K's condition is that gate's output and K waits for the gate (design.md D66).
+    flag = ("H", "@out", "flag")
     gate = wf.branch_gates[("K",)]
-    assert gate.condition.node == () and gate.condition.port == "flag"
-    assert gate.waits == (("I",),) and gate.assumed
-    # And it says which decision: K is not the run's to decide before H is stated.
-    assert gate.after == (("H",),)
-    assert (("I",), ("K",)) in wf.precedence
+    assert gate.condition == SourceRef(flag, "out")
+    assert gate.waits == (flag,) and gate.assumed
+    assert Gate(flag, ("H",), False, (("I",),)) in wf.gates
+    assert wf.input_sources[Endpoint(flag, "in")] == SourceRef((), "flag")
+    assert {(("I",), flag), (flag, ("K",))} <= set(wf.precedence)

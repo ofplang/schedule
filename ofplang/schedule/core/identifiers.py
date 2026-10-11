@@ -24,6 +24,12 @@ def is_iteration_index(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
+# The reserved node-path element of a gate (SPECIFICATIONS.md §6.3, design.md D66):
+# what follows a region's path to name one of its gates. It cannot be a node id --
+# `@` is in no identifier -- so no workflow node is ever named so.
+GATE_OUT = "@out"
+
+
 def node_path_problem(elements) -> str | None:
     """Why a sequence is not a well-formed node path, or None if it is one
     (SPECIFICATIONS.md §6.3).
@@ -36,9 +42,23 @@ def node_path_problem(elements) -> str | None:
     before indices existed. The empty path is not judged here: whether it is
     allowed (a boundary arc endpoint) or not (a processing `node`) depends on where
     it appears.
+
+    A **gate's** path (design.md D66) is a region's path -- ending in a node id or an
+    iteration index -- then `@out`, then the port, then the element index of an
+    Array's element, as many as it nests; nothing else follows.
     """
+    elements = list(elements)
     after_node_id = False
-    for element in elements:
+    for position, element in enumerate(elements):
+        if element == GATE_OUT:
+            if position == 0:
+                return f"{GATE_OUT} does not follow a region's node path"
+            rest = elements[position + 1 :]
+            if not rest or not is_identifier(rest[0]):
+                return f"{GATE_OUT} is not followed by a port name"
+            if not all(is_iteration_index(x) for x in rest[1:]):
+                return "a gate's port is followed by something other than element indices"
+            return None
         if isinstance(element, str):
             if not is_identifier(element):
                 return f"invalid node id {element!r}"

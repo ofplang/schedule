@@ -37,11 +37,15 @@ from ofplang.schedule.core.diagnostics import Diagnostics
 from ofplang.schedule.core.identifiers import format_node_path
 from ofplang.schedule.scheduler.guards import check_body
 from ofplang.schedule.scheduler.model import (
+    GATE_IN,
+    GATE_OUT,
+    GATE_OUT_PORT,
     Arc,
     AtomicProcess,
     BranchGate,
     CompositeIO,
     Endpoint,
+    Gate,
     LengthCheck,
     LoopGate,
     NodeInvocation,
@@ -486,6 +490,7 @@ def _read_workflow(
             # reads these, and the branches for the plan's `decision` entries.
             branch_gates=exp.branch_gates,
             arc_gates={arc: frozenset(waits) for arc, waits in exp.arc_gates.items()},
+            gates=tuple(exp.gates),
             loops=exp.loops,
             undecided_loops=exp.undecided_loops,
             **_boundary_ranks(entry_proc),
@@ -807,11 +812,11 @@ def _expand_body(entry_name, entry_proc, procs, atomic, in_ports, exit_object_be
                 if isinstance(leaf, _Producer) and not leaf.index:
                     arc = Arc(Endpoint(leaf.path, leaf.port), exit_end)
                     exp.exit_arcs.append(arc)
-                    exp._gate_arc(arc, leaf.path, leaf.gates)
+                    exp._gate_arc(arc, leaf.path)
                 elif isinstance(leaf, _EntryInput):
                     arc = Arc(Endpoint((), leaf.name, leaf.index), exit_end)
                     exp.through_arcs.append(arc)
-                    exp._gate_arc(arc, (), leaf.gates)
+                    exp._gate_arc(arc, ())
         if (resolved := _source_of(value)) is not None:
             exp.output_sources[out_name] = resolved
 
@@ -833,15 +838,14 @@ class _Producer:
     own input). `index` selects one element of that output's Array, where a `map` /
     `fold` traverses it; empty, the whole value.
 
-    `gates` are the producers a consumer of this value has to wait for besides this
-    one: set where the value passed untouched through a branch whose condition is
-    produced during the run (design.md D64), and on every marker below alike."""
+    What a value has to wait for is never carried on it: a value leaving a region not
+    decided before the run comes out of one of the region's gates (`Gate`, design.md
+    D66), so its producer *is* that gate, and waiting for the producer is waiting
+    for the decision."""
 
     path: NodePath
     port: str
     index: tuple[int, ...] = ()
-    gates: frozenset[NodePath] = frozenset()
-    via: frozenset[NodePath] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -856,8 +860,6 @@ class _EntryInput:
 
     name: str
     index: tuple[int, ...] = ()
-    gates: frozenset[NodePath] = frozenset()
-    via: frozenset[NodePath] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -870,20 +872,17 @@ class _Literal:
     never reads it."""
 
     value: object
-    gates: frozenset[NodePath] = frozenset()
-    via: frozenset[NodePath] = frozenset()
 
 
 @dataclass(frozen=True)
 class _NodeValue:
     """A value no activity produces: a structured node's own output, which the runner
     records at the node's path -- a `do_while`'s `exhausted` (design.md D65). Its
-    source is `[L].exhausted`; what a consumer waits for is in `gates`."""
+    source is `[L].exhausted`. A loop decided only during the run hands it on through
+    a gate (`Gate`, D66), like everything else it hands on."""
 
     path: NodePath
     port: str
-    gates: frozenset[NodePath] = frozenset()
-    via: frozenset[NodePath] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -989,6 +988,9 @@ class _Expander:
         self.loops: dict[NodePath, LoopGate] = {}
         self.undecided_loops: dict[NodePath, tuple[int, Source | None, Source | None]] = {}
         self.arc_gates: dict[Arc, set[NodePath]] = {}
+        # The gate nodes of the regions not decided before the run (`Gate`, D66), in
+        # the order they are made.
+        self.gates: list[Gate] = []
         self.activities: list[NodeInvocation] = []
         self.arcs: list[Arc] = []
         self.precedence: list[tuple[NodePath, NodePath]] = []
@@ -1138,15 +1140,10 @@ class _Expander:
             source = _source_of(value)
             if source is not None:
                 self.input_sources[dst] = source
-            # A value passed untouched through a branch whose condition is produced
-            # during the run is not this activity's to take before that condition
-            # exists: the branch might yet route it elsewhere (design.md D64).
-            for producer in _gates_of(value):
-                self.precedence.append((producer, path))
             if isinstance(value, _Literal | _NodeValue):
                 # A static literal, or a node's own value the runner records: no
-                # producer, no arc -- its source, and the waits above, are all there is.
-                # (A literal on an Object-bearing port is refused by the guards.)
+                # producer, no arc -- its source is all there is. (A literal on an
+                # Object-bearing port is refused by the guards.)
                 continue
             if isinstance(value, _EntryInput):
                 # A workflow entry input -- or one element of it: no in-body producer,
@@ -1156,7 +1153,7 @@ class _Expander:
                 if object_bearing:
                     arc = Arc(Endpoint((), value.name, value.index), dst)
                     self.entry_arcs.append(arc)
-                    self._gate_arc(arc, (), value.gates)
+                    self._gate_arc(arc, ())
                 continue
             if isinstance(value, _Gathered):
                 # An Array assembled from several invocations, read whole (a Pure Data
@@ -1171,21 +1168,104 @@ class _Expander:
             if object_bearing:
                 arc = Arc(Endpoint(value.path, value.port, value.index), dst)
                 self.arcs.append(arc)
-                self._gate_arc(arc, value.path, value.gates)
+                self._gate_arc(arc, value.path)
             # A Pure Data one is the precedence edge above, and its source.
 
-    def _gate_arc(self, arc: Arc, src: NodePath, gates: frozenset[NodePath]) -> None:
-        """Record what the move along `arc` waits for (design.md D64): the producers
-        its Object was passed through untouched under (`gates`), and the condition of
-        every branch being expanded that the move enters from outside -- an Object
-        moved into an arm before the arm is known might have been wanted elsewhere.
-        `src` is the producing activity's path, `()` for the boundary."""
-        waits = set(gates)
+    def _gate_arc(
+        self,
+        arc: Arc,
+        src: NodePath,
+        region: NodePath | None = None,
+        waits: tuple[NodePath, ...] = (),
+    ) -> None:
+        """Record what the move along `arc` waits for (design.md D64, D66): the
+        condition of every region being expanded that the move enters from outside --
+        an Object moved into an arm before the arm is known might have been wanted
+        elsewhere. Read off the structure, from where the move starts: `src` is the
+        producing activity's path, `()` for the boundary.
+
+        `region` / `waits` name one more region the move enters, for a move into one of
+        its gates, which is made once the region's own expansion is over."""
+        waiting = set()
         for branch, producer in self.gate_stack:
             if src[: len(branch)] != branch:
-                waits.add(producer)
-        if waits:
-            self.arc_gates.setdefault(arc, set()).update(waits)
+                waiting.add(producer)
+        if region is not None and src[: len(region)] != region:
+            waiting.update(waits)
+        if waiting:
+            self.arc_gates.setdefault(arc, set()).update(waiting)
+
+    def _through_gates(
+        self,
+        base: NodePath,
+        region: NodePath,
+        outputs: dict,
+        objects: set[str],
+        waits: tuple[NodePath, ...],
+    ) -> dict:
+        """What a region not decided before the run hands on, each output through a
+        gate of its own (`Gate`, design.md D66): `base + (port,)` -- an Object-bearing
+        one per Object (`_hold`), a Pure Data one whole (`_pass`)."""
+        return {
+            port: (
+                self._hold(base + (port,), region, value, waits)
+                if port in objects
+                else self._pass(base + (port,), region, value, waits)
+            )
+            for port, value in outputs.items()
+        }
+
+    def _hold(self, path: NodePath, region: NodePath, value, waits: tuple[NodePath, ...]):
+        """`value` with every Object it is made of moved into a holding gate at `path`
+        (plus the element index, for an Array's element), and read from there.
+
+        The move into the gate is the region's exit move (design.md D66): at most one
+        move, from wherever the Object was left -- by the arm, or by whatever made it
+        when the arm only passes it along. The gate starts after the decision, so
+        whatever takes the Object from it does too."""
+        if value is None:
+            return None
+        if isinstance(value, _Gathered):
+            return _Gathered(
+                tuple(
+                    self._hold(path + (i,), region, item, waits)
+                    for i, item in enumerate(value.items)
+                )
+            )
+        self.gates.append(Gate(path, region, True, waits))
+        dst = Endpoint(path, GATE_IN)
+        source = _source_of(value)
+        if source is not None:
+            self.input_sources[dst] = source
+        for producer in waits:
+            self.precedence.append((producer, path))
+        if isinstance(value, _EntryInput):
+            arc = Arc(Endpoint((), value.name, value.index), dst)
+            self.entry_arcs.append(arc)
+            self._gate_arc(arc, (), region, waits)
+        elif isinstance(value, _Producer):
+            self.precedence.append((value.path, path))
+            arc = Arc(Endpoint(value.path, value.port, value.index), dst)
+            self.arcs.append(arc)
+            self._gate_arc(arc, value.path, region, waits)
+        return _Producer(path, GATE_OUT_PORT)
+
+    def _pass(self, path: NodePath, region: NodePath, value, waits: tuple[NodePath, ...]):
+        """`value`, a Pure Data output of a region not decided before the run, read
+        through a gate at `path` that occupies nothing and starts after the decision
+        and after everything the value is made of (design.md D66)."""
+        if value is None:
+            return None
+        self.gates.append(Gate(path, region, False, waits))
+        source = _source_of(value)
+        if source is not None:
+            self.input_sources[Endpoint(path, GATE_IN)] = source
+        for producer in waits:
+            self.precedence.append((producer, path))
+        for _index, leaf in _leaves(value):
+            if isinstance(leaf, _Producer):
+                self.precedence.append((leaf.path, path))
+        return _read_through(path, value)
 
     def _plannable(self, pname: str) -> bool:
         """Whether an atomic process can be planned in this stage (design.md D57): not
@@ -1294,24 +1374,25 @@ class _Expander:
         for producer in waits:
             self.gate_stack.append((path, producer))
         try:
-            outputs = self._expand_arm(node, path, arm, env, stack)
+            outputs, objects = self._expand_arm(node, path, arm, env, stack)
         finally:
             for _producer in waits:
                 self.gate_stack.pop()
-        if waits:
-            # What the branch hands on without having made it -- an argument returned
-            # untouched, by an implicit `else` or by an arm that only passes it along --
-            # is no more available before the condition than the arm's own work is.
-            outputs = {
-                port: _gated_outside(value, path, frozenset(waits))
-                for port, value in outputs.items()
-            }
+        if gate is not None:
+            # Decided only during the run (design.md D66): everything the branch hands
+            # on -- what its arm made, and an argument it returns untouched alike --
+            # leaves through a gate, whichever arm was expanded, and whether or not the
+            # arm is known yet. The gates are part of the shape, so a decision changes
+            # what is in the arm, never what surrounds it.
+            outputs = self._through_gates(path + (GATE_OUT,), path, outputs, objects, waits)
         self.structured[path] = outputs
         return outputs
 
-    def _expand_arm(self, node: dict, path: NodePath, arm: str, env: dict, stack) -> dict:
+    def _expand_arm(
+        self, node: dict, path: NodePath, arm: str, env: dict, stack
+    ) -> tuple[dict, set[str]]:
         """Invoke a branch's chosen arm at the branch's own path and return what the
-        node exposes (port -> value), v0 20.1, 20.3."""
+        node exposes (port -> value), v0 20.1, 20.3, with the Object-bearing ones."""
         node_id = node["id"]
         arm_node = node.get(arm)
         if isinstance(arm_node, dict):
@@ -1321,13 +1402,13 @@ class _Expander:
                     errors.PROCESS_NOT_DEFINED,
                     f"branch {node_id!r} {arm} arm invokes undefined process {pname!r}",
                 )
-                return {}
+                return {}, set()
             if pname in stack:
                 self.diags.error(
                     errors.RECURSIVE_COMPOSITE,
                     f"composite {pname!r} is recursively defined (via branch {node_id!r})",
                 )
-                return {}
+                return {}, set()
             produced = self._invoke(pname, path, env, stack)
             arm_outputs = self.procs[pname].get("outputs") or {}
             objects = {
@@ -1356,7 +1437,7 @@ class _Expander:
             }
         else:
             exposed = objects
-        return {port: produced.get(port) for port in exposed}
+        return {port: produced.get(port) for port in exposed}, objects & exposed
 
     def _decide_arm(self, path, node, prefix, inputs_env, siblings, stack) -> str | None:
         """The arm a branch at `path` is expanded with, or None (reported)."""
@@ -1379,22 +1460,21 @@ class _Expander:
             return None
         waits = _waits_of(value)
         if waits is not None:
-            # Settled only during the run (design.md D64, D65): an activity's output, a
-            # loop's `exhausted`, or any value a branch or loop not yet decided hands on
-            # untouched -- which value it will be waits for that decision too. The arm is
+            # Settled only during the run (design.md D64, D66): an activity's output, or
+            # what a region not yet decided hands on -- which comes out of the region's
+            # gate, so it waits for that decision too, being its producer. The arm is
             # the one the run states once the value is settled -- holding it to the value
             # is the run's part, since the scheduler never sees one -- or, until then,
             # the one the caller says to assume. Either way nothing of the branch starts
             # before then.
             condition = _source_of(value)
             assert condition is not None  # a value with something to wait for has a source
-            after = _after_of(value)
             if stated is not None:
-                self.branch_gates[path] = BranchGate(condition, stated, False, waits, after)
+                self.branch_gates[path] = BranchGate(condition, stated, False, waits)
                 return stated
             self.undecided[path] = condition
             if self.assume is not None:
-                self.branch_gates[path] = BranchGate(condition, self.assume, True, waits, after)
+                self.branch_gates[path] = BranchGate(condition, self.assume, True, waits)
                 return self.assume
             self.diags.error(
                 errors.BRANCH_ARM_UNKNOWN,
@@ -1485,6 +1565,14 @@ class _Expander:
         modes = self._loop_modes(path, node, set(carry), target_outputs)
         if modes is None:
             return {}
+        # The carried Objects: decided only during the run, each one is moved into a
+        # holding gate at the end of every invocation (design.md D66), where the next
+        # invocation takes it from and where it leaves the loop from.
+        carried_objects = {
+            port for port in carry
+            if _object_bearing(str((target_outputs.get(port) or {}).get("type", "")),
+                               self.domains)
+        }
         condition_spec = node.get("condition")
         condition_port = (
             condition_spec.get("output") if isinstance(condition_spec, dict) else None
@@ -1534,10 +1622,6 @@ class _Expander:
             finally:
                 for _producer in waits:
                     self.gate_stack.pop()
-            for port in carry:
-                state[port] = outs.get(port)
-            for port, values in collected.items():
-                values.append(outs.get(port))
             condition = outs.get(condition_port)
             if condition is None:
                 if not any(d.severity == "error" for d in self.diags.items):
@@ -1547,6 +1631,16 @@ class _Expander:
                     )
                 return {}
             settles = _waits_of(condition)
+            for port in carry:
+                state[port] = outs.get(port)
+                if settles is not None and port in carried_objects:
+                    # The holding gate of this invocation (design.md D66): the next one
+                    # takes the Object from here, and so does what follows the loop.
+                    state[port] = self._hold(
+                        path + (i, GATE_OUT, port), path, state[port], settles
+                    )
+            for port, values in collected.items():
+                values.append(outs.get(port))
             literal = (
                 condition.value
                 if isinstance(condition, _Literal) and settles is None
@@ -1595,7 +1689,8 @@ class _Expander:
                 self.diags.error(errors.LOOP_COUNT_UNKNOWN, f"{where}: too many invocations")
                 return {}
 
-        last_waits = tuple(sorted(_waits_of(condition) or ()))
+        last = _waits_of(condition)
+        last_waits = last or ()
         self.iterations[path] = i + 1
         self.loops[path] = LoopGate(
             condition=_source_of(condition),
@@ -1604,7 +1699,6 @@ class _Expander:
             ended=ended,
             assumed=assumed,
             limit=_source_of(limit),
-            after=_after_of(condition),
         )
         outputs: dict = {}
         for port, mode in modes.items():
@@ -1613,8 +1707,16 @@ class _Expander:
             elif mode == "collect":
                 outputs[port] = _Gathered(tuple(collected[port]))
         outputs[_EXHAUSTED] = _NodeValue(path, _EXHAUSTED)
-        gates = frozenset(last_waits)
-        outputs = {port: _gated(value, gates, frozenset({path})) for port, value in outputs.items()}
+        if last is not None:
+            # Decided only during the run (design.md D66): the carried Objects already
+            # sit in the last invocation's holding gates; every Pure Data output --
+            # carried, collected, and `exhausted` -- leaves through a gate of the loop's
+            # own, after the last decision.
+            outputs = {
+                port: value if port in carried_objects
+                else self._pass(path + (GATE_OUT, port), path, value, last_waits)
+                for port, value in outputs.items()
+            }
         self.structured[path] = outputs
         return outputs
 
@@ -1882,9 +1984,7 @@ class _Expander:
                 continue
             source = _source_of(value)
             if source is not None:
-                self.length_checks.append(
-                    LengthCheck(path, port, source, length, _gates_of(value))
-                )
+                self.length_checks.append(LengthCheck(path, port, source, length))
         return length
 
     def _length(self, value) -> int | None:
@@ -1933,12 +2033,10 @@ class _Expander:
         `returns` resolved in the composite's own scope)."""
         cproc = self.procs[pname]
         output_sources: dict[str, Source] = {}
-        gates: frozenset[NodePath] = frozenset().union(*map(_gates_of, child_env.values()))
         for out_port, source in _returns(cproc).items():
             producer = self._resolve(
                 _parse_ref(source), path, child_env, _body_nodes(cproc), stack + (pname,)
             )
-            gates |= _gates_of(producer)
             if (resolved := _source_of(producer)) is not None:
                 output_sources[out_port] = resolved
         input_sources = {
@@ -1950,7 +2048,6 @@ class _Expander:
             process=pname,
             input_sources=input_sources,
             output_sources=output_sources,
-            gates=gates,
         )
 
     def _resolve(
@@ -2022,61 +2119,39 @@ def _element(value, i: int):
     if isinstance(value, _Literal):
         items = value.value
         if isinstance(items, list) and i < len(items):
-            return _Literal(items[i], value.gates, value.via)
+            return _Literal(items[i])
         return None
     return None
-
-
-def _gated(value, gates: frozenset[NodePath], via: frozenset[NodePath] = frozenset()):
-    """`value` with `gates` added to every marker it is made of (design.md D64), and
-    `via` -- the branch or loop it passes through untouched (D65)."""
-    if (not gates and not via) or value is None:
-        return value
-    if isinstance(value, _Gathered):
-        return _Gathered(tuple(_gated(item, gates, via) for item in value.items))
-    return replace(value, gates=value.gates | gates, via=value.via | via)
-
-
-def _gated_outside(value, branch: NodePath, gates: frozenset[NodePath]):
-    """`value` with `gates` added to every marker not produced under `branch` -- what
-    a branch hands on without having made it (design.md D64) -- and `branch` as what
-    it passed through (D65)."""
-    if value is None:
-        return None
-    if isinstance(value, _Gathered):
-        return _Gathered(tuple(_gated_outside(item, branch, gates) for item in value.items))
-    if isinstance(value, _Producer) and value.path[: len(branch)] == branch:
-        return value
-    return _gated(value, gates, frozenset({branch}))
 
 
 # More invocations of one `do_while` than any workflow writes; a guard against a defect.
 _MAX_INVOCATIONS = 100_000
 
 
+def _read_through(gate: NodePath, value, index: tuple[int, ...] = ()):
+    """What reading `value` through a Pure Data gate gives: the gate's output -- shaped
+    as `value` is where `value` is an Array assembled element by element, each element
+    read as that element of the gate's output. The shape is what a traversal takes its
+    length from, and the gate does not change it (design.md D66)."""
+    if isinstance(value, _Gathered):
+        return _Gathered(
+            tuple(_read_through(gate, item, (*index, i)) for i, item in enumerate(value.items))
+        )
+    return _Producer(gate, GATE_OUT_PORT, index)
+
+
 def _waits_of(value) -> tuple[NodePath, ...] | None:
     """What a condition read from `value` waits for before it is settled, or None where
-    it is settled before the run: a literal or an entry input with nothing to wait for
-    (design.md D64, D65). An activity's output waits for that activity; a node's own
-    value (`exhausted`) and a value handed on untouched by a branch or loop not yet
-    decided wait for those decisions."""
+    it is settled before the run: a literal or an entry input (design.md D64). An
+    activity's output waits for that activity -- and so does a value a region not yet
+    decided hands on, its producer being the region's gate, which waits for the
+    decision (D66). A node's own value (`exhausted`) is settled during the run with
+    nothing of its own to wait for."""
     if isinstance(value, _Producer):
-        return tuple(sorted({value.path} | value.gates))
+        return (value.path,)
     if isinstance(value, _NodeValue):
-        return tuple(sorted(value.gates))
-    if isinstance(value, _Literal | _EntryInput):
-        return tuple(sorted(value.gates)) if value.gates else None
+        return ()
     return None
-
-
-def _after_of(value) -> tuple[NodePath, ...]:
-    """The pending branches and loops a value passed through untouched (D65)."""
-    return tuple(sorted(frozenset().union(*(leaf.via for _index, leaf in _leaves(value)))))
-
-
-def _gates_of(value) -> frozenset[NodePath]:
-    """Every producer a consumer of `value` waits for besides its own producers."""
-    return frozenset().union(*(leaf.gates for _index, leaf in _leaves(value)))
 
 
 def _leaves(value, index: tuple[int, ...] = ()):

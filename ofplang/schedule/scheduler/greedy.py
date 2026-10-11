@@ -868,6 +868,7 @@ def _marked(
                 placement,
                 relay=instance.activities[placement.activity].relay,
                 boundary=instance.activities[placement.activity].boundary,
+                gate=instance.activities[placement.activity].gate,
                 status=(
                     acts[placement.activity].status if placement.activity in acts else None
                 ),
