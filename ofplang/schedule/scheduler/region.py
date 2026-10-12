@@ -691,3 +691,50 @@ def _unreachable_pairs(
                 if held != wanted and not routes(env, held, wanted):
                     pairs.append(((gate, g), (receiver, m)))
     return tuple(pairs)
+
+
+def kept_reservations(instance: Instance, solution, now: int) -> tuple | None:
+    """What each undecided region keeps in `solution`, read off its placements as the
+    solver reads it (design.md D66): the window from its decision -- or its first start,
+    for a loop -- to its exit, never before `now`; and the spots of the candidate its
+    placed modes are, or of its last invocation's modes and the candidates inside it.
+
+    For a schedule built some other way than by the solver -- the previous plan laid out
+    again (`greedy._replay_previous`) -- so that it reports what it keeps and the
+    read-back can hold it to that. None where a branch's placed modes are none of its
+    candidates': such a schedule keeps nothing it could say."""
+    from ofplang.schedule.scheduler.result import ReservationResult
+
+    by_activity = {p.activity: p for p in solution.processing}
+    chosen: dict = {}
+    for res in instance.reservations:
+        if not res.candidates:
+            continue
+        for spots, pins in res.candidates:
+            if all(by_activity[i].mode == instance.activities[i].modes[m] for i, m in pins):
+                chosen[res.region] = spots
+                break
+        else:
+            return None
+    found = []
+    for res in instance.reservations:
+        if res.opens_after:
+            opened = max(by_activity[i].end for i in res.opens_after)
+        else:
+            starts = [by_activity[i].start for i in res.members]
+            starts += [solution.transport[r].start for r in res.arcs]
+            opened = min(starts)
+        start = max(opened, now)
+        end = max([by_activity[g].start for g in res.closes] or [start])
+        if end <= start:
+            continue
+        spots = set(chosen.get(res.region, ()))
+        for i in res.derived:
+            mode = by_activity[i].mode
+            spots.update(mode.input_spots.values())
+            spots.update(mode.output_spots.values())
+        for inner in res.borrowed:
+            spots.update(chosen.get(inner, ()))
+        if spots:
+            found.append(ReservationResult(res.region, start, end, tuple(sorted(spots))))
+    return tuple(found)

@@ -2111,9 +2111,12 @@ the future it places, not the past it inherited.
 
 A region decided -- a branch whose arm is stated, a loop that has ended -- keeps nothing;
 neither does a branch something of which has started (it is decided in all but name),
-nor a region of a job that has stopped (§6.2). The constructed planner (`greedy`) does
-not keep reservations yet and declines a plan that has one (`planner_unsupported`); so,
-for such a plan, does the constructed fallback of §4.9.
+nor a region of a job that has stopped (§6.2). The constructed planner's forward passes
+(`greedy`) do not keep reservations yet: a first plan that has one is declined
+(`planner_unsupported`). On a replan the previous plan is laid out again instead (§4.9)
+-- in its order on every spot, and with every window opening only once the windows it
+followed have closed -- and offered where it keeps what it reports; that is also the
+constructed fallback of §4.9 for such a plan.
 A plan with no undecided region has no reservation and is what it always was. Rendered
 on every plan, from the workflow and the solve; never run, and never read back.
 

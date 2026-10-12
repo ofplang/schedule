@@ -266,3 +266,19 @@ def test_a_joint_replan_the_solver_comes_back_empty_from_relaxes_what_it_breaks(
     bounds = {entry["id"]: entry.get("bound") for entry in report.plan["jobs"]}
     assert bounds["job2"] == 44  # kept as promised
     assert bounds["job1"] > 14  # re-derived from what the constructed plan achieves
+
+
+@pytest.mark.parametrize("name", ["inspect_then_wash", "rinse_until_clean"])
+def test_a_replan_with_undecided_regions_the_solver_gives_up_on_is_laid_out_again(
+    name, monkeypatch
+):
+    # The forward passes do not keep a region's spots, but the previous plan did: laid
+    # out again in its order -- windows included -- it is the plan handed back
+    # (design.md D66, stage 6), and it says what it keeps. The first activity is the one
+    # running late, so every window is still ahead.
+    document = _overrun(_first_plan(name), which=0)
+    monkeypatch.setattr(api, "_solver", lambda: _unsolved)
+    report = _replan(name, document, check_arms=False)
+    assert report.plan is not None, _codes(report)
+    assert errors.PLAN_CONSTRUCTED_AFTER_SOLVER in _codes(report)
+    assert [a for a in report.plan["activities"] if a["kind"] == "reservation"]

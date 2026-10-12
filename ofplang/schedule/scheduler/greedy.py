@@ -242,10 +242,11 @@ def _refuse(instance: Instance, fixation: Fixation | None, jobs: tuple) -> str |
         # Nothing in the corpus has any, so rather than re-derive a rule this has
         # never been measured against, it is declined.
         return "cancelled"
-    if instance.reservations:
+    if instance.reservations and (fixation is None or fixation.previous is None):
         # 🔴 A pass that does not keep a region's spots would build a plan the region
         # could not be held to, and the read-back would refuse it anyway. Declined
-        # until the passes keep them (design.md D66, stage 4b: deferred).
+        # until the passes keep them (design.md D66, stage 4b: deferred) -- except on
+        # a replan with the previous plan to lay out again, which kept them already.
         return "reservation"
     return None
 
@@ -907,6 +908,13 @@ def _build(
     every row of the corpus -- but a rule that happens to agree is not the right
     rule, and a document is free to ask for the refills to be minimised first.
     """
+    if instance.reservations:
+        # The forward passes do not keep a region's spots (`_refuse`): the previous
+        # plan, laid out again, is the one schedule this can offer (design.md D66).
+        previous = fixation.previous if fixation is not None else None
+        if previous is None:
+            return None
+        return _replay_previous(instance, previous, floors, history, now)
     best: Solution | None = None
     mark: tuple[int, ...] | None = None
     for rule in _RULES:
@@ -1430,13 +1438,30 @@ def _replay_previous(
     planned_place = {s.index: s.choice for s in previous.steps if s.kind == "place"}
     planned_move = {s.index: s.choice for s in previous.steps if s.kind == "move"}
 
+    # 🔴 **The windows keep their order too** (design.md D66). A region's window opens
+    # at its decision, which a spot's order does not reach: the previous plan opened one
+    # cup's window after the last one's had closed, but if the first was held up and the
+    # second's inspection was not, the second would be decided inside the first's window.
+    # So what opens a window waits for every window the previous plan had closed before
+    # it, on a spot the two may share: those regions' exits are put down first, and the
+    # opening is held until they have closed.
+    after = _windows_before(instance, previous, history)
+
     def put(index: int) -> bool:
-        """Put activity `index` down, after what it receives."""
+        """Put activity `index` down, after what it receives -- and after the windows
+        it may not open before."""
         if index in placed:
             return True
         choice = planned_place.get(index, previous.implicit_modes.get(index))
         if choice is None:
             return False
+        for gates, by_end in after.get(index, ()):
+            for gate in gates:
+                if not put(gate):
+                    return False
+            closed = max(placed[gate].start for gate in gates)
+            length = instance.activities[index].modes[choice].duration if by_end else 0
+            floor[index] = max(floor[index], closed - length)
         for arc_index in arriving[index]:
             if arc_index not in moves and not send(arc_index):
                 return False
@@ -1490,7 +1515,70 @@ def _replay_previous(
                 bay.release(makespan)
     if any(line.pending is not None for line in board.spots.values()):
         return None  # material left resting with nothing to take it away
-    return _assemble(instance, placed, moves, makespan)
+    solution = _assemble(instance, placed, moves, makespan)
+    if instance.reservations:
+        # What each undecided region keeps, read off the schedule as the solver reads
+        # it (design.md D66), so the read-back holds the schedule to it. Laid out in the
+        # previous plan's order, it keeps what that plan kept unless the history pushed
+        # work across a window -- which the read-back then refuses.
+        from ofplang.schedule.scheduler.region import kept_reservations
+
+        kept = kept_reservations(instance, solution, now)
+        if kept is None:
+            return None
+        solution = replace(solution, reservations=kept)
+    return solution
+
+
+def _windows_before(
+    instance: Instance, previous: PreviousPlan, history: _History
+) -> dict[int, list[tuple[tuple[int, ...], bool]]]:
+    """For each activity that opens a region's window, the exits of the regions whose
+    windows the previous plan closed before that one opened, on a spot both may keep:
+    activity -> [(those gates, whether it is the opening's *end* that has to follow)].
+
+    A branch opens at the end of its condition's producers; a loop at its first start,
+    so every activity of it waits. Regions one inside the other share their window
+    and are left alone."""
+    times: dict[int, tuple[int, int]] = {}
+    for step in previous.steps:
+        if step.kind == "place":
+            times[step.index] = (step.start, step.end)
+    for index, (_mode, start, end) in history.activities.items():
+        times[index] = (start, end)
+
+    windows = []
+    for res in instance.reservations:
+        if not res.closes or any(g not in times for g in res.closes):
+            continue
+        if res.opens_after:
+            if any(i not in times for i in res.opens_after):
+                continue
+            opened = max(times[i][1] for i in res.opens_after)
+            opening, by_end = res.opens_after, True
+        else:
+            members = [i for i in res.members if i in times]
+            if not members:
+                continue
+            opened = min(times[i][0] for i in members)
+            opening, by_end = tuple(members), False
+        closed = max(times[g][0] for g in res.closes)
+        windows.append((res, opened, closed, opening, by_end, res.possible_spots(instance)))
+
+    after: dict[int, list[tuple[tuple[int, ...], bool]]] = {}
+    for res, opened, _closed, opening, by_end, spots in windows:
+        for other, _o, closed, _op, _b, other_spots in windows:
+            if other is res or not spots & other_spots or closed > opened:
+                continue
+            nested = (tuple(res.region[: len(other.region)]) == tuple(other.region)
+                      or tuple(other.region[: len(res.region)]) == tuple(res.region))
+            if nested:
+                continue
+            for index in opening:
+                if index in history.activities:
+                    continue  # already open: history
+                after.setdefault(index, []).append((other.closes, by_end))
+    return after
 
 
 def _replay_move(
