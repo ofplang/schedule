@@ -2088,6 +2088,10 @@ work is on those spots inside the window, so whichever outcome the run sees, wha
 region may yet need is free when it needs it: a plan made on an assumed outcome can only
 get later when the outcome is another, never stuck. The region's own work -- its
 activities and gates, every move into, inside or out of it -- is on them as it likes.
+So is **history**: what has run or is running, and an Object resting where it left it,
+is not the reservation's to move. Where work overran onto a kept spot, the replan plans
+on around it rather than finding no plan; what the reservation still guarantees is then
+the future it places, not the past it inherited.
 
 - **The window.** A branch keeps its spots from its decision (the end of its
   condition's producer) to its exit (the start of the last of its gates, §6.15); a loop
