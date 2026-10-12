@@ -234,3 +234,114 @@ def test_more_regions_than_candidates_a_region_offers_still_plan():
     for entry in kept:
         slot = f"rack.s{entry['node'][1]}"
         assert slot in entry["spots"]
+
+
+# --- work that overran into a window ---------------------------------------------------------
+
+_INSPECT_PROCESSES = """\
+  inspect:
+    kind: atomic
+    inputs: {cup: {type: Cup, phase: data}}
+    outputs: {cup: {type: Cup, phase: data}, dirty: {type: Bool, phase: data}}
+    objects: {map: {outputs.cup: inputs.cup}}
+  wash:
+    kind: atomic
+    inputs: {cup: {type: Cup, phase: data}}
+    outputs: {cup: {type: Cup, phase: data}}
+    objects: {map: {outputs.cup: inputs.cup}}
+  polish:
+    kind: atomic
+    inputs: {cup: {type: Cup, phase: data}}
+    outputs: {cup: {type: Cup, phase: data}}
+    objects: {map: {outputs.cup: inputs.cup}}
+"""
+
+
+def _cup_workflow(body: str, returns: str) -> dict:
+    return yaml.safe_load(
+        'spec_version: "0.5"\ntypes:\n  Cup: {domain: object}\nprocesses:\n'
+        + _INSPECT_PROCESSES
+        + "  main:\n    kind: composite\n    inputs: {cup: {type: Cup, phase: data}}\n"
+        "    outputs: {cup: {type: Cup, phase: data}}\n    body:\n      nodes:\n"
+        + body + f"      returns: {{cup: {{from: {returns}}}}}\nentry: main\n"
+    )
+
+
+_DECIDES = _cup_workflow(
+    "        - {id: I, process: inspect, state: {cup: {from: inputs.cup}}}\n"
+    "        - id: H\n          kind: branch\n          condition: {from: I.dirty}\n"
+    "          args: {cup: {from: I.cup}}\n          then: {process: wash}\n"
+    "          else: {process: polish}\n",
+    "H.cup",
+)
+_POLISHES_FIRST = _cup_workflow(
+    "        - {id: P, process: polish, state: {cup: {from: inputs.cup}}}\n"
+    "        - {id: L, process: inspect, state: {cup: {from: P.cup}}}\n",
+    "L.cup",
+)
+_PLACES = ["tray.a", "tray.b", "scope.stage", "sink.basin", "buffer.pad", "tub.bath",
+           "rack.a", "rack.b"]
+_CUPS_ENV = {
+    "time": {"unit": "second"},
+    "devices": [
+        {"id": "tray", "spots": ["a", "b"]}, {"id": "scope", "spots": ["stage"]},
+        {"id": "sink", "spots": ["basin"]}, {"id": "buffer", "spots": ["pad"]},
+        {"id": "tub", "spots": ["bath"]}, {"id": "rack", "spots": ["a", "b"]},
+    ],
+    "transporters": [{"id": "arm"}],
+    "transports": [
+        {"transporter": "arm", "from": a, "to": b, "duration": 1}
+        for a in _PLACES for b in _PLACES if a != b
+    ],
+    "processes": {
+        name: {"modes": [{"devices": [device], "duration": duration,
+                          "input_spots": {"cup": f"{device}.{spot}"},
+                          "output_spots": {"cup": f"{device}.{spot}"}}]}
+        for name, (device, spot, duration) in {
+            "inspect": ("scope", "stage", 2), "wash": ("sink", "basin", 5),
+            "polish": ("buffer", "pad", 3),
+        }.items()
+    },
+}
+
+
+def test_work_that_overran_onto_a_kept_spot_does_not_take_the_replan_away():
+    # Cup b's polishing was planned to be over long before cup a is decided; it overran,
+    # and is still on the buffer -- a spot a keeps, since a may yet be polished -- when
+    # a's inspection ends. History is not the reservation's to move (design.md D66 F1):
+    # the replan plans on, where holding the window against the running polish made it
+    # infeasible.
+    jobs = [JobInput("a", copy.deepcopy(_DECIDES)), JobInput("b", copy.deepcopy(_POLISHES_FIRST))]
+    roster = {"activities": [], "jobs": [
+        {"id": "a", "release": 0,
+         "interface": {"inputs": {"cup": "tray.a"}, "outputs": {"cup": "rack.a"}}},
+        {"id": "b", "release": 0,
+         "interface": {"inputs": {"cup": "tray.b"}, "outputs": {"cup": "rack.b"}}},
+    ]}
+    plan = schedule_jobs(jobs, copy.deepcopy(_CUPS_ENV), document_path=roster, random_seed=0).plan
+    (window,) = kinds(plan, "reservation")
+    assert "buffer.pad" in window["spots"]
+    polish = next(a for a in plan["activities"] if a.get("job") == "b" and a.get("node") == ["P"])
+    assert polish["end"] <= window["start"]
+    now = window["start"]
+    document = copy.deepcopy(plan)
+    history = []
+    for entry in document["activities"]:
+        if entry is polish or entry == polish:
+            history.append({**entry, "status": "running"})
+            continue
+        moved_b_in = (
+            entry["kind"] == "transport" and entry.get("job") == "b"
+            and entry["end"] <= polish["start"]
+        )
+        done_by_a = (
+            entry.get("job") == "a" and entry["kind"] in ("processing", "transport")
+            and entry["end"] <= now
+        )
+        if moved_b_in or done_by_a:
+            history.append({**entry, "status": "completed"})
+    document["activities"] = history
+    document["now"] = now
+    report = schedule_jobs(jobs, copy.deepcopy(_CUPS_ENV), document_path=document,
+                           random_seed=0, check_arms=False, running_task_margin=1)
+    assert report.ok, [(d.code, d.message) for d in report.diagnostics]

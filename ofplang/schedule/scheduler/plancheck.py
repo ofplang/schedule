@@ -206,11 +206,13 @@ def _claims(instance: Instance, solution: Solution):
                 claims.append(("device", device, move.start, move.end, f"arc{index}.dev", owner))
             source = by_activity[arc.src_activity]
             claims.append(
-                ("spot", option.from_spot, source.end, move.end, f"arc{index}.from", owner)
+                ("spot", option.from_spot, source.end, move.end, f"arc{index}.from",
+                 ("rs", index))
             )
             target = by_activity[arc.dst_activity]
             claims.append(
-                ("spot", option.to_spot, move.start, target.start, f"arc{index}.to", owner)
+                ("spot", option.to_spot, move.start, target.start, f"arc{index}.to",
+                 ("rd", index))
             )
     return claims
 
@@ -225,7 +227,22 @@ def _clash(start: int, end: int, other_start: int, other_end: int) -> bool:
     return start < other_end and other_start < end
 
 
-def _reservation_wrongs(instance: Instance, solution: Solution, claims) -> list[str]:
+def _history(instance: Instance, fixation: Fixation | None, kind: str, index: int) -> bool:
+    """Whether a claim is history a reservation cannot move (design.md D66 F1): an
+    activity or move that has started, or an Object resting where a started activity
+    left it."""
+    if fixation is None:
+        return False
+    if kind == "a":
+        return index in fixation.activities
+    if index in fixation.arcs:
+        return True
+    return kind == "rs" and instance.arcs[index].src_activity in fixation.activities
+
+
+def _reservation_wrongs(
+    instance: Instance, solution: Solution, claims, fixation: Fixation | None = None
+) -> list[str]:
     """What the plan does against the reservations it reports (design.md D66): work
     that is not a region's own on a spot it keeps, inside its window, and two regions
     -- neither inside the other -- keeping one spot at once."""
@@ -239,7 +256,9 @@ def _reservation_wrongs(instance: Instance, solution: Solution, claims) -> list[
         for kind, name, start, end, what, (owner_kind, index) in claims:
             if kind != "spot" or name not in kept.spots:
                 continue
-            if index in (res.members if owner_kind == "a" else res.arcs):
+            if _history(instance, fixation, owner_kind, index):
+                continue
+            if res.owns("a" if owner_kind == "a" else "r", index):
                 continue
             if _clash(kept.start, kept.end, start, end):
                 wrong.append(
@@ -363,4 +382,4 @@ def check_schedule(
                     f"{kind} {name}: {what} [{start},{end}] overlaps {other} "
                     f"[{other_start},{other_end}]"
                 )
-    return wrong + _reservation_wrongs(instance, solution, claims)
+    return wrong + _reservation_wrongs(instance, solution, claims, fixation)

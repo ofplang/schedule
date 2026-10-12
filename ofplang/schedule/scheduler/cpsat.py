@@ -208,8 +208,9 @@ def solve(
     def add(mapping: dict[str, list], key: str, interval) -> None:
         mapping.setdefault(key, []).append(interval)
 
-    # Who holds each spot interval -- `("a", activity)` or `("r", arc)` -- so a region's
-    # reservation can keep everything *but* its own work off its spots (D66).
+    # Who holds each spot interval -- `("a", activity)`, or a move's source hold
+    # `("rs", arc)` and destination hold `("rd", arc)` -- so a region's reservation can
+    # keep everything *but* its own work off its spots (D66).
     spot_owned: dict[str, list] = {}
 
     def hold_spot(spot: str, interval, owner: tuple[str, int]) -> None:
@@ -416,13 +417,13 @@ def solve(
             hold_spot(
                 opt.from_spot,
                 model.NewOptionalIntervalVar(e_src, src_size, b, present, f"si{r}_{k}"),
-                ("r", r),
+                ("rs", r),
             )
             dst_size = model.NewIntVar(0, horizon, f"ds{r}_{k}")
             hold_spot(
                 opt.to_spot,
                 model.NewOptionalIntervalVar(a, dst_size, s_dst, present, f"di{r}_{k}"),
-                ("r", r),
+                ("rd", r),
             )
         model.AddExactlyOne(lits)
         if fr is not None:
@@ -779,10 +780,13 @@ def _add_reservations(
     runs in, and the candidates of the branches inside it.
 
     Each kept spot gets the window as an interval, and a non-overlap with every interval
-    on the spot that is not the region's own. The windows of two regions keeping one
-    spot, neither inside the other, do not overlap either -- two regions keeping one
-    spot take turns -- which is a constraint of its own: another region's window has
-    that region's own work inside it, so the two can never share one non-overlap."""
+    on the spot that is not the region's own and is still to be placed. History is not
+    in it: what has run or is running cannot be moved, and holding a window against it
+    would only take every answer away from a replan where something overran (D66 F1).
+    The windows of two regions keeping one spot, neither inside the other, do not
+    overlap either -- two regions keeping one spot take turns -- which is a constraint
+    of its own: another region's window has that region's own work inside it, so the
+    two can never share one non-overlap."""
     if not instance.reservations:
         return []
     chosen: dict = {}
@@ -857,9 +861,20 @@ def _add_reservations(
             windows.setdefault(spot, []).append((res, window))
         kept.append((res.region, start, end, open_, presence))
 
+    fixed_activities = set(fixation.activities) if fixation is not None else set()
+    fixed_arcs = set(fixation.arcs) if fixation is not None else set()
+
     def own(res, owner) -> bool:
         kind, index = owner
-        return index in (res.members if kind == "a" else res.arcs)
+        # History is not the reservation's to move (F1): what has run or is running, and
+        # an Object resting where history left it until its move comes for it.
+        if kind == "a" and index in fixed_activities:
+            return True
+        if kind != "a" and index in fixed_arcs:
+            return True
+        if kind == "rs" and instance.arcs[index].src_activity in fixed_activities:
+            return True
+        return res.owns("a" if kind == "a" else "r", index)
 
     def nested(a, b) -> bool:
         return (tuple(a.region[: len(b.region)]) == tuple(b.region)

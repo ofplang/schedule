@@ -500,8 +500,15 @@ class Reservation:
     mode choices that cannot both be taken -- a loop's holding gate on a spot its next
     invocation cannot be reached from.
 
+    Where a branch's Objects wait for its decision needs no keeping: the Object resting
+    there already holds it until it moves into the arm, and keeping it beyond that would
+    only hold up the next one to use it (measured: a cup's inspection then waited for
+    the previous cup's whole branch).
+
     Its own activities and moves (`members`, `arcs`) are on those spots as much as they
-    like; only the rest is kept off."""
+    like; only the rest is kept off -- and only what is still to be placed: what has
+    run, or is running, is history, and a reservation cannot move it (design.md D66,
+    F1)."""
 
     region: NodePath
     members: frozenset[int]
@@ -524,6 +531,11 @@ class Reservation:
                 spots.update(mode.input_spots.values())
                 spots.update(mode.output_spots.values())
         return frozenset(spots)
+
+    def owns(self, kind: str, index: int) -> bool:
+        """Whether a claim of activity (`kind` "a") or move ("r") `index` is this
+        region's own work."""
+        return index in (self.members if kind == "a" else self.arcs)
 
 
 def _occupies(mode: Mode) -> tuple:
