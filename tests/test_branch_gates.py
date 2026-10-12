@@ -353,7 +353,9 @@ def _starts(plan, node):
         if a["kind"] == "processing" and a["node"] == node]
 
 
-@pytest.mark.parametrize("planner", ["cpsat", "greedy"])
+# The constructed planner does not keep an undecided region's spots yet (design.md
+# D66, stage 4b deferred), so it declines such a plan (`test_greedy`).
+@pytest.mark.parametrize("planner", ["cpsat"])
 def test_nothing_of_the_branch_starts_before_its_decision(planner):
     workflow, env, document = _example("inspect_then_wash")
     report = schedule(workflow, env, document_path=document, planner=planner, random_seed=0)

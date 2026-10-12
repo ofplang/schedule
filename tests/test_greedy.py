@@ -718,12 +718,31 @@ def test_a_fresh_roster_is_not_declined():
     assert construct(instance, jobs=fresh) is not None
 
 
+def test_an_undecided_region_is_declined():
+    # A branch or loop decided only during the run keeps spots for itself while it is
+    # open (design.md D66); the passes do not keep them yet, so such a plan is declined
+    # rather than built and then refused by the read-back.
+    from ofplang.schedule import schedule
+
+    examples = Path(__file__).resolve().parents[1] / "examples"
+    report = schedule(
+        examples / "rinse_until_clean.workflow.yaml",
+        examples / "rinse_until_clean.env.yaml",
+        document_path=examples / "rinse_until_clean.document.yaml",
+        planner="greedy",
+    )
+    assert report.plan is None
+    (said,) = [d for d in report.diagnostics if d.code == "planner_unsupported"]
+    assert REFUSALS["reservation"] in said.message
+
+
 def test_every_listed_refusal_has_a_test_above():
     # The list and the tests drift apart silently otherwise: a seventh shape
     # added to `REFUSALS` with no test would look exactly like six with six.
     covered = {
         "running refill",
         "cancelled",
+        "reservation",
     }
     assert set(REFUSALS) == covered
 

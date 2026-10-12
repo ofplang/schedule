@@ -326,7 +326,9 @@ def test_a_collected_output_is_as_long_as_the_loop_and_waits_for_it():
 # --- the plan --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("planner", ["cpsat", "greedy"])
+# The constructed planner does not keep an undecided loop's spots yet (design.md D66,
+# stage 4b deferred), so it declines such a plan (`test_greedy`).
+@pytest.mark.parametrize("planner", ["cpsat"])
 def test_nothing_after_an_invocation_starts_before_its_reading(planner):
     report = schedule(copy.deepcopy(RINSE), copy.deepcopy(ENV),
                       document_path={**DOCUMENT, **{"expansion": loops((("Clean",), 2, False))}},

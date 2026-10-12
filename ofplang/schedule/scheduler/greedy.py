@@ -66,6 +66,10 @@ from ofplang.schedule.scheduler.status import Fixation, PreviousPlan
 REFUSALS = {
     "running refill": "a refill already under way is history this does not carry",
     "cancelled": "work a stopped job abandoned is placed at an instant this does not derive",
+    "reservation": (
+        "a branch or loop decided only during the run keeps spots for itself while it is "
+        "open (design.md D66), which the forward passes do not keep yet"
+    ),
 }
 
 # How many times a start may be pushed later before this gives up. Each push
@@ -238,6 +242,11 @@ def _refuse(instance: Instance, fixation: Fixation | None, jobs: tuple) -> str |
         # Nothing in the corpus has any, so rather than re-derive a rule this has
         # never been measured against, it is declined.
         return "cancelled"
+    if instance.reservations:
+        # 🔴 A pass that does not keep a region's spots would build a plan the region
+        # could not be held to, and the read-back would refuse it anyway. Declined
+        # until the passes keep them (design.md D66, stage 4b: deferred).
+        return "reservation"
     return None
 
 

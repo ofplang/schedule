@@ -169,3 +169,23 @@ def test_a_reservation_entry_names_real_spots():
     }
     codes = [d.code for d in validate_document(document).diagnostics]
     assert "wrong_type" in codes and "malformed_qualified_spot" in codes
+
+
+# --- a job that has stopped -------------------------------------------------------------
+
+
+def test_a_stopped_job_keeps_nothing_and_the_other_still_does():
+    # Job a was stopped before its plate left the rack: its loop is going nowhere and
+    # keeps nothing, and b's loop keeps what it keeps (design.md D66, stage 4c).
+    jobs, env, roster = _two_rinses()
+    first = schedule_jobs(jobs, env, document_path=roster, random_seed=0).plan
+    into_a = next(
+        a for a in first["activities"]
+        if a.get("job") == "a" and a["kind"] == "transport" and a["from_spot"] == "rack.in"
+    )
+    document = copy.deepcopy(first)
+    document["activities"] = [{**into_a, "status": "cancelled", "start": 0, "end": 0}]
+    document["now"] = 0
+    report = schedule_jobs(jobs, env, document_path=document, random_seed=0)
+    assert report.plan is not None, [(d.code, d.message) for d in report.diagnostics]
+    assert [entry["job"] for entry in kinds(report.plan, "reservation")] == ["b"]

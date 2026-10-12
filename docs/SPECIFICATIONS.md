@@ -2104,7 +2104,10 @@ activities and gates, every move into, inside or out of it -- is on them as it l
   do not overlap. A region inside another keeps its spots within the outer one's.
 
 A region decided -- a branch whose arm is stated, a loop that has ended -- keeps nothing;
-neither does a branch something of which has started (it is decided in all but name).
+neither does a branch something of which has started (it is decided in all but name),
+nor a region of a job that has stopped (§6.2). The constructed planner (`greedy`) does
+not keep reservations yet and declines a plan that has one (`planner_unsupported`); so,
+for such a plan, does the constructed fallback of §4.9.
 A plan with no undecided region has no reservation and is what it always was. Rendered
 on every plan, from the workflow and the solve; never run, and never read back.
 

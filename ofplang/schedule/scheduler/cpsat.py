@@ -794,7 +794,15 @@ def _add_reservations(
 
     kept: list = []
     windows: dict[str, list] = {}
+    cancelled = {
+        i for i, fx in (fixation.activities.items() if fixation is not None else ())
+        if fx.status == "cancelled"
+    }
     for n, res in enumerate(instance.reservations):
+        # A region of a job that has stopped -- or that a probe takes out of the plan
+        # (`api._without`) -- is going nowhere: it keeps nothing.
+        if res.members & cancelled:
+            continue
         opened = model.NewIntVar(0, horizon, f"rs{n}")
         if res.opens_after:
             model.AddMaxEquality(opened, [ends[i] for i in res.opens_after])
