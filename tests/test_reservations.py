@@ -345,3 +345,29 @@ def test_work_that_overran_onto_a_kept_spot_does_not_take_the_replan_away():
     report = schedule_jobs(jobs, copy.deepcopy(_CUPS_ENV), document_path=document,
                            random_seed=0, check_arms=False, running_task_margin=1)
     assert report.ok, [(d.code, d.message) for d in report.diagnostics]
+
+
+# --- a loop that draws on a stock ------------------------------------------------------------
+
+
+def test_a_loop_drawing_on_a_stock_warns_that_later_invocations_are_unchecked():
+    # Each rinse draws water from the sink. The stock is checked for one rinse more than
+    # planned, not up to max_iterations (design.md D66, C5/D4): said, not refused.
+    workflow, env, document = _example("rinse_until_clean")
+    env = copy.deepcopy(env)
+    for device in env["devices"]:
+        if device["id"] == "sink":
+            device["resources"] = {"water": {"capacity": 10}}
+    for mode in env["processes"]["rinse"]["modes"]:
+        mode["consumption"] = {"sink.water": 1}
+    document = {**document, "inventories": {"levels": {"sink": {"water": 10}}}}
+    report = schedule(workflow, env, document_path=document, random_seed=0)
+    assert report.ok, [(d.code, d.message) for d in report.diagnostics]
+    (said,) = [d for d in report.diagnostics if d.code == "loop_stock_unchecked"]
+    assert said.severity == "warning" and "Clean" in said.message
+
+
+def test_a_loop_drawing_on_nothing_says_nothing():
+    workflow, env, document = _example("rinse_until_clean")
+    report = schedule(workflow, env, document_path=document, random_seed=0)
+    assert "loop_stock_unchecked" not in [d.code for d in report.diagnostics]

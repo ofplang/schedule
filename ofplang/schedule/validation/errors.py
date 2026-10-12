@@ -264,6 +264,12 @@ ARM_UNPLANNABLE = "arm_unplannable"
 # input no `expansion.loops` entry decides, a literal `true` whose `max_iterations`
 # is not a literal, or a produced condition with nothing to assume.
 LOOP_COUNT_UNKNOWN = "loop_count_unknown"
+# A `do_while` decided only during the run whose body draws on a stock: the stocks are
+# checked for the invocations planned and one more (design.md D66, C5/D4), not up to
+# `max_iterations` -- which tends to be written far above what a run needs -- so a run
+# going on longer than that may find a stock short. A warning: refills, or the run
+# ending sooner, may well cover it.
+LOOP_STOCK_UNCHECKED = "loop_stock_unchecked"
 # An `expansion.loops` entry names no `do_while` node of this expansion. Not reported
 # for one inside an arm the expansion did not take, or inside an invocation that has
 # not happened -- it simply does not occur.

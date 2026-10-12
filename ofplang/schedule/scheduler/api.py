@@ -1784,6 +1784,25 @@ def _reservations(
                 if tuple(p[: len(last)]) == last and prefix + tuple(p) in candidates
             ]
             kept = loop_reservation(instance, prefix + tuple(path), loop.count, borrowed, going_on)
+            if any(
+                mode.consumption
+                for i in kept.derived for mode in instance.activities[i].modes
+            ):
+                diagnostics += _attribute(
+                    [
+                        Diagnostic(
+                            errors.LOOP_STOCK_UNCHECKED,
+                            f"loop {format_node_path(path)!r} draws on a stock in every "
+                            "invocation; the stocks are checked for one invocation more "
+                            "than planned, not up to max_iterations, so a run that goes on "
+                            "longer may find one short",
+                            "expansion",
+                            severity=WARNING,
+                        )
+                    ],
+                    job,
+                    jobs,
+                )
             if cannot_go_on(kept, instance):
                 refuse(job, f"loop {format_node_path(path)!r} cannot go on to invocation "
                             f"{loop.count + 1}: no move takes what an invocation leaves to "
@@ -2186,7 +2205,7 @@ def _run(
         jobs, workflows, specs, env, interface, readings, instance, fixation, built, candidates
     )
     diagnostics += unplannable
-    if unplannable:
+    if _has_error(unplannable):
         return ScheduleReport(None, None, None, diagnostics)
     if reservations:
         instance = replace(instance, reservations=reservations)
