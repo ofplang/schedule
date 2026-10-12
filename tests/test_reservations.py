@@ -189,3 +189,48 @@ def test_a_stopped_job_keeps_nothing_and_the_other_still_does():
     report = schedule_jobs(jobs, env, document_path=document, random_seed=0)
     assert report.plan is not None, [(d.code, d.message) for d in report.diagnostics]
     assert [entry["job"] for entry in kinds(report.plan, "reservation")] == ["b"]
+
+
+# --- many regions ---------------------------------------------------------------------------
+
+
+def _cups(n: int):
+    """`inspect_then_wash` with `n` cups, each bound to a rack slot of its own."""
+    workflow, env, document = _example("inspect_then_wash")
+    env = copy.deepcopy(env)
+    names = [f"s{i}" for i in range(n)]
+    for device in env["devices"]:
+        if device["id"] in ("tray", "rack"):
+            device["spots"] = names
+    env["transports"] = [
+        t for t in env["transports"]
+        if not (t["from"].startswith("tray.") or t["to"].startswith("rack."))
+    ]
+    for s in names:
+        env["transports"].append(
+            {"transporter": "arm", "from": f"tray.{s}", "to": "scope.stage", "duration": 2}
+        )
+        for src in ("sink.basin", "buffer.pad"):
+            env["transports"].append(
+                {"transporter": "arm", "from": src, "to": f"rack.{s}", "duration": 2}
+            )
+    document = {**document, "interface": {
+        "inputs": {"cups": [f"tray.{s}" for s in names]},
+        "outputs": {"cups": [f"rack.{s}" for s in names]},
+    }}
+    return workflow, env, document
+
+
+def test_more_regions_than_candidates_a_region_offers_still_plan():
+    # Twelve cups, each bound to its own slot: more slots than a region offers
+    # candidates for. Each cup's exit is its own slot -- the only place what follows
+    # can take it from -- so every one of them still has a candidate (measured: before
+    # the exits were held to that, cups 8 to 11 had none and the plan was infeasible).
+    workflow, env, document = _cups(12)
+    report = schedule(workflow, env, document_path=document, random_seed=0, check_arms=False)
+    assert report.ok, [(d.code, d.message) for d in report.diagnostics]
+    kept = kinds(report.plan, "reservation")
+    assert len(kept) == 12
+    for entry in kept:
+        slot = f"rack.s{entry['node'][1]}"
+        assert slot in entry["spots"]

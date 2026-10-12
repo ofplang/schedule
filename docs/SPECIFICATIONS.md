@@ -2059,10 +2059,12 @@ and its Object, if any, has landed, at the latest of those ends -- and it is pla
 at or after `now` otherwise. Whatever a document given to the scheduler says on a gate
 entry is not read.
 
-In this stage a holding gate keeps its Object where it was left: one candidate spot
-per spot the region's last step can leave it on, reached by a same-spot hand-over. A
-region decided before the run -- a literal condition, or one the boundary decides --
-has no gates, and its plan is what it always was.
+A holding gate of a region decided by now keeps its Object where it was left: one
+candidate spot per spot the region's last step can leave it on, reached by a same-spot
+hand-over. One of a branch still undecided waits where one of the branch's candidates
+says (§9.3, §6.16): a spot every arm reaches in at most one move and from which what
+follows can take it. A region decided before the run -- a literal condition, or one the
+boundary decides -- has no gates, and its plan is what it always was.
 
 🔴 **A different fingerprint.** The gates are part of the expanded graph, so a
 workflow with a region decided during the run has a different fingerprint (§6.11)

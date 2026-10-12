@@ -633,8 +633,13 @@ def solve(
     # (measured: hinting the choice literals alone leaves the presolved model with
     # none of them hinted, while hinting the times alone closes the widest
     # synthetic instance at optimal with zero branches; report §29.6).
+    # The forward passes do not keep an undecided region's spots (design.md D66) and
+    # decline an instance that has some. A hint need not be a schedule, though -- it is
+    # only where the search starts -- so the passes are asked for one with the
+    # reservations left out, and the solver repairs what that gets wrong. Measured on
+    # twenty-four inspected cups, the difference between a proof in 0.1 s and in 7.
     constructed = greedy.construct(
-        instance,
+        replace(instance, reservations=()) if instance.reservations else instance,
         fixation=fixation,
         jobs=jobs,
         objective=objective,

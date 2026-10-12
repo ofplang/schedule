@@ -311,8 +311,14 @@ def _sink_on(spot: str) -> Mode:
 
 def _exit_choices(gate: NodePath, shapes: list[_Shape]) -> list[str]:
     """The spots `gate`'s Object may wait on: within one move -- or none -- of where
-    every outcome leaves it (design.md D66 Q3 (A)). Where the outcome assumed leaves it
-    comes first, so that a plan costing that outcome no move is tried first."""
+    every outcome leaves it (design.md D66 Q3 (A)), and from which what takes it after
+    the region can have it. Where the outcome assumed leaves it comes first, so that a
+    plan costing that outcome no move is tried first.
+
+    The second condition is what keeps the candidates worth having: a spot the next
+    step cannot be reached from is a plan that cannot go on, and offering it would
+    only crowd out one that can -- measured, twelve cups each bound to a rack slot of
+    its own came out with candidates on the first eight slots only, and no plan."""
     env = shapes[0].full.env
     everywhere = sorted(
         f"{device}.{spot}" for device, entry in env.devices.items() for spot in entry.spots
@@ -324,10 +330,32 @@ def _exit_choices(gate: NodePath, shapes: list[_Shape]) -> list[str]:
             spot == start or routes(env, start, spot) for start in left
         )}
         allowed = reach if allowed is None else allowed & reach
+    if allowed:
+        allowed = {spot for spot in allowed if _goes_on_from(shapes[0].full, gate, spot)}
     if not allowed:
         return []
     first = sorted(allowed & shapes[0].left_on(gate))
     return first + sorted(allowed - set(first))
+
+
+def _goes_on_from(full: Instance, gate: NodePath, spot: str) -> bool:
+    """Whether everything taking the Object out of `gate` can take it from `spot`, in
+    one of its modes: on that spot, or one move away. A gate nothing takes from yet
+    goes on from anywhere."""
+    env = full.env
+    index = {act.node: i for i, act in enumerate(full.activities) if act.relay is None}
+    g = index.get(gate)
+    for arc in full.arcs:
+        if arc.src_activity != g:
+            continue
+        key = slot_key(arc.arc.dst)
+        wanted = {
+            m.input_spots[key] for m in full.activities[arc.dst_activity].modes
+            if key in m.input_spots
+        }
+        if not any(spot == w or routes(env, spot, w) for w in wanted):
+            return False
+    return True
 
 
 # --------------------------------------------------------------------------
@@ -353,8 +381,8 @@ def _images(
         nxt: list[Candidate] = []
         for candidate in frontier:
             for swap in swaps:
-                image = _image(candidate, swap, shapes, choices)
-                if image is None or image.spots in found:
+                image = _image(candidate, swap, shapes, choices, found)
+                if image is None:
                     continue
                 found[image.spots] = image
                 nxt.append(image)
@@ -389,14 +417,20 @@ def _swaps(shapes: list[_Shape], choices: dict[NodePath, list[str]]) -> list:
     return swaps
 
 
-def _image(candidate: Candidate, swap, shapes: list[_Shape], choices) -> Candidate | None:
-    """`candidate` with `swap` applied, planned again to confirm it, or None."""
+def _image(
+    candidate: Candidate, swap, shapes: list[_Shape], choices, found
+) -> Candidate | None:
+    """`candidate` with `swap` applied, planned again to confirm it -- or None where it
+    is not one, or keeps the spots of one already `found`.
+
+    The spots are worked out from the moved modes before anything is planned: most
+    swaps move nothing the region keeps (two trays the Objects come from, say), and
+    planning those again only to throw them away was the whole cost of this."""
     sub_spot = swap[0]
     exits = {gate: sub_spot(spot) for gate, spot in candidate.exits.items()}
     if any(spot not in choices[gate] for gate, spot in exits.items()):
         return None
-    plans: list[dict[NodePath, Mode]] = []
-    durations: list[int] = []
+    moves: list[dict[NodePath, Mode]] = []
     for shape, plan in zip(shapes, candidate.plans, strict=True):
         moved: dict[NodePath, Mode] = {}
         for path, mode in plan.items():
@@ -406,6 +440,12 @@ def _image(candidate: Candidate, swap, shapes: list[_Shape], choices) -> Candida
             if image is None:
                 return None
             moved[path] = image
+        moves.append(moved)
+    if _spots_of(tuple(moves), exits) in found:
+        return None
+    plans: list[dict[NodePath, Mode]] = []
+    durations: list[int] = []
+    for shape, moved in zip(shapes, moves, strict=True):
         planned = shape.plan(exits, pinned=moved)
         if planned is None:
             return None

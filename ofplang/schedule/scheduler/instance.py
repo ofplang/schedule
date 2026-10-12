@@ -357,9 +357,8 @@ def _add_gates(
     A holding gate keeps its Object **where it was left**: one mode per spot its
     source can leave the Object on, so the move into it is a same-spot hand-over --
     no move at all -- whichever mode the source runs in. A gate of a branch still to be
-    decided may also wait one move further on (`_reach`): the spot its outcomes share
-    can be one none of them stays on (design.md D66 Q3), and which it is the region's
-    reservation chooses. A Pure Data gate holds nothing and has one mode.
+    decided waits where its candidates say instead, which is known only once they are
+    (`with_gate_spots`). A Pure Data gate holds nothing and has one mode.
 
     Gates come in the order they were made, an inner region's before the outer's, so a
     gate fed by another gate finds it already here.
@@ -367,12 +366,9 @@ def _add_gates(
     feeding = {arc.dst.node: arc for arc in gated_arcs if arc.dst.port == GATE_IN}
     entering = _entering_gates(workflow, entered)
     bound_at = {consumer.node: spot for _node, spot, consumer in entering.values()}
-    undecided = {path for path, branch in workflow.branch_gates.items() if branch.assumed}
     for gate in workflow.gates:
         if gate.object_bearing:
             spots = _gate_spots(gate.path, feeding, bound_at, activities, index_by_node)
-            if gate.region in undecided:
-                spots = _reach(spots, env)
             modes = tuple(
                 Mode(
                     id=f"gate:{spot}",
@@ -420,14 +416,43 @@ def _gate_spots(
     return {bound_at[path]} if path in bound_at else set()
 
 
-def _reach(spots: set[str], env: Environment) -> set[str]:
-    """`spots` and every spot one move from one of them."""
-    everywhere = (
-        f"{device_id}.{spot}" for device_id, device in env.devices.items() for spot in device.spots
+def with_gate_spots(instance: Instance, spots: dict[NodePath, frozenset[str]]) -> Instance:
+    """`instance` with each holding gate named in `spots` waiting on those spots only,
+    and every move into or out of it offered the routes that serves (design.md D66).
+
+    An undecided branch's gate waits where one of its candidates says -- possibly one
+    move on from where any of its outcomes leaves the Object -- and nowhere else: a
+    wider choice would buy the solve nothing it could take, and cost every check that
+    walks the instance (measured, `mobility` went from milliseconds to fourteen
+    seconds on twenty-four cups when each gate offered every spot in reach)."""
+    activities = list(instance.activities)
+    changed: set[int] = set()
+    for i, act in enumerate(activities):
+        if act.gate and act.node in spots:
+            activities[i] = replace(act, modes=tuple(
+                Mode(
+                    id=f"gate:{spot}",
+                    devices=(),
+                    duration=0,
+                    input_spots={GATE_IN: spot},
+                    output_spots={GATE_OUT_PORT: spot},
+                )
+                for spot in sorted(spots[act.node])
+            ))
+            changed.add(i)
+    if not changed:
+        return instance
+    arcs = tuple(
+        replace(arc, options=tuple(transport_options(
+            activities[arc.src_activity], slot_key(arc.arc.src),
+            activities[arc.dst_activity], slot_key(arc.arc.dst),
+            instance.env,
+        )))
+        if arc.src_activity in changed or arc.dst_activity in changed
+        else arc
+        for arc in instance.arcs
     )
-    return set(spots) | {
-        spot for spot in everywhere if any(routes(env, start, spot) for start in spots)
-    }
+    return replace(instance, activities=tuple(activities), arcs=arcs)
 
 
 def _entering_gates(

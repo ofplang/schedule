@@ -80,11 +80,21 @@ def test_the_arms_share_the_one_place_both_reach():
     assert base.plans[1][("Each", 0, "Choose")].devices == ("buffer",)
 
 
-def test_interchangeable_places_give_one_candidate_each():
-    # The three rack slots are alike to the region, so each is a candidate: three cups
-    # need not all want the first one.
+def test_a_place_the_next_step_cannot_take_from_is_no_exit():
+    # Each cup is bound to a rack slot of its own: a candidate leaving cup 0 on another
+    # slot is a plan that cannot go on, so cup 0's only exit is its own slot.
     workflow, env, document = _example("inspect_then_wash")
     candidates, _why = _candidates(workflow, env, document, ("Each", 0, "Choose"))
+    gate = ("Each", 0, "Choose", "@out", "cup")
+    assert [c.exits[gate] for c in candidates] == ["rack.a"]
+
+
+def test_interchangeable_places_give_one_candidate_each():
+    # With the outputs left for the plan to place, the three rack slots are alike to the
+    # region, so each is a candidate: three cups need not all want the first one.
+    workflow, env, document = _example("inspect_then_wash")
+    unbound = {**document, "interface": {"inputs": document["interface"]["inputs"]}}
+    candidates, _why = _candidates(workflow, env, unbound, ("Each", 0, "Choose"))
     gate = ("Each", 0, "Choose", "@out", "cup")
     assert sorted(c.exits[gate] for c in candidates) == ["rack.a", "rack.b", "rack.c"]
     assert len({c.spots for c in candidates}) == len(candidates)

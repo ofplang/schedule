@@ -36,6 +36,7 @@ from ofplang.schedule.scheduler.instance import (
     report_crowded_outputs,
     report_exhausted_stocks,
     report_unreachable,
+    with_gate_spots,
 )
 from ofplang.schedule.scheduler.interface import binding_elements, element_label
 from ofplang.schedule.scheduler.mobility import report_deadlocked_objects
@@ -1689,86 +1690,104 @@ def _switched_bases(j, job, workflow, spec, env, interface, roots, jobs, built=N
     return found
 
 
-def _reservations(
-    jobs, workflows, specs, bases, env, interface, roots, instance, fixation, built
-) -> tuple[tuple, list[Diagnostic]]:
-    """What every undecided region keeps for itself in `instance` (design.md D66, stage
-    4), and `arm_unplannable` for each undecided branch with no candidate.
+def _branch_candidates(jobs, workflows, specs, bases, env, interface, roots, built) -> dict:
+    """Every undecided branch's candidates (design.md D66): region path -> `(job index,
+    branch path, its BranchGate, candidates, why there are none)`.
 
     A branch is planned locally on its outcomes -- the expansion as planned and every one
-    reached by switching only it or branches inside it (`region.branch_candidates`) --
-    and keeps the spots of the candidate the solve chooses. A loop keeps what its last
-    invocation runs on, the candidates of the branches inside that invocation included,
-    with its holding gates held to spots the next invocation can be reached from (read
-    off the expansion one invocation longer).
-
-    A branch something of which has already started keeps nothing: nothing of it starts
-    before its decision, so it is decided in all but name -- a run states it before the
-    next plan, and a document that does not is planned as the history says."""
-    found: list = []
-    diagnostics: list[Diagnostic] = []
+    reached by switching only it or branches inside it (`region.branch_candidates`). Asked
+    before the instance is normalized: where its gates' Objects wait is what the
+    candidates say, and the gates are widened to that first (`with_gate_spots`)."""
+    found: dict = {}
     for j, (job, workflow, spec) in enumerate(zip(jobs, workflows, specs, strict=True)):
         branches = {p: g for p, g in workflow.branch_gates.items() if g.assumed}
-        loops = {p: loop for p, loop in workflow.loops.items() if not loop.ended}
-        if not branches and not loops:
+        if not branches:
             continue
         prefix = (job.id,) if job.id else ()
-        outcomes = [
-            (paths, base)
-            for _chain, _read, errs, paths, base, made in _switched_bases(
-                j, job, workflow, spec, env, interface, roots, jobs, built
-            )
-            if base is not None and not errs and not [d for d in made if d.severity == ERROR]
-        ]
+        outcomes = _planned_outcomes(j, job, workflow, spec, env, interface, roots, jobs, built)
         for path, gate in branches.items():
             inside = [
                 base for paths, base in outcomes
                 if all(tuple(p)[: len(path)] == tuple(path) for p in paths)
             ]
             region = prefix + tuple(path)
-            members, _arcs = region_members(instance, region)
-            if any(i in fixation.activities for i in members):
-                continue
             candidates, why = branch_candidates(region, [bases[j], *inside])
-            kept = (
-                branch_reservation(instance, region, [prefix + tuple(w) for w in gate.waits],
-                                   candidates)
-                if candidates else None
-            )
-            if kept is None:
-                diagnostics += _attribute(
-                    [
-                        Diagnostic(
-                            errors.ARM_UNPLANNABLE,
-                            f"branch {format_node_path(path)!r} cannot be planned whichever "
-                            f"arm the run takes: {why or 'no candidate fits this plan'}",
-                            "expansion",
-                        )
-                    ],
-                    job,
-                    jobs,
-                )
-                continue
-            found.append(kept)
+            found[region] = (j, tuple(path), gate, candidates, why)
+    return found
+
+
+def _planned_outcomes(j, job, workflow, spec, env, interface, roots, jobs, built) -> list:
+    """The switched expansions of job `j` that could be built: `(paths switched,
+    instance)`."""
+    return [
+        (paths, base)
+        for _chain, _read, errs, paths, base, made in _switched_bases(
+            j, job, workflow, spec, env, interface, roots, jobs, built
+        )
+        if base is not None and not errs and not [d for d in made if d.severity == ERROR]
+    ]
+
+
+def _reservations(
+    jobs, workflows, specs, env, interface, roots, instance, fixation, built, candidates
+) -> tuple[tuple, list[Diagnostic]]:
+    """What every undecided region keeps for itself in `instance` (design.md D66, stage
+    4), and `arm_unplannable` for each one that cannot keep anything.
+
+    A branch keeps the spots of the candidate the solve chooses among `candidates`
+    (`_branch_candidates`). A loop keeps what its last invocation runs on, the
+    candidates of the branches inside that invocation included, with its holding gates
+    held to spots the next invocation can be reached from (read off the expansion one
+    invocation longer); one that cannot be reached at all is refused.
+
+    A branch something of which has already started keeps nothing: nothing of it starts
+    before its decision, so it is decided in all but name -- a run states it before the
+    next plan, and a document that does not is planned as the history says."""
+    found: list = []
+    diagnostics: list[Diagnostic] = []
+
+    def refuse(job, message: str) -> None:
+        nonlocal diagnostics
+        diagnostics += _attribute(
+            [Diagnostic(errors.ARM_UNPLANNABLE, message, "expansion")], job, jobs
+        )
+
+    for region, (j, path, gate, offered, why) in candidates.items():
+        job = jobs[j]
+        prefix = (job.id,) if job.id else ()
+        members, _arcs = region_members(instance, region)
+        if any(i in fixation.activities for i in members):
+            continue
+        kept = (
+            branch_reservation(instance, region, [prefix + tuple(w) for w in gate.waits],
+                               offered)
+            if offered else None
+        )
+        if kept is None:
+            refuse(job, f"branch {format_node_path(path)!r} cannot be planned whichever arm "
+                        f"the run takes: {why or 'no candidate fits this plan'}")
+            continue
+        found.append(kept)
+
+    for j, (job, workflow, spec) in enumerate(zip(jobs, workflows, specs, strict=True)):
+        loops = {p: loop for p, loop in workflow.loops.items() if not loop.ended}
+        if not loops:
+            continue
+        prefix = (job.id,) if job.id else ()
+        branches = [p for p, g in workflow.branch_gates.items() if g.assumed]
+        outcomes = _planned_outcomes(j, job, workflow, spec, env, interface, roots, jobs, built)
         for path, loop in loops.items():
             last = tuple(path) + (loop.count - 1,)
             going_on = next((base for paths, base in outcomes if paths == (path,)), None)
-            borrowed = [prefix + tuple(p) for p in branches if tuple(p[: len(last)]) == last]
+            borrowed = [
+                prefix + tuple(p) for p in branches
+                if tuple(p[: len(last)]) == last and prefix + tuple(p) in candidates
+            ]
             kept = loop_reservation(instance, prefix + tuple(path), loop.count, borrowed, going_on)
             if cannot_go_on(kept, instance):
-                diagnostics += _attribute(
-                    [
-                        Diagnostic(
-                            errors.ARM_UNPLANNABLE,
-                            f"loop {format_node_path(path)!r} cannot go on to invocation "
-                            f"{loop.count + 1}: no move takes what an invocation leaves to where "
-                            "the next one starts",
-                            "expansion",
-                        )
-                    ],
-                    job,
-                    jobs,
-                )
+                refuse(job, f"loop {format_node_path(path)!r} cannot go on to invocation "
+                            f"{loop.count + 1}: no move takes what an invocation leaves to "
+                            "where the next one starts")
                 continue
             found.append(kept)
     return tuple(found), diagnostics
@@ -2130,6 +2149,20 @@ def _run(
         frozen=tuple(frozen),
         derived=tuple(residue),
     )
+    # Each branch decided only during the run, planned locally on its outcomes (design.md
+    # D66): its candidates say where its gates' Objects wait, so they are asked for
+    # before the instance is normalized and checked, and the gates widened to that.
+    built: dict = {}
+    candidates = _branch_candidates(
+        jobs, workflows, specs, job_bases, env, interface, readings, built
+    )
+    exits: dict = {}
+    for _j, _path, _gate, found, _why in candidates.values():
+        for candidate in found:
+            for gate, spot in candidate.exits.items():
+                exits.setdefault(gate, set()).add(spot)
+    if exits:
+        base = with_gate_spots(base, {gate: frozenset(s) for gate, s in exits.items()})
     instance, fixation, normalized, checked = _normalize_and_check(base, root, env, fixed)
     diagnostics += normalized + checked
     if instance is None or fixation is None or _has_error(checked):
@@ -2139,7 +2172,6 @@ def _run(
     # may yet take the other, so that one is held to the same checks. Asked for by the
     # caller, who knows when the answer can have changed -- a run, at its first plan and
     # whenever a machine goes down or comes back, not on every replan.
-    built: dict = {}
     if check_arms:
         unplannable = _check_arms(
             jobs, workflows, specs, job_bases, env, interface, readings, root, fixed, built
@@ -2151,7 +2183,7 @@ def _run(
     # What each region decided only during the run keeps for itself (design.md D66):
     # asked on every plan, since what a plan places has to leave those spots free.
     reservations, unplannable = _reservations(
-        jobs, workflows, specs, job_bases, env, interface, readings, instance, fixation, built
+        jobs, workflows, specs, env, interface, readings, instance, fixation, built, candidates
     )
     diagnostics += unplannable
     if unplannable:
