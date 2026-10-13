@@ -79,14 +79,16 @@ class PreviousStep:
     `kind` is `place` (an activity, `index` into the instance's activities, `choice`
     a mode index) or `move` (a leg, `index` into its arcs, `choice` an option
     index). `start` / `end` are the times the previous plan gave it: only their
-    **order** is used -- the times themselves are history's to move.
+    **order** is used -- the times themselves are history's to move. Work spliced in
+    where a decision changed a region (`splice`) is given a moment between two of
+    them, so they need not be whole.
     """
 
     kind: str  # place | move
     index: int
     choice: int
-    start: int
-    end: int
+    start: float
+    end: float
 
 
 @dataclass(frozen=True)

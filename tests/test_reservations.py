@@ -464,6 +464,29 @@ def test_an_object_history_left_on_a_kept_spot_waits_there_through_its_gates(mon
     assert "plan_constructed_after_solver" in [d.code for d in constructed.diagnostics]
 
 
+
+def test_a_decided_outcome_goes_in_after_an_object_history_left_on_its_spot(monkeypatch):
+    # Cup a's second wash ran late, so it is still on the sink, and leaves through the two
+    # gates on the sink its branches hand it on by. Cup b is decided `else` -- a polish,
+    # whose exit is on the sink as well. The polish is spliced into the plan being
+    # replaced after cup a has gone: a move that takes away what history left counts
+    # however many gates it waited in (design.md D67). Before, the splice put the polish
+    # first and the replay found the sink taken. Found by the D67 simulation.
+    document = yaml.safe_load(
+        (Path(__file__).parent / "fixtures" / "branch_decided_past_a_late_cup.document.yaml")
+        .read_text(encoding="utf-8")
+    )
+    from ofplang.schedule.scheduler import api, greedy
+    from ofplang.schedule.scheduler.result import Solution
+
+    # The order laid out again is the guarantee; the forward passes may find one too.
+    monkeypatch.setattr(greedy, "_pass", lambda *args, **kwargs: None)
+    monkeypatch.setattr(api, "_solver", lambda: lambda *a, **k: Solution("unknown", None, (), ()))
+    report = _washes_again(document)
+    assert report.ok, [(d.code, d.message) for d in report.diagnostics]
+    assert "plan_constructed_after_solver" in [d.code for d in report.diagnostics]
+
+
 # --- a branch inside a loop, decided before the loop is -------------------------------------
 
 _PLATE_STEPS = {

@@ -1,0 +1,382 @@
+# A replan document for test_reservations: two cups through a branch inside a branch
+# (`_WASHES_AGAIN` on `_CUPS_ENV`). Cup a was decided `then` twice and its second wash
+# ran late, so it is still on the sink; cup b's inspection is over and b's branch is
+# stated `else` (a polish), whose exit is on the sink too. Played out by the D67
+# simulation (design.md D67, stage 1).
+time: {unit: second}
+now: 32
+jobs:
+- id: a
+  release: 0
+  bound: 33
+  fingerprint: c1a2acd8509bfa67
+  interface:
+    inputs: {cup: tray.a}
+    outputs: {cup: rack.a}
+  expansion:
+    arms:
+    - node: [H]
+      arm: then
+    - node: [H, K]
+      arm: then
+- id: b
+  release: 0
+  interface:
+    inputs: {cup: tray.b}
+    outputs: {cup: rack.b}
+  expansion:
+    arms:
+    - node: [H]
+      arm: else
+outcome: feasible
+objective:
+  kind: [completion_time_sum, makespan]
+  value: [82, 49]
+activities:
+- kind: transport
+  job: a
+  status: completed
+  start: 0
+  end: 1
+  from_spot: tray.a
+  to_spot: scope.stage
+  transporter: arm
+  arc:
+    from:
+      node: []
+      port: cup
+    to:
+      node: [I]
+      port: cup
+  seq: 0
+- kind: processing
+  job: a
+  status: completed
+  start: 1
+  end: 10
+  process: inspect
+  mode: '0'
+  node: [I]
+  devices: [scope]
+  input_spots: {cup: scope.stage}
+  output_spots: {cup: scope.stage}
+- kind: transport
+  job: a
+  status: completed
+  start: 10
+  end: 11
+  from_spot: scope.stage
+  to_spot: sink.basin
+  transporter: arm
+  arc:
+    from:
+      node: [I]
+      port: cup
+    to:
+      node: [H, W]
+      port: cup
+  seq: 0
+- kind: processing
+  job: a
+  status: completed
+  start: 11
+  end: 16
+  process: wash
+  mode: '0'
+  node: [H, W]
+  devices: [sink]
+  input_spots: {cup: sink.basin}
+  output_spots: {cup: sink.basin}
+- kind: transport
+  job: a
+  status: completed
+  start: 16
+  end: 17
+  from_spot: sink.basin
+  to_spot: scope.stage
+  transporter: arm
+  arc:
+    from:
+      node: [H, W]
+      port: cup
+    to:
+      node: [H, J]
+      port: cup
+  seq: 0
+- kind: processing
+  job: a
+  status: completed
+  start: 17
+  end: 19
+  process: inspect
+  mode: '0'
+  node: [H, J]
+  devices: [scope]
+  input_spots: {cup: scope.stage}
+  output_spots: {cup: scope.stage}
+- kind: transport
+  job: a
+  status: completed
+  start: 19
+  end: 20
+  from_spot: scope.stage
+  to_spot: sink.basin
+  transporter: arm
+  arc:
+    from:
+      node: [H, J]
+      port: cup
+    to:
+      node: [H, K]
+      port: cup
+  seq: 0
+- kind: transport
+  job: b
+  status: completed
+  start: 20
+  end: 21
+  from_spot: tray.b
+  to_spot: scope.stage
+  transporter: arm
+  arc:
+    from:
+      node: []
+      port: cup
+    to:
+      node: [I]
+      port: cup
+  seq: 0
+- kind: processing
+  job: a
+  status: completed
+  start: 20
+  end: 32
+  process: wash
+  mode: '0'
+  node: [H, K]
+  devices: [sink]
+  input_spots: {cup: sink.basin}
+  output_spots: {cup: sink.basin}
+- kind: processing
+  job: b
+  status: completed
+  start: 24
+  end: 32
+  process: inspect
+  mode: '0'
+  node: [I]
+  devices: [scope]
+  input_spots: {cup: scope.stage}
+  output_spots: {cup: scope.stage}
+- kind: decision
+  job: b
+  start: 32
+  end: 32
+  node: [H]
+  arm: then
+  assumed: true
+  condition:
+    node: [I]
+    port: dirty
+- kind: gate
+  job: a
+  start: 32
+  end: 32
+  node: [H, K, '@out', cup]
+  spot: sink.basin
+- kind: gate
+  job: a
+  start: 32
+  end: 32
+  node: [H, '@out', cup]
+  spot: sink.basin
+- kind: transport
+  job: a
+  start: 32
+  end: 32
+  from_spot: sink.basin
+  to_spot: sink.basin
+  arc:
+    from:
+      node: [H, K]
+      port: cup
+    to:
+      node: [H, K, '@out', cup]
+      port: in
+- kind: transport
+  job: a
+  start: 32
+  end: 32
+  from_spot: sink.basin
+  to_spot: sink.basin
+  arc:
+    from:
+      node: [H, K, '@out', cup]
+      port: out
+    to:
+      node: [H, '@out', cup]
+      port: in
+- kind: transport
+  job: a
+  start: 32
+  end: 33
+  from_spot: sink.basin
+  to_spot: rack.a
+  transporter: arm
+  arc:
+    from:
+      node: [H, '@out', cup]
+      port: out
+    to:
+      node: []
+      port: cup
+- kind: reservation
+  job: b
+  start: 32
+  end: 48
+  node: [H]
+  spots: [buffer.pad, scope.stage, sink.basin]
+- kind: transport
+  job: b
+  start: 33
+  end: 34
+  from_spot: scope.stage
+  to_spot: sink.basin
+  transporter: arm
+  arc:
+    from:
+      node: [I]
+      port: cup
+    to:
+      node: [H, W]
+      port: cup
+- kind: processing
+  job: b
+  start: 34
+  end: 39
+  process: wash
+  mode: '0'
+  node: [H, W]
+  devices: [sink]
+  input_spots: {cup: sink.basin}
+  output_spots: {cup: sink.basin}
+- kind: transport
+  job: b
+  start: 39
+  end: 40
+  from_spot: sink.basin
+  to_spot: scope.stage
+  transporter: arm
+  arc:
+    from:
+      node: [H, W]
+      port: cup
+    to:
+      node: [H, J]
+      port: cup
+- kind: processing
+  job: b
+  start: 40
+  end: 42
+  process: inspect
+  mode: '0'
+  node: [H, J]
+  devices: [scope]
+  input_spots: {cup: scope.stage}
+  output_spots: {cup: scope.stage}
+- kind: decision
+  job: b
+  start: 42
+  end: 42
+  node: [H, K]
+  arm: then
+  assumed: true
+  condition:
+    node: [H, J]
+    port: dirty
+- kind: transport
+  job: b
+  start: 42
+  end: 43
+  from_spot: scope.stage
+  to_spot: sink.basin
+  transporter: arm
+  arc:
+    from:
+      node: [H, J]
+      port: cup
+    to:
+      node: [H, K]
+      port: cup
+- kind: reservation
+  job: b
+  start: 42
+  end: 48
+  node: [H, K]
+  spots: [buffer.pad, sink.basin]
+- kind: processing
+  job: b
+  start: 43
+  end: 48
+  process: wash
+  mode: '0'
+  node: [H, K]
+  devices: [sink]
+  input_spots: {cup: sink.basin}
+  output_spots: {cup: sink.basin}
+- kind: gate
+  job: b
+  start: 48
+  end: 48
+  node: [H, K, '@out', cup]
+  spot: sink.basin
+- kind: gate
+  job: b
+  start: 48
+  end: 48
+  node: [H, '@out', cup]
+  spot: sink.basin
+- kind: transport
+  job: b
+  start: 48
+  end: 48
+  from_spot: sink.basin
+  to_spot: sink.basin
+  arc:
+    from:
+      node: [H, K]
+      port: cup
+    to:
+      node: [H, K, '@out', cup]
+      port: in
+- kind: transport
+  job: b
+  start: 48
+  end: 48
+  from_spot: sink.basin
+  to_spot: sink.basin
+  arc:
+    from:
+      node: [H, K, '@out', cup]
+      port: out
+    to:
+      node: [H, '@out', cup]
+      port: in
+- kind: transport
+  job: b
+  start: 48
+  end: 49
+  from_spot: sink.basin
+  to_spot: rack.b
+  transporter: arm
+  arc:
+    from:
+      node: [H, '@out', cup]
+      port: out
+    to:
+      node: []
+      port: cup
+meta:
+  workflow: [<in-memory>, <in-memory>]
+  environment: <in-memory>
+  status: <in-memory>

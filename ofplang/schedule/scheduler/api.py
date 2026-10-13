@@ -1843,6 +1843,100 @@ def _reservations(
     return tuple(found), diagnostics
 
 
+def _spliced(root, jobs, workflows, specs, env, interface, roots, instance, fixation):
+    """`fixation` with the previous plan spliced (`splice`) where only decided regions
+    keep it from covering the instance; unchanged otherwise."""
+    from ofplang.schedule.scheduler import splice
+
+    if fixation.previous is not None:
+        return fixation
+    changes = splice.changed_regions(root, jobs, workflows)
+    if not changes:
+        return fixation
+    decided: dict = {}
+    for change in changes:
+        if change.kind != "arm":
+            continue
+        modes = _decided_outcome(
+            change.job, jobs[change.job], specs[change.job], env, interface, roots, jobs,
+            change.path, root,
+        )
+        if modes is None:
+            return fixation  # its candidate is not found again: the solver's alone (Q3)
+        decided.update(modes)
+    previous = splice.previous_plan(root, instance, fixation, changes, decided)
+    return replace(fixation, previous=previous) if previous is not None else fixation
+
+
+def _decided_outcome(j, job, spec, env, interface, roots, jobs, path, root) -> dict | None:
+    """The modes of a branch's outcome decided since the plan being replaced, from the
+    candidate that plan ran its assumed outcome on (design.md D67): the branch planned
+    locally again on the expansion before it was decided, and that candidate found by
+    the modes the plan gave its assumed outcome. None where it is not found."""
+    job_interface, job_expansion = roots[j]
+    path = tuple(path)
+    arms = [
+        entry for entry in (job_expansion or {}).get("arms") or []
+        if tuple((entry.get("node") or ())[: len(path)]) != path
+    ]
+    forgotten = {**(job_expansion or {}), "arms": arms}
+    read, diags = parse_workflow(
+        job.workflow, interface=job_interface, expansion=forgotten, assume=ASSUMED_ARM
+    )
+    if read is None or _has_error(diags.items):
+        return None
+    base, made = _build_one(job, read, spec, env, interface, jobs)
+    if base is None or _has_error(made):
+        return None
+    inside = []
+    for _chain, switched, errs, paths in _switched_expansions(
+        job.workflow, job_interface, forgotten, read
+    ):
+        if switched is None or errs or not all(tuple(p)[: len(path)] == path for p in paths):
+            continue
+        built, said = _build_one(job, switched, spec, env, interface, jobs)
+        if built is not None and not _has_error(said):
+            inside.append((tuple(tuple(p) for p in paths), built))
+    taken = next((k for k, (paths, _b) in enumerate(inside) if paths == (path,)), None)
+    if taken is None:
+        return None
+    prefix = (job.id,) if job.id else ()
+    found, _why = branch_candidates(prefix + path, [base, *(b for _p, b in inside)])
+    planned = _planned_entries(root)
+    for candidate in found:
+        if all(_planned_as(planned.get(node), mode) for node, mode in candidate.plans[0].items()):
+            return dict(candidate.plans[1 + taken])
+    return None
+
+
+def _planned_entries(root) -> dict[tuple, YMap]:
+    """The document's pending processing and gate entries, by node path in the
+    instance's namespace."""
+    activities = root.get("activities") if isinstance(root, YMap) else None
+    found: dict[tuple, YMap] = {}
+    for item in activities.items if isinstance(activities, YSeq) else []:
+        if not isinstance(item, YMap) or text(item.get("kind")) not in ("processing", "gate"):
+            continue
+        found.setdefault(scoped(job_of(item), node_path(item.get("node"))), item)
+    return found
+
+
+def _planned_as(item, mode) -> bool:
+    """Whether a plan entry ran in `mode`: a gate on its spot, an activity by its mode
+    and the spots it bound."""
+    if item is None:
+        return False
+    if text(item.get("kind")) == "gate":
+        return text(item.get("spot")) == (mode.input_spots.get(GATE_IN) or "")
+    stated_in = yamlnode.to_plain(item.get("input_spots")) or {}
+    stated_out = yamlnode.to_plain(item.get("output_spots")) or {}
+    return (
+        text(item.get("mode")) == mode.id
+        and dict(mode.input_spots) == stated_in
+        and dict(mode.output_spots) == stated_out
+    )
+
+
 def _decided_inside(j, job, workflow, spec, env, interface, roots, jobs, last) -> tuple:
     """The candidates' spots of each branch inside a loop's last invocation `last` that
     the run has already decided (design.md D67, hole 7): one group per branch.
@@ -2306,6 +2400,13 @@ def _run(
         return ScheduleReport(None, None, None, diagnostics)
     if reservations:
         instance = replace(instance, reservations=reservations)
+    # The plan being replaced, with what a decision changed spliced in (design.md D67):
+    # where it no longer covers the instance only because a branch took the arm it did
+    # not assume or a loop went on, it is still a schedule once that region's new work
+    # is put in.
+    fixation = _spliced(
+        root, jobs, workflows, specs, env, interface, readings, instance, fixation
+    )
 
     # Which of this laboratory's resources this instance never tells apart (§10.4).
     # After reachability, so the classes are read off the routes that actually

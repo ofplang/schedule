@@ -1,11 +1,12 @@
-"""Runs whose every replan is constructed (design.md D67, holes 1, 2, 4 and 6).
+"""Runs whose every replan is constructed (design.md D67).
 
 A run is played decision by decision: before each one, now and then, something
-overruns; each decision is stated on the arm or end the plan assumed. Every replan is
-handed a solver that gives up, so what comes back is the previous plan laid out again
-or nothing -- and when only durations moved and every outcome was the one assumed,
-there must always be something. A run stopping here is a replan that would stop a
-laboratory whose solver ran out of budget.
+overruns; each decision is stated -- on the arm or end the plan assumed, or on any. Every
+replan is handed a solver that gives up, so what comes back is the previous plan laid
+out again, with what a decision changed spliced in, or nothing -- and there must always
+be something: only durations moved, or a region whose outcome was open kept what its
+other outcomes need. A run stopping here is a replan that would stop a laboratory whose
+solver ran out of budget.
 """
 
 from __future__ import annotations
@@ -19,9 +20,9 @@ from ofplang.schedule import JobInput, schedule, schedule_jobs
 from ofplang.schedule.scheduler import api
 from ofplang.schedule.scheduler.result import Solution
 from ofplang.schedule.validation import errors
+from tests.test_loops import COLLECTED, LOOP_IN_BRANCH
 from tests.test_loops import DOCUMENT as RINSE_DOCUMENT
 from tests.test_loops import ENV as RINSE_ENV
-from tests.test_loops import LOOP_IN_BRANCH
 from tests.test_replay_previous import _overrun
 from tests.test_reservations import (
     _CUPS_ENV,
@@ -83,9 +84,34 @@ def _state_assumed(document: dict, decision: dict) -> None:
         holder.pop("fingerprint", None)
 
 
-def _play(plan_with, seed: int, give_up) -> list[str]:
+def _state_any(document: dict, decision: dict, rng, limits: dict) -> str:
+    """State `decision` as a run might: a branch on either arm, a loop ended or going on
+    (ended where that is the last invocation its `max_iterations` allows)."""
+    job = decision.get("job")
+    holder = document if job is None else next(j for j in document["jobs"] if j["id"] == job)
+    expansion = holder.setdefault("expansion", {})
+    node = decision["node"]
+    if "iteration" in decision:
+        on = rng.random() < 0.6
+        count = decision["iteration"] + (2 if on else 1)
+        ended = not on or count >= limits.get(node[-1], 5)
+        loops = [x for x in expansion.get("loops", []) if x["node"] != node]
+        expansion["loops"] = [*loops, {"node": node, "count": count, "ended": ended}]
+        what = "goes on" if on else "ends"
+    else:
+        what = rng.choice(["then", "else"])
+        arms = [x for x in expansion.get("arms", []) if x["node"] != node]
+        expansion["arms"] = [*arms, {"node": node, "arm": what}]
+    if job is not None:
+        holder.pop("bound", None)
+        holder.pop("fingerprint", None)
+    return what
+
+
+def _play(plan_with, seed: int, give_up, limits=None) -> list[str]:
     """Play one run -- the first plan the solver's, every replan after `give_up()`
-    constructed -- and return what happened, step by step."""
+    constructed -- and return what happened, step by step. With `limits` (a loop's last
+    node id -> its `max_iterations`) outcomes are any; without, the ones assumed."""
     rng = random.Random(seed)
     plan = plan_with(None).plan
     give_up()
@@ -115,8 +141,12 @@ def _play(plan_with, seed: int, give_up) -> list[str]:
             steps.append(f"{which.get('job')}{which['node']} +{delay}")
         else:
             document = _stamped(plan, decision["start"])
-            _state_assumed(document, decision)
-            steps.append(f"{decision.get('job')}{decision['node']} as assumed")
+            if limits is None:
+                _state_assumed(document, decision)
+                steps.append(f"{decision.get('job')}{decision['node']} as assumed")
+            else:
+                what = _state_any(document, decision, rng, limits)
+                steps.append(f"{decision.get('job')}{decision['node']} {what}")
         report = plan_with(document)
         assert report.plan is not None, (steps, [d.code for d in report.diagnostics])
         assert errors.PLAN_CONSTRUCTED_AFTER_SOLVER in [d.code for d in report.diagnostics]
@@ -174,6 +204,9 @@ def _cases():
         {"id": "b", "release": 9,
          "interface": {"inputs": {"plate": "rack.in2"}, "outputs": {"plate": "rack.out2"}}},
     ]}
+    logged = copy.deepcopy(env)
+    logged["devices"].append({"id": "logger", "spots": []})
+    logged["processes"]["log"] = {"modes": [{"devices": ["logger"], "duration": 1}]}
     return {
         "three cups, a branch each": _one(*cups),
         "two rinsing loops, nowhere to wait": _two(jobs[0].workflow, env, roster),
@@ -190,10 +223,29 @@ def _cases():
         "one plate, a loop inside a branch": _one(
             LOOP_IN_BRANCH, _rinse_env(RINSE_ENV), RINSE_DOCUMENT
         ),
+        # A map over what the loop collected: one invocation more for every one the loop
+        # goes on (D67 hole 8).
+        "two plates, every reading logged": _two(COLLECTED, logged, roster),
     }
+
+
+# A loop's max_iterations, by its node id, where it is not five.
+_LIMITS = {"a loop deciding inside before itself": {"Clean": 4}}
 
 
 @pytest.mark.parametrize("case", list(_cases()))
 @pytest.mark.parametrize("seed", [0, 1, 2])
 def test_a_run_of_assumed_outcomes_and_overruns_is_always_constructed(case, seed, monkeypatch):
     _play(_cases()[case], seed, lambda: monkeypatch.setattr(api, "_solver", lambda: _unsolved))
+
+
+@pytest.mark.parametrize("case", list(_cases()))
+@pytest.mark.parametrize("seed", [0, 1, 2, 3])
+def test_a_run_of_any_outcomes_and_overruns_is_always_constructed(case, seed, monkeypatch):
+    # A branch decided on the arm not assumed, a loop going on: the previous plan with
+    # the decided outcome, or the next invocation, spliced in (design.md D67).
+    _play(
+        _cases()[case], seed,
+        lambda: monkeypatch.setattr(api, "_solver", lambda: _unsolved),
+        _LIMITS.get(case, {}),
+    )

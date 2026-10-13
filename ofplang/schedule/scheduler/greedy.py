@@ -1582,7 +1582,7 @@ def _windows_before(
     A branch opens at the end of its condition's producers; a loop at its first start,
     so every activity of it waits. Regions one inside the other share their window
     and are left alone."""
-    times: dict[int, tuple[int, int]] = {}
+    times: dict[int, tuple[float, float]] = {}
     for step in previous.steps:
         if step.kind == "place":
             times[step.index] = (step.start, step.end)
