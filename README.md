@@ -170,6 +170,43 @@ plan it:
 | `node_do_while` | Supported. Expanded invocation by invocation (`[L, i]`); a literal condition decides here, one the run states in `expansion.loops` is taken, and one settled only during the run is planned to end the loop where it is -- growing by one each time the run says it goes on. Nothing of the next invocation, nor anything the loop hands on, starts before the condition; the plan marks the pending end with a `decision`, and going on one invocation more is checked without a solve (`arm_unplannable`). `exhausted` is read at the node's own path. |
 | `generic_processes` | **Not supported.** Refused with `unsupported_feature`. |
 
+## Branches and loops decided during the run
+
+What is promised for them, and where the promise stops. *Decided during the run* is a
+`branch` whose condition an activity produces, or a `do_while` whose condition is
+settled only as it runs (spec §2.1); one decided before the run is an ordinary plan.
+
+- **How they are planned.** On an assumed outcome -- a branch on `then`, a loop ending
+  where it is -- with every spot another outcome may need kept free for the region from
+  its decision to its exit (a `reservation`, spec §6.16). The other outcomes are checked
+  without a solve (`arm_unplannable`).
+- **The first plan.** The solver plans it. The constructed planner
+  (`planner="greedy"`) builds one too: it walks the work with the clock taken away and
+  the regions' spots kept, choosing which candidate each branch keeps and which modes
+  each loop runs in, and lays times over the order it finds. Where that walk finds no
+  order, there is no schedule that keeps the spots, and the plan is refused before the
+  search (`reservation_deadlocked`). A walk too large to finish (50,000 states) claims
+  nothing, and the solver decides.
+- **Every replan has a plan.** Whether the run took the outcome assumed or another, a
+  loop went on one more invocation, or work took longer than planned, the plan being
+  replaced is laid out again with the new work put in, and that is a schedule -- so the
+  run never stops for want of one, whatever the solver's budget (spec §4.9).
+- **Outside that promise** -- the solver still plans these, but nothing says it does so
+  in time:
+  - a replan after a machine goes out of service or comes back, or a job arrives or
+    leaves;
+  - a replan with a move through a junction still under way (spec §6.4.1);
+  - a laboratory with nowhere to set material aside, where work running late and an
+    outcome not assumed meet;
+  - a stock a loop draws on in every invocation: it is checked for the invocations
+    planned and one more (`loop_stock_unchecked`).
+- **What a branch may keep.** Its candidates are the plan made for it locally and that
+  plan carried over machines the region cannot tell apart, at most eight. A different
+  way through that is not such a copy -- a second machine of another speed, say -- is
+  not a candidate, so a plan that would need it is refused where it could have been made.
+- **Refused:** a branch whose outcomes cannot all leave through one place in at most one
+  move (`arm_unplannable`).
+
 ## Library
 
 ```python
@@ -266,6 +303,12 @@ a schedule exists: nothing in the walk is weighed against a duration, a machine,
 transporter or a promised completion. Silence is also the answer when the walk is
 too large to finish, so a plan is never refused on a partial search.
 
+A plan with a branch or loop decided during the run is walked a second time, with
+the spots each such region keeps held for it while it is open. Where the Objects get
+to the end only by standing on those spots, there is no schedule that keeps them, and
+the plan is refused as `reservation_deadlocked` -- saying so where the first walk
+found a way through, since then it is the keeping that leaves none.
+
 ## You can ask for the built one instead
 
 `schedule(..., planner="greedy")`, or `--planner greedy` on the command line,
@@ -333,10 +376,12 @@ inspected cups, the first decided off the arm assumed: the replan is constructed
 0.7 s, and the solver, started from it, finishes in 2.3 s instead of 6.4, to the same
 makespan.
 
-The construction is **not general**, and does not pretend to be. Two shapes are
-declined outright: a refill already under way, which is history it does not carry,
-and the work a stopped job abandoned, which it cannot place at an instant it does
-not derive. It declines where its passes simply come out empty, too. In every case
+The construction is **not general**, and does not pretend to be. Three shapes are
+declined outright: a refill already under way, which is history it does not carry;
+the work a stopped job abandoned, which it cannot place at an instant it does not
+derive; and a plan with a branch or loop decided during the run that has history but
+no plan to lay out again. A first plan with such a region is built by the walk that
+keeps the regions' spots (above). It declines where its passes simply come out empty, too. In every case
 the solve proceeds exactly as it did before, and where the construction ran,
 `stats.hint_makespan` is the makespan it built — `None` where it declined, so what
 the solver started from is visible.

@@ -119,6 +119,10 @@ OBJECTS_DEADLOCKED = "objects_deadlocked"
 # holds. Monotone, so one comparison settles it -- a counting argument like the
 # two above, and settled before any solve for the same reason.
 STOCK_CANNOT_LAST = "stock_cannot_last"
+# The Objects can be got to the end, but not while every region decided only during
+# the run keeps its spots (design.md D68): the walk with the regions' windows kept
+# finds no order. Settled before the solve for the same reason as the three above.
+RESERVATION_DEADLOCKED = "reservation_deadlocked"
 
 # --- what a constructed plan says about itself (§4.9) --------------------
 # The caller asked for the constructed schedule and this plan is one: built, not

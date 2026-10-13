@@ -125,6 +125,29 @@ In scope:
   Pure Data atomic steps: they take time but occupy no spot and are not
   transported. Their code is not executed by the scheduler.
 
+### 2.1 What is guaranteed for regions decided during the run
+
+A **region decided during the run** is a `branch` whose condition is produced during
+the run, or a `do_while` whose condition is settled only during the run (above). It
+is planned on its assumed outcome with what every other outcome may need kept for it
+(§6.16), and its other outcomes are checked without a solve (§9.3).
+
+- **First plan.** The solver plans it; so does the constructed planner, from an order
+  of the work with the regions' spots kept (§6.16). Where no such order exists the plan
+  is refused before the solve (`reservation_deadlocked`, §10.4); where the search for one
+  is stopped at its bound nothing is claimed.
+- **Replan.** Where only durations moved, a branch was decided on either arm, or a loop
+  went on one invocation more, the previous plan with what the decision changed put in
+  is a schedule (§4.9), so a replan of those always has a plan.
+- **Not guaranteed** (planned by the solver, without that guarantee): a replan after
+  the shape changed otherwise -- a machine out of service or back, a job arriving or
+  leaving -- or with a planned chain (§6.4.1) still under way; the loop's stocks beyond
+  one invocation more (`loop_stock_unchecked`).
+- **Candidates.** What a branch may keep is its local plan and that plan carried over
+  machines the region cannot tell apart, at most eight (§9.3). Another way through that
+  is not such a copy is not a candidate, so a plan that needs one is refused as though
+  none existed.
+
 ## 3. Inputs and outputs
 
 | Artifact | Role | Nature |
@@ -2138,8 +2161,14 @@ the future it places, not the past it inherited.
 A region decided -- a branch whose arm is stated, a loop that has ended -- keeps nothing;
 neither does a branch something of which has started (it is decided in all but name),
 nor a region of a job that has stopped (§6.2). The constructed planner's forward passes
-(`greedy`) do not keep reservations yet: a first plan that has one is declined
-(`planner_unsupported`). On a replan the previous plan is laid out again instead (§4.9)
+(`greedy`) do not keep reservations. A first plan that has one is built from the walk of
+`objects_deadlocked` (§10.4) made with every region's window kept -- nothing outside the
+region is put on or moved onto its spots while it is open, it opens only when nothing
+outside it is on them, and two windows sharing a spot, neither inside the other, are not
+open together -- in which each branch's candidate and each loop's modes are choices of
+the walk; the order found is laid out as a previous plan is (below). Where no order
+keeps them the plan is refused (`reservation_deadlocked`); a plan with history and no
+previous plan is declined (`planner_unsupported`). On a replan the previous plan is laid out again instead (§4.9)
 -- in its order on every spot, with every window opening only once the windows it
 followed have closed, and with every window in its place against the rest of the work
 on its spots: what used them before it opened has left before it opens, and what used
@@ -2508,7 +2537,9 @@ environment for processes the workflow never invokes are not checked.
   every outcome reaches in at most one move, or stays on. A branch with no such plan --
   no spot all its outcomes reach, or an outcome that cannot be got through within its
   own spots -- is `arm_unplannable` too. The local plans favour the arm planned, then
-  the others, and are carried over machines the region cannot tell apart; what they
+  the others, and are carried over machines the region cannot tell apart (at most eight
+  copies; a gate, a boundary node or a held spot, §6.12, on a machine's spot goes with
+  the machine, so a machine with a spot held is told apart by the hold); what they
   find is what the plan keeps for the region (§6.16), so the local plan is made on
   **every** plan, whether or not the checks above are asked for. A caller
   may skip the check (`check_arms`): a run does, on a replan where nothing it reads
@@ -2796,11 +2827,12 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `final_outputs_crowded` | **error**: more final outputs have to rest somewhere until the run is over than there are places they can rest in. A boundary `output` node holds the spots its mode binds until the makespan (§6.8, FORMULATION §J5), so no two finished products can share a place, and a plan with more products than places has no schedule whatever else is true of it. Checked by trying the combinations rather than by counting them, so a case where the places exist but cannot all be used at once is caught too. **A necessary condition, not a sufficient one**: silence says the products can be placed, not that the plan is schedulable. Reported before the solve and the solve is not run, which is the point — measured on the RNA-seq laboratory at five jobs against two bays, the solver spent twelve minutes and returned `unknown`, having proved nothing. Usually accompanied by `interface_output_unbound` (§10.3), which names the other way out: bind each output to a place of its own |
 | `stock_cannot_last` | **error**: a stock no replenisher reaches has less left than the work still to do will draw from it. Such a level only ever falls (§4.7), so "it never goes below zero" is exactly "what is left covers what is still to be drawn" — one comparison, with no event times and no ordering in it, and where it fails no schedule exists. The draw is counted **at its smallest**: an activity offering several modes may draw different amounts and the schedule picks, so anything larger would refuse runs that work. What has already run is not counted, its draw being spent and folded into the levels at `now` (§4.7.2). **A necessary condition, not a sufficient one**, and only for the stocks no refill reaches — whether a *refillable* stock lasts depends on when its refills go, which is a question about the schedule and not about arithmetic. Reported before the solve and the solve is not run |
 | `objects_deadlocked` | **error**: the Objects cannot all be got to the end. Material is always somewhere -- it rests in the spot it was made in until a move takes it away, and a move needs its destination empty before it sets off (§4.4, FORMULATION §7) -- so a laboratory with few enough places can reach a state where every remaining move is into a place something else is standing in, and then no schedule exists whatever the durations are. Settled by walking the placements and moves with time erased: a walk that never reaches the end proves there is no order that does. Generalises `final_outputs_crowded`, which is the special case where the places that never free up are the finished products' alone. **A necessary condition, not a sufficient one**: silence says the Objects can be got to the end, not that a schedule exists -- nothing here is weighed against a duration, a device, a transporter or a promise. Silence is also what a walk too large to finish returns, so an instance is never refused on a partial search. Reported before the solve and the solve is not run, which is the point -- measured on the RNA-seq minimal laboratory at two jobs, the solver spent two minutes and returned `unknown`, having proved nothing, where the walk settles it in milliseconds |
+| `reservation_deadlocked` | **error**: the Objects can be got to the end, but not while every region decided during the run keeps its spots (§6.16). The walk of `objects_deadlocked` is made again with each region's window kept, its choices -- the candidate a branch keeps, the modes a loop runs in -- among its steps, so where it finds no order no choice keeps them all and no schedule exists, whatever the durations are. Says so where the walk without the windows found a way through, since then it is the keeping that leaves none. Made only where nothing has been reported (§7): a reservation does not move history, and the walk cannot see the order history fixed. Silence claims nothing, and a walk stopped at its bound is silent. Reported before the solve and the solve is not run |
 | `plan_constructed` | **warning**: this plan was built rather than searched for, the `greedy` planner having been asked for. It is a schedule and nothing more — no claim is made that a shorter one does not exist, and none could be, since nothing searched |
 | `planner_unsupported` | **warning**: the planner asked for does not handle some shape of this plan, so it produced nothing. **A statement about the planner, not about the plan**: the instance may be perfectly schedulable, and asking for `cpsat` is the remedy |
 | `plan_constructed_after_solver` | **warning**: a replan the solver came back from with nothing within its budget was handed a constructed plan instead (§4.9). On a replan no plan stops the run; where only durations moved a schedule is known to exist, so one is built and read back against the constraints. It is a schedule and nothing more. Never on a first plan, which still reports `unknown` |
 | `loop_stock_unchecked` | **warning**: a `do_while` decided only during the run draws on a stock in every invocation. The stocks are checked for the invocations planned and one more (§9.3), not up to `max_iterations` -- which is usually written far above what a run needs -- so a run that goes on longer may find one short. Refills, or the run ending sooner, may cover it (design.md D66) |
-| `plan_not_constructed` | **warning**: the constructed planner ran and came back with nothing. **Not a proof either way.** Where nothing is yet settled, an instance with no schedule is refused before this point and told which of `arc_unreachable`, `final_outputs_crowded`, `stock_cannot_last` or `objects_deadlocked` it fell to. Where history has been reported (§7) or a spot is held since a stated time (§6.12), it may not be: those checks walk with the clock erased (the `objects_deadlocked` entry above), so they cannot see the order the history fixed, and an instance can pass them and still have no schedule -- two samples already placed so that each needs the other's instrument is such a state, refused by none of them and proved infeasible by the solver. The solver is what settles the question. Also reported where a constructed schedule failed to survive being read back against the constraints, which is a defect in this package and not in the plan |
+| `plan_not_constructed` | **warning**: the constructed planner ran and came back with nothing. **Not a proof either way.** Where nothing is yet settled, an instance with no schedule is refused before this point and told which of `arc_unreachable`, `final_outputs_crowded`, `stock_cannot_last`, `objects_deadlocked` or `reservation_deadlocked` it fell to. Where history has been reported (§7) or a spot is held since a stated time (§6.12), it may not be: those checks walk with the clock erased (the `objects_deadlocked` entry above), so they cannot see the order the history fixed, and an instance can pass them and still have no schedule -- two samples already placed so that each needs the other's instrument is such a state, refused by none of them and proved infeasible by the solver. The solver is what settles the question. Also reported where a constructed schedule failed to survive being read back against the constraints, which is a defect in this package and not in the plan |
 | `infeasible` | the solver proved the instance has no feasible schedule |
 
 `unknown_device` and `unknown_resource` (§10.2) are reused here for an

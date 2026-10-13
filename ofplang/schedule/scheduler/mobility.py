@@ -137,6 +137,48 @@ def report_deadlocked_objects(instance: Instance, diags: Diagnostics) -> None:
     diags.error(errors.OBJECTS_DEADLOCKED, message)
 
 
+def report_reservation_deadlocked(
+    instance: Instance, diags: Diagnostics, history: bool
+) -> None:
+    """Emit `reservation_deadlocked` when no order keeps every undecided region's spots
+    (design.md D68).
+
+    The walk with the windows kept is the plan with its reservations and time erased:
+    each region's choice -- which candidate a branch keeps, which modes a loop runs in --
+    is a step of it, so where it finds no way through within its cap no choice keeps
+    them all. Only where nothing has been reported (`history` False): a reservation does
+    not move what has run (design.md D66, F1), and the walk cannot see the order history
+    fixed. A walk that is stopped claims nothing, and neither does one the plain check
+    has nothing to say about."""
+    if not instance.reservations or history:
+        return
+    if any(not arc.options for arc in instance.arcs) or _read(instance) is None:
+        return
+    windows = windows_of(instance)
+    if not windows:
+        return
+    outcome, _order = walk_with_windows(instance, windows)
+    if outcome != "exhausted":
+        return
+    regions = ", ".join(sorted(format_node_path(window.region) for window in windows))
+    shape = _read(instance)
+    plain = _walked(instance, shape)[0] if shape is not None else "capped"
+    without = (
+        " Without keeping them there would be a way through: it is the keeping that"
+        " leaves none."
+        if plain == "found"
+        else ""
+    )
+    diags.error(
+        errors.RESERVATION_DEADLOCKED,
+        f"no order of the work keeps the spots of every region decided only during the"
+        f" run ({regions}) free for it from its opening to its exit, whichever"
+        f" candidates and modes they keep. No schedule exists that keeps them, whatever"
+        f" the durations are.{without} Either give the laboratory more places, free a"
+        f" spot that is held, or plan fewer of these regions at once",
+    )
+
+
 def _read(instance: Instance) -> _Shape | None:
     """Precompute the walk's view of the instance, or None when there is nothing
     to walk."""

@@ -1644,9 +1644,10 @@ def _walked_with_windows(
     its place -- with nothing reported to lay it out over.
 
     The walk is a relaxation of the plan with its reservations: where it finds no way
-    through within its cap there may still be a schedule only the solver finds, and this
-    says nothing either way. Boundary nodes are not steps of the order: they are put
-    down when their material lands, as on a replan."""
+    through within its cap there is no schedule, and the plan was refused before this
+    (`mobility.report_reservation_deadlocked`); where it is stopped at its cap this says
+    nothing either way. Boundary nodes are not steps of the order: they are put down
+    when their material lands, as on a replan."""
     order = mobility.find_order(instance, mobility.windows_of(instance))
     if order is None:
         return None

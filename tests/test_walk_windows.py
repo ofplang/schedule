@@ -228,3 +228,30 @@ def test_a_branch_whose_first_sink_is_held_is_planned_on_the_other():
     kept = [a for a in built.plan["activities"] if a["kind"] == "reservation"]
     assert kept and all("sink.basin" not in a["spots"] and "sink2.basin" in a["spots"]
                         for a in kept)
+
+
+def test_no_order_that_keeps_the_regions_spots_is_refused_before_the_solve():
+    # Each cup's branch keeps the sink, held for the whole run: no candidate can ever
+    # open, while without the keeping the cups go round it. Refused before the solve
+    # and named as the keeping (design.md D68), by either planner.
+    workflow, env, document = _cups(2)
+    document = {**document, "occupied": [{"spot": "sink.basin", "since": 0}]}
+    for planner in ("cpsat", "greedy"):
+        report = schedule(copy.deepcopy(workflow), copy.deepcopy(env),
+                          document_path=copy.deepcopy(document), planner=planner,
+                          random_seed=0, check_arms=False)
+        assert not report.ok
+        errors_ = [d for d in report.diagnostics if d.severity == "error"]
+        assert [d.code for d in errors_] == ["reservation_deadlocked"]
+        assert "Without keeping them there would be a way through" in errors_[0].message
+
+
+def test_the_keeping_is_not_judged_where_history_fixed_an_order():
+    # A reservation does not move what has run, and the walk cannot see the order
+    # history fixed: with anything reported the check says nothing.
+    from ofplang.schedule.core.diagnostics import Diagnostics
+
+    instance = _instance(3)
+    held = Diagnostics()
+    mobility.report_reservation_deadlocked(instance, held, history=True)
+    assert held.items == []

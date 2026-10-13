@@ -39,7 +39,10 @@ from ofplang.schedule.scheduler.instance import (
     with_gate_spots,
 )
 from ofplang.schedule.scheduler.interface import binding_elements, element_label
-from ofplang.schedule.scheduler.mobility import report_deadlocked_objects
+from ofplang.schedule.scheduler.mobility import (
+    report_deadlocked_objects,
+    report_reservation_deadlocked,
+)
 from ofplang.schedule.scheduler.model import (
     GATE_IN,
     JobSpec,
@@ -2508,6 +2511,12 @@ def _run(
     # account of the withdrawal with it in the one case it is needed.
     mobility = Diagnostics()
     report_deadlocked_objects(instance, mobility)
+    # The same walk with every undecided region's spots kept (design.md D68), where
+    # the Objects could be got to the end without them.
+    if not _has_error(mobility.items):
+        report_reservation_deadlocked(
+            instance, mobility, bool(fixation.activities or fixation.arcs)
+        )
     diagnostics += mobility.items
     if _has_error(mobility.items):
         return ScheduleReport(None, None, None, diagnostics)
