@@ -338,21 +338,32 @@ def _exit_choices(gate: NodePath, shapes: list[_Shape]) -> list[str]:
     return first + sorted(allowed - set(first))
 
 
-def _goes_on_from(full: Instance, gate: NodePath, spot: str) -> bool:
+def _goes_on_from(
+    full: Instance, gate: NodePath, spot: str, through: tuple[NodePath, ...] = ()
+) -> bool:
     """Whether everything taking the Object out of `gate` can take it from `spot`, in
     one of its modes: on that spot, or one move away. A gate nothing takes from yet
-    goes on from anywhere."""
+    goes on from anywhere.
+
+    A holding gate taking it -- a loop's gate after an invocation's last step, a branch
+    around this one -- passes it on rather than using it: it goes on if what follows
+    *that* gate can take it from where that gate holds it, here or one move on, and so
+    on down the chain (design.md D67, hole 5). Looking one step only chose a spot the
+    loop's gate accepted and its drying could never be reached from."""
     env = full.env
     index = {act.node: i for i, act in enumerate(full.activities) if act.relay is None}
     g = index.get(gate)
     for arc in full.arcs:
         if arc.src_activity != g:
             continue
+        target = full.activities[arc.dst_activity]
         key = slot_key(arc.arc.dst)
-        wanted = {
-            m.input_spots[key] for m in full.activities[arc.dst_activity].modes
-            if key in m.input_spots
-        }
+        wanted = {m.input_spots[key] for m in target.modes if key in m.input_spots}
+        if target.gate and key == GATE_IN and wanted and target.node not in through:
+            held = {spot} | {w for w in wanted if routes(env, spot, w)}
+            if not any(_goes_on_from(full, target.node, w, (*through, gate)) for w in held):
+                return False
+            continue
         if not any(spot == w or routes(env, spot, w) for w in wanted):
             return False
     return True

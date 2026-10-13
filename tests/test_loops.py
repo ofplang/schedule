@@ -254,6 +254,27 @@ def test_a_branch_inside_an_invocation_waits_for_its_own_reading():
     assert wf.branch_gates[("Clean", 1, "Soak")].waits == (("Clean", 1, "Read"),)
 
 
+def test_a_branch_inside_an_invocation_leaves_the_plate_where_what_follows_reaches():
+    # Soaked or not, the plate leaves the invocation's branch for the loop's own gate,
+    # and from there for the next rinse or the oven. The sink -- where a soak leaves it,
+    # and what the loop's gate takes it on -- reaches the next rinse but not the oven; the
+    # reader reaches both. Looking one step past the branch chose the sink and refused a
+    # plan that exists (`arc_unreachable`, design.md D67 hole 5): the exit is chosen
+    # through the gates the plate is only held in, and the loop's gate waits where the
+    # branch's does.
+    env = copy.deepcopy(ENV)
+    env["processes"]["soak"] = {"modes": [{"devices": ["sink"], "duration": 3,
+                                           "input_spots": {"plate": "sink.basin"},
+                                           "output_spots": {"plate": "sink.basin"}}]}
+    report = schedule(copy.deepcopy(BRANCH_IN_LOOP), env, document_path=copy.deepcopy(DOCUMENT),
+                      random_seed=0, check_arms=False)
+    assert report.ok, [(d.code, d.message) for d in report.diagnostics]
+    gates = {tuple(a["node"]): a.get("spot") for a in report.plan["activities"]
+             if a["kind"] == "gate"}
+    assert gates[("Clean", 0, "Soak", "@out", "plate")] == "reader.slot"
+    assert gates[("Clean", 0, "@out", "plate")] == "reader.slot"
+
+
 # A loop inside a branch's arm: only a plate the first reading finds dirty is rinsed.
 LOOP_IN_BRANCH = copy.deepcopy(RINSE)
 LOOP_IN_BRANCH["processes"]["clean_it"] = {

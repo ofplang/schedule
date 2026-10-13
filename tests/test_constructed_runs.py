@@ -20,7 +20,7 @@ from ofplang.schedule import JobInput, schedule, schedule_jobs
 from ofplang.schedule.scheduler import api
 from ofplang.schedule.scheduler.result import Solution
 from ofplang.schedule.validation import errors
-from tests.test_loops import COLLECTED, LOOP_IN_BRANCH
+from tests.test_loops import BRANCH_IN_LOOP, COLLECTED, LOOP_IN_BRANCH
 from tests.test_loops import DOCUMENT as RINSE_DOCUMENT
 from tests.test_loops import ENV as RINSE_ENV
 from tests.test_replay_previous import _overrun
@@ -204,6 +204,10 @@ def _cases():
         {"id": "b", "release": 9,
          "interface": {"inputs": {"plate": "rack.in2"}, "outputs": {"plate": "rack.out2"}}},
     ]}
+    soaking = copy.deepcopy(RINSE_ENV)
+    soaking["processes"]["soak"] = {"modes": [{"devices": ["sink"], "duration": 3,
+                                               "input_spots": {"plate": "sink.basin"},
+                                               "output_spots": {"plate": "sink.basin"}}]}
     logged = copy.deepcopy(env)
     logged["devices"].append({"id": "logger", "spots": []})
     logged["processes"]["log"] = {"modes": [{"devices": ["logger"], "duration": 1}]}
@@ -223,6 +227,9 @@ def _cases():
         "one plate, a loop inside a branch": _one(
             LOOP_IN_BRANCH, _rinse_env(RINSE_ENV), RINSE_DOCUMENT
         ),
+        # A branch inside each invocation; only the reader reaches the oven, so the plate
+        # leaves the branch there (D67 hole 5).
+        "one plate, a branch inside a loop": _one(BRANCH_IN_LOOP, soaking, RINSE_DOCUMENT),
         # A map over what the loop collected: one invocation more for every one the loop
         # goes on (D67 hole 8).
         "two plates, every reading logged": _two(COLLECTED, logged, roster),

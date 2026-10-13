@@ -424,7 +424,26 @@ def with_gate_spots(instance: Instance, spots: dict[NodePath, frozenset[str]]) -
     move on from where any of its outcomes leaves the Object -- and nowhere else: a
     wider choice would buy the solve nothing it could take, and cost every check that
     walks the instance (measured, `mobility` went from milliseconds to fourteen
-    seconds on twenty-four cups when each gate offered every spot in reach)."""
+    seconds on twenty-four cups when each gate offered every spot in reach).
+
+    A holding gate fed by one of those, and not named itself -- a loop's gate after the
+    last step of an invocation that is a branch -- keeps the Object where that gate
+    leaves it, so it waits on the same spots, and so on down the chain (design.md D67,
+    hole 5): it was built on where the gate it follows waited before it was widened."""
+    spots = dict(spots)
+    following = True
+    while following:
+        following = False
+        for arc in instance.arcs:
+            src = instance.activities[arc.src_activity]
+            dst = instance.activities[arc.dst_activity]
+            if not (src.gate and dst.gate) or slot_key(arc.arc.dst) != GATE_IN:
+                continue
+            if not any(GATE_IN in mode.input_spots for mode in dst.modes):
+                continue  # a gate that holds nothing
+            if src.node in spots and dst.node not in spots:
+                spots[dst.node] = spots[src.node]
+                following = True
     activities = list(instance.activities)
     changed: set[int] = set()
     for i, act in enumerate(activities):
