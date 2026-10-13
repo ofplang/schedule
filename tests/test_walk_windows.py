@@ -85,3 +85,35 @@ def test_no_windows_is_the_walk_it_always_was():
     instance = _instance(3)
     plain = mobility.find_order(instance)
     assert mobility.find_order(instance, (), None) == plain
+
+
+def _jobs(workflow, env, roster):
+    from ofplang.schedule import JobInput, schedule_jobs
+
+    jobs = [JobInput(j["id"], copy.deepcopy(workflow)) for j in roster["jobs"]]
+    return schedule_jobs(jobs, copy.deepcopy(env), document_path=copy.deepcopy(roster),
+                         planner="greedy", check_arms=False)
+
+
+def test_the_constructed_planner_plans_first_plans_that_keep_spots():
+    # The windowed walk laid out is the constructed planner's first plan wherever an
+    # undecided region keeps spots (design.md D68): a map of cups, two loops on the
+    # only sink, two cups through a branch inside a branch.
+    from tests.test_reservations import _CUPS_ENV, _WASHES_AGAIN, _two_rinses
+
+    workflow, env, document = _cups(5)
+    reports = [schedule(copy.deepcopy(workflow), copy.deepcopy(env),
+                        document_path=copy.deepcopy(document), planner="greedy",
+                        check_arms=False)]
+    jobs, env, roster = _two_rinses()
+    reports.append(_jobs(jobs[0].workflow, env, roster))
+    cups = {"activities": [], "jobs": [
+        {"id": j, "release": 0,
+         "interface": {"inputs": {"cup": f"tray.{j}"}, "outputs": {"cup": f"rack.{j}"}}}
+        for j in "ab"]}
+    reports.append(_jobs(_WASHES_AGAIN, _CUPS_ENV, cups))
+    for report in reports:
+        assert report.ok, [d.code for d in report.diagnostics]
+        codes = [d.code for d in report.diagnostics]
+        assert "plan_constructed" in codes and "planner_unsupported" not in codes
+        assert [a for a in report.plan["activities"] if a["kind"] == "reservation"]

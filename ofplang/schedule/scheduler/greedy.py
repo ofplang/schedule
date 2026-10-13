@@ -60,7 +60,7 @@ from ofplang.schedule.scheduler.result import (
     Solution,
     TransportResult,
 )
-from ofplang.schedule.scheduler.status import Fixation, PreviousPlan
+from ofplang.schedule.scheduler.status import Fixation, PreviousPlan, PreviousStep
 
 # Shapes `construct` declines, and why each needs more than list scheduling.
 REFUSALS = {
@@ -68,7 +68,8 @@ REFUSALS = {
     "cancelled": "work a stopped job abandoned is placed at an instant this does not derive",
     "reservation": (
         "a branch or loop decided only during the run keeps spots for itself while it is "
-        "open (design.md D66), which the forward passes do not keep yet"
+        "open (design.md D66), and with history reported and no plan it replaces to lay "
+        "out again there is nothing here that keeps them"
     ),
 }
 
@@ -242,11 +243,17 @@ def _refuse(instance: Instance, fixation: Fixation | None, jobs: tuple) -> str |
         # Nothing in the corpus has any, so rather than re-derive a rule this has
         # never been measured against, it is declined.
         return "cancelled"
-    if instance.reservations and (fixation is None or fixation.previous is None):
-        # 🔴 A pass that does not keep a region's spots would build a plan the region
-        # could not be held to, and the read-back would refuse it anyway. Declined
-        # until the passes keep them (design.md D66, stage 4b: deferred) -- except on
-        # a replan with the previous plan to lay out again, which kept them already.
+    if (
+        instance.reservations
+        and fixation is not None
+        and fixation.previous is None
+        and (fixation.activities or fixation.arcs)
+    ):
+        # 🔴 The forward passes do not keep a region's spots, and a plan the region
+        # could not be held to is refused by the read-back anyway. A first plan is
+        # walked with the windows kept (design.md D68), and a replan with the plan it
+        # replaces lays that out again (D66, D67); a replan with neither -- history
+        # reported, no plan to follow -- has nothing that keeps them, and is declined.
         return "reservation"
     return None
 
@@ -910,10 +917,11 @@ def _build(
     """
     if instance.reservations:
         # The forward passes do not keep a region's spots (`_refuse`): the previous
-        # plan, laid out again, is the one schedule this can offer (design.md D66).
+        # plan, laid out again, is the one schedule this can offer on a replan
+        # (design.md D66), and the walk that keeps the windows on a first plan (D68).
         previous = fixation.previous if fixation is not None else None
         if previous is None:
-            return None
+            return _walked_with_windows(instance, floors, history, now, fixation)
         return _replay_previous(instance, previous, floors, history, now, fixation)
     best: Solution | None = None
     mark: tuple[int, ...] | None = None
@@ -1621,6 +1629,38 @@ def _windows_before(
                     continue  # already open: history
                 after.setdefault(index, []).append((other.closes, by_end))
     return after
+
+
+def _walked_with_windows(
+    instance: Instance,
+    floors: dict[int, int],
+    history: _History,
+    now: int,
+    fixation: Fixation | None,
+) -> Solution | None:
+    """A first plan that keeps every undecided region's window (design.md D68): the
+    order the walk finds with the windows kept (`mobility.windows_of`), laid out as the
+    plan being replaced is on a replan -- in that order on every spot, each window in
+    its place -- with nothing reported to lay it out over.
+
+    The walk is a relaxation of the plan with its reservations: where it finds no way
+    through within its cap there may still be a schedule only the solver finds, and this
+    says nothing either way. Boundary nodes are not steps of the order: they are put
+    down when their material lands, as on a replan."""
+    windows, pins = mobility.windows_of(instance)
+    order = mobility.find_order(instance, windows, pins)
+    if order is None:
+        return None
+    implicit = {
+        index: choice for kind, index, choice in order
+        if kind == "place" and instance.activities[index].boundary is not None
+    }
+    steps = tuple(
+        PreviousStep(kind, index, choice, float(n), float(n))
+        for n, (kind, index, choice) in enumerate(order)
+        if not (kind == "place" and instance.activities[index].boundary is not None)
+    )
+    return _replay_previous(instance, PreviousPlan(steps, implicit), floors, history, now, fixation)
 
 
 def _window_claims(

@@ -718,10 +718,10 @@ def test_a_fresh_roster_is_not_declined():
     assert construct(instance, jobs=fresh) is not None
 
 
-def test_an_undecided_region_is_declined():
+def test_a_first_plan_with_an_undecided_region_is_walked_with_its_window_kept():
     # A branch or loop decided only during the run keeps spots for itself while it is
-    # open (design.md D66); the passes do not keep them yet, so such a plan is declined
-    # rather than built and then refused by the read-back.
+    # open (design.md D66). The passes do not keep them; a first plan is built from the
+    # walk that keeps the windows instead (D68), and comes out keeping what it says.
     from ofplang.schedule import schedule
 
     examples = Path(__file__).resolve().parents[1] / "examples"
@@ -729,6 +729,41 @@ def test_an_undecided_region_is_declined():
         examples / "rinse_until_clean.workflow.yaml",
         examples / "rinse_until_clean.env.yaml",
         document_path=examples / "rinse_until_clean.document.yaml",
+        planner="greedy",
+    )
+    assert report.ok, [d.code for d in report.diagnostics]
+    assert "plan_constructed" in [d.code for d in report.diagnostics]
+    assert [a for a in report.plan["activities"] if a["kind"] == "reservation"]
+
+
+def test_an_undecided_region_with_history_and_no_plan_to_follow_is_declined():
+    # A replan whose document reports history but carries no plan to lay out again has
+    # nothing that keeps the region's spots: declined rather than built and refused.
+    import yaml
+
+    from ofplang.schedule import schedule
+
+    examples = Path(__file__).resolve().parents[1] / "examples"
+    first = schedule(
+        examples / "rinse_until_clean.workflow.yaml",
+        examples / "rinse_until_clean.env.yaml",
+        document_path=examples / "rinse_until_clean.document.yaml",
+        random_seed=0,
+    ).plan
+    started = sorted((a for a in first["activities"] if a["kind"] == "processing"),
+                     key=lambda a: a["start"])[0]
+    document = yaml.safe_load(
+        (examples / "rinse_until_clean.document.yaml").read_text(encoding="utf-8")
+    )
+    document["now"] = started["end"]
+    document["activities"] = [
+        {**a, "status": "completed"} for a in first["activities"]
+        if a["kind"] in ("processing", "transport") and a["end"] <= started["end"]
+    ]
+    report = schedule(
+        examples / "rinse_until_clean.workflow.yaml",
+        examples / "rinse_until_clean.env.yaml",
+        document_path=document,
         planner="greedy",
     )
     assert report.plan is None
