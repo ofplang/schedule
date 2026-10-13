@@ -1647,8 +1647,7 @@ def _walked_with_windows(
     through within its cap there may still be a schedule only the solver finds, and this
     says nothing either way. Boundary nodes are not steps of the order: they are put
     down when their material lands, as on a replan."""
-    windows, pins = mobility.windows_of(instance)
-    order = mobility.find_order(instance, windows, pins)
+    order = mobility.find_order(instance, mobility.windows_of(instance))
     if order is None:
         return None
     implicit = {

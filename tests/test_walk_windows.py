@@ -55,8 +55,7 @@ def _laid_out(instance, order):
 def test_an_order_that_keeps_the_windows_lays_out_into_a_schedule():
     instance = _instance(3)
     assert instance.reservations
-    windows, pins = mobility.windows_of(instance)
-    order = mobility.find_order(instance, windows, pins)
+    order = mobility.find_order(instance, mobility.windows_of(instance))
     assert order is not None
     solution = _laid_out(instance, order)
     assert solution is not None
@@ -72,19 +71,22 @@ def test_without_the_windows_the_walk_opens_one_cups_window_over_another():
     assert _laid_out(instance, order) is None
 
 
-def test_the_assumed_outcome_runs_on_the_first_candidate():
+def test_each_assumed_outcome_runs_on_one_of_its_candidates():
+    # The read-back finds every region's candidate by the modes its assumed outcome
+    # was placed in: there is one for each.
+    from ofplang.schedule.scheduler.region import kept_reservations
+
     instance = _instance(3)
-    windows, pins = mobility.windows_of(instance)
-    assert pins
-    order = mobility.find_order(instance, windows, pins)
-    placed = {i: c for kind, i, c in order if kind == "place"}
-    assert all(placed[i] == m for i, m in pins.items())
+    order = mobility.find_order(instance, mobility.windows_of(instance))
+    solution = _laid_out(instance, order)
+    kept = kept_reservations(instance, solution, 0)
+    assert kept is not None and len(kept) == len(instance.reservations)
 
 
 def test_no_windows_is_the_walk_it_always_was():
     instance = _instance(3)
     plain = mobility.find_order(instance)
-    assert mobility.find_order(instance, (), None) == plain
+    assert mobility.find_order(instance, ()) == plain
 
 
 def _jobs(workflow, env, roster):
@@ -117,3 +119,77 @@ def test_the_constructed_planner_plans_first_plans_that_keep_spots():
         codes = [d.code for d in report.diagnostics]
         assert "plan_constructed" in codes and "planner_unsupported" not in codes
         assert [a for a in report.plan["activities"] if a["kind"] == "reservation"]
+
+
+def _rinse_with_two_readers():
+    """The rinse loop, with a second reader beside the first."""
+    from tests.test_loops import ENV
+
+    env = copy.deepcopy(ENV)
+    env["devices"].append({"id": "reader2", "spots": ["slot"]})
+    env["transports"] += [
+        {**t, "from": t["from"].replace("reader.slot", "reader2.slot"),
+         "to": t["to"].replace("reader.slot", "reader2.slot")}
+        for t in env["transports"] if "reader.slot" in (t["from"], t["to"])
+    ]
+    env["processes"]["read"]["modes"].append(
+        {"devices": ["reader2"], "duration": 2, "input_spots": {"plate": "reader2.slot"},
+         "output_spots": {"plate": "reader2.slot"}})
+    return env
+
+
+def test_a_loop_keeps_the_reader_it_chose_not_every_reader_it_could():
+    # The first reader is held for the whole run. The loop keeps the spots of the modes
+    # its invocation runs in -- the second reader's, here -- as the solver reads it;
+    # keeping every reader it could use would leave it no window to open (design.md D68
+    # §7). Planned by the constructed planner as short as by the solver.
+    from tests.test_loops import DOCUMENT, RINSE
+
+    document = {**copy.deepcopy(DOCUMENT), "occupied": [{"spot": "reader.slot", "since": 0}]}
+    solved = schedule(copy.deepcopy(RINSE), _rinse_with_two_readers(),
+                      document_path=copy.deepcopy(document), random_seed=0, check_arms=False)
+    built = schedule(copy.deepcopy(RINSE), _rinse_with_two_readers(),
+                     document_path=copy.deepcopy(document), planner="greedy", check_arms=False)
+    assert solved.ok and built.ok, [d.code for d in built.diagnostics]
+    assert built.makespan == solved.makespan
+    reads = [a for a in built.plan["activities"]
+             if a["kind"] == "processing" and a["node"][-1] == "Read"]
+    assert reads and all(a["input_spots"]["plate"] == "reader2.slot" for a in reads)
+
+
+def test_a_candidate_whose_spots_cannot_be_kept_is_passed_over_for_the_next():
+    # The walk chooses among a branch's candidates as the solver does: one that keeps a
+    # spot held for the whole run can never open, and the next one is taken; with that
+    # one alone there is no way through at all.
+    from dataclasses import replace as replaced
+
+    workflow, env, document = _cups(3)
+    document = {**document, "occupied": [{"spot": "tub.bath", "since": 0}]}
+    env = copy.deepcopy(env)
+    if not any(d["id"] == "tub" for d in env["devices"]):
+        env["devices"].append({"id": "tub", "spots": ["bath"]})
+    seen = {}
+    real = api._solver()
+
+    def capture(instance, **kwargs):
+        seen["instance"] = instance
+        return real(instance, **kwargs)
+
+    keep = api._solver
+    api._solver = lambda: capture
+    try:
+        schedule(copy.deepcopy(workflow), env, document_path=document, random_seed=0,
+                 check_arms=False)
+    finally:
+        api._solver = keep
+    instance = seen["instance"]
+    windows = list(mobility.windows_of(instance))
+    spots, pins = windows[0].candidates[0]
+    blocked = (spots | {"tub.bath"}, pins)
+    first_blocked = (*windows[:0], replaced(windows[0], candidates=(blocked, (spots, pins))),
+                     *windows[1:])
+    outcome, order = mobility.walk_with_windows(instance, tuple(first_blocked))
+    assert outcome == "found" and order
+    only_blocked = (replaced(windows[0], candidates=(blocked,)), *windows[1:])
+    outcome, _order = mobility.walk_with_windows(instance, tuple(only_blocked))
+    assert outcome == "exhausted"
