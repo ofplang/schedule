@@ -464,6 +464,163 @@ def test_an_object_history_left_on_a_kept_spot_waits_there_through_its_gates(mon
     assert "plan_constructed_after_solver" in [d.code for d in constructed.diagnostics]
 
 
+# --- a branch inside a loop, decided before the loop is -------------------------------------
+
+_PLATE_STEPS = {
+    name: {
+        "kind": "atomic",
+        "inputs": {"plate": {"type": "Plate", "phase": "data"}},
+        "outputs": {"plate": {"type": "Plate", "phase": "data"},
+                    **({flag: {"type": "Bool", "phase": "data"}} if flag else {})},
+        "objects": {"map": {"outputs.plate": "inputs.plate"}},
+    }
+    for name, flag in (("rinse", None), ("soak", None), ("look", "stained"),
+                       ("check", "dirty"), ("dry", None))
+}
+# Each invocation: rinse, look for stains, soak a stained plate, then check whether it is
+# still dirty -- the loop's own condition, read only after the branch's.
+_LOOKS_THEN_CHECKS = {
+    "spec_version": "0.5",
+    "types": {"Plate": {"domain": "object"}},
+    "processes": {
+        **_PLATE_STEPS,
+        "once": {
+            "kind": "composite",
+            "inputs": {"plate": {"type": "Plate", "phase": "data"}},
+            "outputs": {"plate": {"type": "Plate", "phase": "data"},
+                        "dirty": {"type": "Bool", "phase": "data"}},
+            "body": {"nodes": [
+                {"id": "Rinse", "process": "rinse", "state": {"plate": {"from": "inputs.plate"}}},
+                {"id": "Look", "process": "look", "state": {"plate": {"from": "Rinse.plate"}}},
+                {"id": "Soak", "kind": "branch", "condition": {"from": "Look.stained"},
+                 "args": {"plate": {"from": "Look.plate"}}, "then": {"process": "soak"}},
+                {"id": "Check", "process": "check", "state": {"plate": {"from": "Soak.plate"}}},
+            ], "returns": {"plate": {"from": "Check.plate"}, "dirty": {"from": "Check.dirty"}}},
+        },
+        "main": {
+            "kind": "composite",
+            "inputs": {"plate": {"type": "Plate", "phase": "data"}},
+            "outputs": {"plate": {"type": "Plate", "phase": "data"}},
+            "body": {"nodes": [
+                {"id": "Clean", "kind": "do_while", "process": "once",
+                 "carry": {"plate": {"from": "inputs.plate"}},
+                 "condition": {"output": "dirty"}, "max_iterations": {"value": 4}},
+                {"id": "Dry", "process": "dry", "state": {"plate": {"from": "Clean.plate"}}},
+            ], "returns": {"plate": {"from": "Dry.plate"}}},
+        },
+    },
+    "entry": "main",
+}
+# Another plate is only soaked and checked.
+_SOAKS = {
+    "spec_version": "0.5",
+    "types": {"Plate": {"domain": "object"}},
+    "processes": {
+        "soak": _PLATE_STEPS["soak"], "check": _PLATE_STEPS["check"],
+        "main": {
+            "kind": "composite",
+            "inputs": {"plate": {"type": "Plate", "phase": "data"}},
+            "outputs": {"plate": {"type": "Plate", "phase": "data"}},
+            "body": {"nodes": [
+                {"id": "S", "process": "soak", "state": {"plate": {"from": "inputs.plate"}}},
+                {"id": "C", "process": "check", "state": {"plate": {"from": "S.plate"}}},
+            ], "returns": {"plate": {"from": "C.plate"}}},
+        },
+    },
+    "entry": "main",
+}
+
+
+def _plate_mode(device: str, spot: str, duration: int) -> dict:
+    return {"modes": [{"devices": [device], "duration": duration,
+                       "input_spots": {"plate": f"{device}.{spot}"},
+                       "output_spots": {"plate": f"{device}.{spot}"}}]}
+
+
+_PLATES_ENV = {
+    "time": {"unit": "second"},
+    "devices": [{"id": "rack", "spots": ["in", "out", "in2", "out2"]},
+                {"id": "sink", "spots": ["basin"]}, {"id": "reader", "spots": ["slot"]},
+                {"id": "tub", "spots": ["bath"]}, {"id": "oven", "spots": ["shelf"]}],
+    "transporters": [{"id": "arm"}],
+    "transports": [
+        {"transporter": "arm", "from": a, "to": b, "duration": 1} for a, b in (
+            ("rack.in", "sink.basin"), ("sink.basin", "reader.slot"),
+            ("reader.slot", "sink.basin"), ("reader.slot", "tub.bath"),
+            ("tub.bath", "reader.slot"), ("reader.slot", "oven.shelf"),
+            ("oven.shelf", "rack.out"), ("rack.in2", "tub.bath"), ("reader.slot", "rack.out2"),
+        )
+    ],
+    "processes": {"rinse": _plate_mode("sink", "basin", 4), "soak": _plate_mode("tub", "bath", 3),
+                  "look": _plate_mode("reader", "slot", 2),
+                  "check": _plate_mode("reader", "slot", 6),
+                  "dry": _plate_mode("oven", "shelf", 4)},
+}
+
+
+def _plates(document, **kwargs):
+    jobs = [JobInput("a", copy.deepcopy(_LOOKS_THEN_CHECKS)), JobInput("b", copy.deepcopy(_SOAKS))]
+    return schedule_jobs(jobs, copy.deepcopy(_PLATES_ENV), document_path=document,
+                         random_seed=0, check_arms=False, **kwargs)
+
+
+def _at(plan: dict, now: int, **stated) -> dict:
+    """`plan` handed back at `now`, everything on time, with job a's `stated` added."""
+    document = copy.deepcopy(plan)
+    for entry in document["activities"]:
+        if entry["kind"] in ("processing", "transport") and entry["start"] < now:
+            entry["status"] = "completed" if entry["end"] <= now else "running"
+    document["now"] = now
+    a = next(j for j in document["jobs"] if j["id"] == "a")
+    expansion = a.setdefault("expansion", {})
+    for key, entries in stated.items():
+        expansion[key] = [*expansion.get(key, []), *entries]
+    a.pop("bound", None)
+    a.pop("fingerprint", None)
+    return document
+
+
+def test_a_loop_keeps_what_its_next_invocation_may_need_once_a_branch_inside_is_decided(
+    monkeypatch,
+):
+    # The first invocation's plate is not stained (the branch: else) but still dirty (the
+    # loop: goes on). Between the two readings the loop used to keep only what that
+    # invocation did -- no tub -- so the other plate went into the tub and waited there for
+    # the reader the loop keeps; when the loop went on, its next invocation, planned on a
+    # soak, needed the tub, and the replan was infeasible. The next invocation decides the
+    # branch again, so the loop keeps one of the branch's candidates throughout (design.md
+    # D67, hole 7).
+    roster = {"activities": [], "jobs": [
+        {"id": "a", "release": 0,
+         "interface": {"inputs": {"plate": "rack.in"}, "outputs": {"plate": "rack.out"}}},
+        {"id": "b", "release": 9,
+         "interface": {"inputs": {"plate": "rack.in2"}, "outputs": {"plate": "rack.out2"}}},
+    ]}
+    plan = _plates(roster).plan
+
+    def decision(plan, node):
+        return next(x for x in kinds(plan, "decision") if x.get("job") == "a" and x["node"] == node)
+
+    inner = decision(plan, ["Clean", 0, "Soak"])
+    unstained = [{"node": ["Clean", 0, "Soak"], "arm": "else"}]
+    report = _plates(_at(plan, inner["start"], arms=unstained))
+    assert report.ok, [d.code for d in report.diagnostics]
+    plan = report.plan
+    (loop,) = [x for x in kinds(plan, "reservation") if x["node"] == ["Clean"]]
+    assert "tub.bath" in loop["spots"]
+    outer = decision(plan, ["Clean"])
+    document = _at(plan, outer["start"], loops=[{"node": ["Clean"], "count": 2, "ended": False}])
+    report = _plates(copy.deepcopy(document), running_task_margin=1)
+    assert report.ok, [(d.code, d.message) for d in report.diagnostics]
+
+    from ofplang.schedule.scheduler import api
+    from ofplang.schedule.scheduler.result import Solution
+
+    monkeypatch.setattr(api, "_solver", lambda: lambda *a, **k: Solution("unknown", None, (), ()))
+    replayed = _plates(_at(plan, outer["start"] - 1), running_task_margin=1)
+    assert replayed.ok, [(d.code, d.message) for d in replayed.diagnostics]
+
+
 # --- a loop that draws on a stock ------------------------------------------------------------
 
 

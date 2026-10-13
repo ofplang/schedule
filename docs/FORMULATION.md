@@ -1404,7 +1404,9 @@ choice: for a branch, exactly one candidate $c \in C_\rho$ is taken ($y_{\rho c}
 $\sum_c y_{\rho c} = 1$), which fixes the modes of its assumed outcome
 ($y_{\rho c} \Rightarrow x_{im}$ for each pinned $(i, m)$) and keeps the candidate's spots
 $U_c$; for a loop, a spot is kept where a mode of its last invocation that binds it is
-taken, or a candidate of an undecided branch inside it that contains it. With
+taken, or a candidate of an undecided branch inside it that contains it -- or, for each
+branch inside it the run has already decided, the one of its candidates the solve picks
+(exactly one, pinned to no mode), which the next invocation decides again (D67). With
 $z_{\rho p}$ the resulting "spot $p$ is kept" literal and $o_\rho \Leftrightarrow
 w^e_\rho > w^s_\rho$, the interval $[w^s_\rho, w^e_\rho]$ present under
 $z_{\rho p} \wedge o_\rho$ joins

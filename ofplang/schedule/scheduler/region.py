@@ -496,9 +496,12 @@ class Reservation:
     a branch keeps the spots of the candidate chosen for it (`candidates`, one chosen,
     each with the modes its assumed outcome is held to, `pins`); a loop the spots of
     the modes its last invocation runs in (`derived`), and those of the candidate
-    chosen for each undecided branch inside it (`borrowed`). `excluded` are pairs of
-    mode choices that cannot both be taken -- a loop's holding gate on a spot its next
-    invocation cannot be reached from.
+    chosen for each undecided branch inside it (`borrowed`), and the spots of one of the
+    candidates of each branch inside it the run has already decided (`templates`, one
+    of each group chosen, pinned to nothing): the next invocation decides that branch
+    again, so what it may need is the branch's, not the arm this invocation took
+    (design.md D67, hole 7). `excluded` are pairs of mode choices that cannot both be
+    taken -- a loop's holding gate on a spot its next invocation cannot be reached from.
 
     Where a branch's Objects wait for its decision needs no keeping: the Object resting
     there already holds it until it moves into the arm, and keeping it beyond that would
@@ -520,12 +523,16 @@ class Reservation:
     derived: tuple[int, ...] = ()
     borrowed: tuple[NodePath, ...] = ()
     excluded: tuple[tuple[tuple[int, int], tuple[int, int]], ...] = ()
+    templates: tuple[tuple[frozenset[str], ...], ...] = ()
 
     def possible_spots(self, instance: Instance) -> frozenset[str]:
         """Every spot this reservation may come to keep, whichever choices are made."""
         spots: set[str] = set()
         for chosen, _pins in self.candidates:
             spots |= chosen
+        for group in self.templates:
+            for chosen in group:
+                spots |= chosen
         for i in self.derived:
             for mode in instance.activities[i].modes:
                 spots.update(mode.input_spots.values())
@@ -620,11 +627,13 @@ def loop_reservation(
     count: int,
     borrowed: Sequence[NodePath],
     going_on: Instance | None,
+    templates: Sequence[Sequence[frozenset[str]]] = (),
 ) -> Reservation:
     """What an undecided loop at `region` keeps: the spots of the modes its last
     invocation runs in, and its holding gates' -- the next invocation runs the same
     modes (design.md D66 D3) -- with each undecided branch inside that invocation's
-    candidate spots (`borrowed`).
+    candidate spots (`borrowed`), and one candidate's spots of each branch inside it the
+    run has decided (`templates`, D67 hole 7).
 
     `going_on` is the instance with one invocation more, where the moves from the last
     holding gates into the next invocation exist: a gate spot the next invocation's
@@ -644,6 +653,7 @@ def loop_reservation(
         derived=derived,
         borrowed=tuple(borrowed),
         excluded=_unreachable_pairs(instance, region, count, going_on),
+        templates=tuple(tuple(group) for group in templates if group),
     )
 
 
@@ -693,7 +703,7 @@ def _unreachable_pairs(
     return tuple(pairs)
 
 
-def kept_reservations(instance: Instance, solution, now: int) -> tuple | None:
+def kept_reservations(instance: Instance, solution, now: int, fixation=None) -> tuple | None:
     """What each undecided region keeps in `solution`, read off its placements as the
     solver reads it (design.md D66): the window from its decision -- or its first start,
     for a loop -- to its exit, never before `now`; and the spots of the candidate its
@@ -702,7 +712,11 @@ def kept_reservations(instance: Instance, solution, now: int) -> tuple | None:
     For a schedule built some other way than by the solver -- the previous plan laid out
     again (`greedy._replay_previous`) -- so that it reports what it keeps and the
     read-back can hold it to that. None where a branch's placed modes are none of its
-    candidates': such a schedule keeps nothing it could say."""
+    candidates': such a schedule keeps nothing it could say. A loop's candidates for a
+    branch inside it already decided (`templates`) are pinned to nothing; the one kept is
+    the first whose spots nothing else is on inside the window -- None where there is
+    none."""
+    from ofplang.schedule.scheduler.plancheck import _claims, _clash, _history, history_holds
     from ofplang.schedule.scheduler.result import ReservationResult
 
     by_activity = {p.activity: p for p in solution.processing}
@@ -717,6 +731,8 @@ def kept_reservations(instance: Instance, solution, now: int) -> tuple | None:
         else:
             return None
     found = []
+    claims = None
+    holds: frozenset = frozenset()
     for res in instance.reservations:
         if res.opens_after:
             opened = max(by_activity[i].end for i in res.opens_after)
@@ -735,6 +751,28 @@ def kept_reservations(instance: Instance, solution, now: int) -> tuple | None:
             spots.update(mode.output_spots.values())
         for inner in res.borrowed:
             spots.update(chosen.get(inner, ()))
+        for group in res.templates:
+            if claims is None:
+                claims = _claims(instance, solution)
+                holds = history_holds(instance, fixation)
+
+            others = [
+                (name, s, e) for kind, name, s, e, _what, (who, index) in claims
+                if kind == "spot"
+                and not res.owns("a" if who == "a" else "r", index)
+                and not _history(instance, fixation, who, index, name, holds)
+            ]
+            option = next(
+                (
+                    option for option in group
+                    if not any(name in option and _clash(start, end, s, e)
+                               for name, s, e in others)
+                ),
+                None,
+            )
+            if option is None:
+                return None
+            spots |= option
         if spots:
             found.append(ReservationResult(res.region, start, end, tuple(sorted(spots))))
     return tuple(found)

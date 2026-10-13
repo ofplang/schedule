@@ -845,6 +845,14 @@ def _add_reservations(
             for c, (spots, _pins) in enumerate(inner_res.candidates):
                 for spot in spots:
                     sources.setdefault(spot, []).append(inner_lits[c])
+        # A branch inside the last invocation that the run has decided is decided again
+        # in the next: the loop keeps one of its candidates, pinned to nothing (D67).
+        for t, group in enumerate(res.templates):
+            picks = [model.NewBoolVar(f"rt{n}_{t}_{c}") for c in range(len(group))]
+            model.AddExactlyOne(picks)
+            for spots, pick in zip(group, picks, strict=True):
+                for spot in spots:
+                    sources.setdefault(spot, []).append(pick)
         for (i, a), (j, b) in res.excluded:
             model.AddBoolOr([mode_lits[i][a].Not(), mode_lits[j][b].Not()])
 

@@ -1811,7 +1811,10 @@ def _reservations(
                 prefix + tuple(p) for p in branches
                 if tuple(p[: len(last)]) == last and prefix + tuple(p) in candidates
             ]
-            kept = loop_reservation(instance, prefix + tuple(path), loop.count, borrowed, going_on)
+            templates = _decided_inside(j, job, workflow, spec, env, interface, roots, jobs, last)
+            kept = loop_reservation(
+                instance, prefix + tuple(path), loop.count, borrowed, going_on, templates
+            )
             if any(
                 mode.consumption
                 for i in kept.derived for mode in instance.activities[i].modes
@@ -1838,6 +1841,60 @@ def _reservations(
                 continue
             found.append(kept)
     return tuple(found), diagnostics
+
+
+def _decided_inside(j, job, workflow, spec, env, interface, roots, jobs, last) -> tuple:
+    """The candidates' spots of each branch inside a loop's last invocation `last` that
+    the run has already decided (design.md D67, hole 7): one group per branch.
+
+    The invocation's own record of it is the arm taken, but if the loop goes on, the next
+    invocation decides that branch again, so what it may need is the branch's -- both
+    arms -- and the loop keeps one candidate of it until its own condition says. The
+    candidates are those the branch had before it was decided: the expansion read again
+    with what the run stated inside `last` forgotten, and planned locally as every
+    undecided branch is (`branch_candidates`)."""
+    decided = [
+        tuple(p) for p, g in workflow.branch_gates.items()
+        if not g.assumed and tuple(p[: len(last)]) == tuple(last)
+    ]
+    # One inside another decided one is among that one's outcomes already.
+    decided = [p for p in decided if not any(q != p and p[: len(q)] == q for q in decided)]
+    if not decided:
+        return ()
+    job_interface, job_expansion = roots[j]
+    arms = [
+        entry for entry in (job_expansion or {}).get("arms") or []
+        if tuple((entry.get("node") or ())[: len(last)]) != tuple(last)
+    ]
+    forgotten = {**(job_expansion or {}), "arms": arms}
+    read, diags = parse_workflow(
+        job.workflow, interface=job_interface, expansion=forgotten, assume=ASSUMED_ARM
+    )
+    if read is None or _has_error(diags.items):
+        return ()
+    base, made = _build_one(job, read, spec, env, interface, jobs)
+    if base is None or _has_error(made):
+        return ()
+    outcomes = []
+    for _chain, switched, errs, paths in _switched_expansions(
+        job.workflow, job_interface, forgotten, read
+    ):
+        if switched is None or errs or not any(tuple(p[: len(last)]) == tuple(last) for p in paths):
+            continue
+        built, said = _build_one(job, switched, spec, env, interface, jobs)
+        if built is not None and not _has_error(said):
+            outcomes.append((paths, built))
+    prefix = (job.id,) if job.id else ()
+    groups = []
+    for path in decided:
+        inside = [
+            built for paths, built in outcomes
+            if all(tuple(p)[: len(path)] == path for p in paths)
+        ]
+        found, _why = branch_candidates(prefix + path, [base, *inside])
+        if found:
+            groups.append(tuple(candidate.spots for candidate in found))
+    return tuple(groups)
 
 
 def _normalize_and_check(base, root, env, fixed: _Fixed):

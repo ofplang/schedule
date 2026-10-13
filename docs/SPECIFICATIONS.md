@@ -2105,7 +2105,9 @@ the future it places, not the past it inherited.
   to the candidate's modes, and which candidate is the solve's choice, among those the
   environment's interchangeable machines offer. A loop keeps the spots of the modes its
   last invocation runs in -- the next runs the same -- and those of the candidates of
-  the undecided branches inside it; and its holding gates wait only on spots its next
+  the undecided branches inside it; and of each branch inside it that the run has
+  already decided, the spots of one of its candidates (the solve's choice), since the
+  next invocation decides that branch again; and its holding gates wait only on spots its next
   invocation can be reached from. A loop that cannot be reached from anywhere it leaves
   its Objects is `arm_unplannable`.
 - **Two regions** keeping one spot, neither inside the other, take turns: their windows

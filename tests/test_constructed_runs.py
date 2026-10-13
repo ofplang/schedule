@@ -26,6 +26,9 @@ from tests.test_replay_previous import _overrun
 from tests.test_reservations import (
     _CUPS_ENV,
     _DECIDES,
+    _LOOKS_THEN_CHECKS,
+    _PLATES_ENV,
+    _SOAKS,
     _WASHES_AGAIN,
     _cup_workflow,
     _cups,
@@ -165,6 +168,12 @@ def _cases():
          "interface": {"inputs": {"cup": f"tray.{j}"}, "outputs": {"cup": f"rack.{j}"}}}
         for j in "ab"
     ]}
+    plates = {"activities": [], "jobs": [
+        {"id": "a", "release": 0,
+         "interface": {"inputs": {"plate": "rack.in"}, "outputs": {"plate": "rack.out"}}},
+        {"id": "b", "release": 9,
+         "interface": {"inputs": {"plate": "rack.in2"}, "outputs": {"plate": "rack.out2"}}},
+    ]}
     return {
         "three cups, a branch each": _one(*cups),
         "two rinsing loops, nowhere to wait": _two(jobs[0].workflow, env, roster),
@@ -173,6 +182,11 @@ def _cases():
         # keeps, before its window and late (D67 hole 1).
         "a branch and work beside it": _two([_DECIDES, _LOOKS_THEN_POLISHES], _CUPS_ENV, two_cups),
         "two plates, a loop inside a branch": _two(LOOP_IN_BRANCH, _rinse_env(env), roster),
+        # A branch inside each invocation decided before the loop's own reading, and a
+        # plate beside it that would take the branch's spot (D67 hole 7).
+        "a loop deciding inside before itself": _two(
+            [_LOOKS_THEN_CHECKS, _SOAKS], _PLATES_ENV, plates
+        ),
         "one plate, a loop inside a branch": _one(
             LOOP_IN_BRANCH, _rinse_env(RINSE_ENV), RINSE_DOCUMENT
         ),

@@ -1565,7 +1565,7 @@ def _replay_previous(
         # work across a window -- which the read-back then refuses.
         from ofplang.schedule.scheduler.region import kept_reservations
 
-        kept = kept_reservations(instance, solution, now)
+        kept = kept_reservations(instance, solution, now, fixation)
         if kept is None:
             return None
         solution = replace(solution, reservations=kept)
@@ -1674,7 +1674,7 @@ def _window_claims(
             mode = instance.activities[i].modes[chosen[i]]
             spots.update(mode.input_spots.values())
             spots.update(mode.output_spots.values())
-        if res.borrowed:
+        if res.borrowed or res.templates:
             return res.possible_spots(instance)
         return frozenset(spots)
 
