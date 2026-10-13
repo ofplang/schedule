@@ -268,6 +268,12 @@ def _build_index(instance: Instance, scope: str) -> _Index:
                     )
                 for key in mode.consumption:
                     at_mode(_device_of(key), i, m)
+                # A mode that binds a device's spot moves with the device even when it
+                # holds no device itself -- a gate, a boundary, a held spot -- so it
+                # is checked like any other. Left out, a held spot went unseen and a
+                # gate on either device's spot made every swap look broken.
+                for spot in set(mode.input_spots.values()) | set(mode.output_spots.values()):
+                    at_mode(_device_of(spot), i, m)
 
     index.option_keys = [
         frozenset(_option_key(o, {}, {}, _IDENTITY) for o in arc.options)

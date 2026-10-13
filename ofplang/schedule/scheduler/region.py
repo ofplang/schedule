@@ -548,6 +548,10 @@ class Reservation:
             for mode in instance.activities[i].modes:
                 spots.update(mode.input_spots.values())
                 spots.update(mode.output_spots.values())
+        for res in instance.reservations:
+            if res.region in self.borrowed:
+                for chosen, _pins in res.candidates:
+                    spots |= chosen
         return frozenset(spots)
 
     def owns(self, kind: str, index: int) -> bool:

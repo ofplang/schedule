@@ -1697,24 +1697,37 @@ def _window_claims(
     ends = {i: s.end for i, s in places.items()}
     ends.update({i: end for i, (_m, _s, end) in history.activities.items()})
 
-    def kept_spots(res) -> frozenset[str]:
-        """The spots the previous plan's modes have this region keep."""
-        spots: set[str] = set()
+    by_region = {res.region: res for res in instance.reservations}
+
+    def matched(res) -> frozenset[str] | None:
+        """The spots of the candidate the previous plan's modes run this branch on."""
         for candidate_spots, pins in res.candidates:
             if all(chosen.get(i) == m for i, m in pins):
-                spots |= candidate_spots
-                break
-        else:
-            if res.candidates:
+                return candidate_spots
+        return None
+
+    def kept_spots(res) -> frozenset[str]:
+        """The spots the previous plan's modes have this region keep. A branch inside a
+        loop keeps for the loop the candidate it is run on, as the read-back has it;
+        which of a decided branch's candidates a loop keeps depends on what else is
+        there (`region.kept_reservations`), so that alone is read as all of them."""
+        if res.templates:
+            return res.possible_spots(instance)
+        spots: set[str] = set()
+        for region in (res.region, *res.borrowed):
+            inner = by_region.get(region)
+            if inner is None or not inner.candidates:
+                continue
+            found = matched(inner)
+            if found is None:
                 return res.possible_spots(instance)
+            spots |= found
         for i in res.derived:
             if i not in chosen:
                 return res.possible_spots(instance)
             mode = instance.activities[i].modes[chosen[i]]
             spots.update(mode.input_spots.values())
             spots.update(mode.output_spots.values())
-        if res.borrowed or res.templates:
-            return res.possible_spots(instance)
         return frozenset(spots)
 
     def claims(spots: frozenset[str]):

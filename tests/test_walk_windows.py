@@ -193,3 +193,38 @@ def test_a_candidate_whose_spots_cannot_be_kept_is_passed_over_for_the_next():
     only_blocked = (replaced(windows[0], candidates=(blocked,)), *windows[1:])
     outcome, _order = mobility.walk_with_windows(instance, tuple(only_blocked))
     assert outcome == "exhausted"
+
+
+def _two_sinks():
+    """The cups' environment with a second sink beside the first, washing alike."""
+    from tests.test_reservations import _CUPS_ENV
+
+    env = copy.deepcopy(_CUPS_ENV)
+    env["devices"].append({"id": "sink2", "spots": ["basin"]})
+    places = ["tray.a", "scope.stage", "sink.basin", "sink2.basin", "buffer.pad", "rack.a"]
+    env["transports"] = [{"transporter": "arm", "from": a, "to": b, "duration": 1}
+                         for a in places for b in places if a != b]
+    env["processes"]["wash"]["modes"].append(
+        {"devices": ["sink2"], "duration": 5, "input_spots": {"cup": "sink2.basin"},
+         "output_spots": {"cup": "sink2.basin"}})
+    return env
+
+
+def test_a_branch_whose_first_sink_is_held_is_planned_on_the_other():
+    # The first sink is held for the whole run. The branch's candidate on the second
+    # sink is the first one's image -- the outcome that polishes uses neither sink, and
+    # a swap of two machines it never touches is no change to it -- so the solver and
+    # the constructed planner both plan it there (design.md D68, Q8).
+    from tests.test_reservations import _DECIDES
+
+    document = {"interface": {"inputs": {"cup": "tray.a"}, "outputs": {"cup": "rack.a"}},
+                "occupied": [{"spot": "sink.basin", "since": 0}], "activities": []}
+    solved = schedule(copy.deepcopy(_DECIDES), _two_sinks(), document_path=copy.deepcopy(document),
+                      random_seed=0, check_arms=False)
+    built = schedule(copy.deepcopy(_DECIDES), _two_sinks(), document_path=copy.deepcopy(document),
+                     planner="greedy", check_arms=False)
+    assert solved.ok and built.ok, [d.code for d in solved.diagnostics + built.diagnostics]
+    assert built.makespan == solved.makespan
+    kept = [a for a in built.plan["activities"] if a["kind"] == "reservation"]
+    assert kept and all("sink.basin" not in a["spots"] and "sink2.basin" in a["spots"]
+                        for a in kept)

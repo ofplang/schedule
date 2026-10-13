@@ -240,6 +240,39 @@ def test_a_spot_reported_history_pinned_is_not_claimed(tmp_path):
     assert CODE not in [d.code for d in report.diagnostics]
 
 
+def _wash_classes(occupied):
+    """The classes of one cup washed on either of two sinks, `occupied` held."""
+    from ofplang.schedule.scheduler import api
+    from tests.test_reservations import _cup_workflow
+    from tests.test_walk_windows import _two_sinks
+
+    workflow = _cup_workflow("        - {id: W, process: wash, state: {cup: {from: inputs.cup}}}\n",
+                             "W.cup")
+    document = {"interface": {"inputs": {"cup": "tray.a"}, "outputs": {"cup": "rack.a"}},
+                "occupied": occupied, "activities": []}
+    seen = {}
+    real = api._solver()
+
+    def capture(instance, **kwargs):
+        seen["instance"] = instance
+        return real(instance, **kwargs)
+
+    keep = api._solver
+    api._solver = lambda: capture
+    try:
+        schedule(workflow, _two_sinks(), document_path=document, random_seed=0, check_arms=False)
+    finally:
+        api._solver = keep
+    return [c for c in interchangeable_classes(seen["instance"]) if c.scope == DEVICE]
+
+
+def test_a_device_whose_spot_is_held_is_not_claimed():
+    # A held spot binds no device, but it is the device's: swapping the two sinks would
+    # move the hold, so they are a class only while neither is held.
+    assert _summary(_wash_classes([])) == [(DEVICE, ("sink", "sink2"))]
+    assert _wash_classes([{"spot": "sink.basin", "since": 0}]) == []
+
+
 # --- the way out: through `schedule()` ------------------------------------
 
 
