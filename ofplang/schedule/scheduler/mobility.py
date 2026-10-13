@@ -210,6 +210,103 @@ def _read(instance: Instance) -> _Shape | None:
     )
 
 
+@dataclass(frozen=True)
+class Window:
+    """An undecided region's reservation as the walk keeps it (design.md D68): the spots
+    it keeps, its own work, and the steps that open and close it.
+
+    A branch opens once every producer of its condition is placed (`opens_after`); a
+    loop once any of its own work is (`opens_after` empty). It closes once all its gates
+    are placed (`closes`). While it is open, nothing that is not its own is on its spots.
+    """
+
+    region: tuple
+    spots: frozenset[str]
+    members: frozenset[int]
+    arcs: frozenset[int]
+    opens_after: tuple[int, ...]
+    closes: tuple[int, ...]
+
+    def is_open(self, mode: list[int], route: list[int]) -> bool:
+        if all(mode[g] >= 0 for g in self.closes):
+            return False
+        if self.opens_after:
+            return all(mode[i] >= 0 for i in self.opens_after)
+        return any(mode[i] >= 0 for i in self.members) or any(route[r] >= 0 for r in self.arcs)
+
+    def owns(self, owner: tuple[str, int, int]) -> bool:
+        kind, index, _ = owner
+        return index in (self.members if kind == "kept" else self.arcs)
+
+
+def windows_of(instance: Instance) -> tuple[tuple[Window, ...], dict[int, int]]:
+    """Every reservation of `instance` as a window, and the modes the walk is held to
+    (design.md D68): a branch keeps the spots of its first candidate, its assumed
+    outcome pinned to that candidate's modes; a loop keeps every spot its last
+    invocation's activities may bind, whichever modes they take, and its undecided
+    branches' first candidates' -- the strict reading, which can only take ways out."""
+    by_region = {res.region: res for res in instance.reservations}
+    windows: list[Window] = []
+    pins: dict[int, int] = {}
+    for res in instance.reservations:
+        spots: set[str] = set()
+        if res.candidates:
+            first, chosen = res.candidates[0]
+            spots |= first
+            pins.update(dict(chosen))
+        for i in res.derived:
+            for mode in instance.activities[i].modes:
+                spots.update(mode.input_spots.values())
+                spots.update(mode.output_spots.values())
+        for inner in res.borrowed:
+            inner_res = by_region.get(inner)
+            if inner_res is not None and inner_res.candidates:
+                spots |= inner_res.candidates[0][0]
+        for group in res.templates:
+            for option in group:
+                spots |= option
+        windows.append(Window(
+            res.region, frozenset(spots), res.members, res.arcs, res.opens_after, res.closes,
+        ))
+    return tuple(windows), pins
+
+
+def _breaks(
+    windows: tuple[Window, ...],
+    step: _Step,
+    was_open: tuple[bool, ...],
+    shape: _Shape,
+    mode: list[int],
+    route: list[int],
+    board: _Board,
+) -> bool:
+    """Whether `step`, just applied, breaks a window: put work that is not a window's own
+    on its spots while it was open, left something not its own on its spots while it is
+    open, or has two windows open on one spot, neither inside the other."""
+    kind, index, choice = step
+    now_open = [w.is_open(mode, route) for w in windows]
+    for w, before, after in zip(windows, was_open, now_open, strict=True):
+        if (
+            kind == "place" and before and index not in w.members
+            and any(spot in w.spots for spot in shape.spots[index][choice])
+        ):
+            return True
+        if not after:
+            continue
+        for spot in w.spots:
+            if any(not w.owns(owner) for owner in board.owners.get(spot, ())):
+                return True
+    opened = [w for w, flag in zip(windows, now_open, strict=True) if flag]
+    for k, a in enumerate(opened):
+        for b in opened[k + 1:]:
+            nested = (
+                a.region[: len(b.region)] == b.region or b.region[: len(a.region)] == a.region
+            )
+            if not nested and a.spots & b.spots:
+                return True
+    return False
+
+
 class _Board:
     """Who is holding which spot. An owner is a placed activity keeping its spot
     to the end, an activity's product waiting for the move that takes it away, or
@@ -233,7 +330,11 @@ class _Board:
         return sorted(spot for spot, held in self.owners.items() if held)
 
 
-def find_order(instance: Instance) -> tuple[_Step, ...] | None:
+def find_order(
+    instance: Instance,
+    windows: tuple[Window, ...] = (),
+    pins: dict[int, int] | None = None,
+) -> tuple[_Step, ...] | None:
     """An order of placements and moves that gets every Object to the end, or
     None when the walk finds none or is stopped before it can.
 
@@ -249,13 +350,22 @@ def find_order(instance: Instance) -> tuple[_Step, ...] | None:
     ⚠ **The order is a way through, not a good way through.** The walk follows
     one Object to its end before starting the next, because that is what makes
     it cheap; nothing in it is weighed against a duration.
+
+    With `windows` (`windows_of`, design.md D68) the walk keeps undecided regions'
+    reservations too, and the activities in `pins` take only the mode named: the
+    order it finds then keeps every window in its place, and none found within the cap
+    means none respects them. Such a walk is not the one the checks before a solve
+    remember.
     """
     if any(not arc.options for arc in instance.arcs):
         return None
     shape = _read(instance)
     if shape is None:
         return None
-    outcome, _deepest, order = _walked(instance, shape)
+    if windows or pins:
+        outcome, _deepest, order = _walk(instance, shape, windows, pins or {})
+    else:
+        outcome, _deepest, order = _walked(instance, shape)
     return order if outcome == "found" else None
 
 
@@ -300,7 +410,12 @@ def _walked(instance: Instance, shape: _Shape) -> _Walked:
     return result
 
 
-def _walk(instance: Instance, shape: _Shape) -> _Walked:
+def _walk(
+    instance: Instance,
+    shape: _Shape,
+    windows: tuple[Window, ...] = (),
+    pins: dict[int, int] | None = None,
+) -> _Walked:
     """Depth-first over placements and moves, with time erased.
 
     Returns `"found"` when the Objects can all be got to the end, `"exhausted"`
@@ -327,7 +442,8 @@ def _walk(instance: Instance, shape: _Shape) -> _Walked:
     stack: list[Iterator[_Step]] = []
     applied: list[_Step] = []
     placed = 0
-    choices = _steps(instance, shape, mode, route, board)
+    pins = pins or {}
+    choices = _steps(instance, shape, mode, route, board, pins)
 
     while True:
         if placed == activities and all(chosen >= 0 for chosen in route):
@@ -337,7 +453,11 @@ def _walk(instance: Instance, shape: _Shape) -> _Walked:
 
         step = next(choices, None)
         if step is not None:
+            was_open = tuple(w.is_open(mode, route) for w in windows)
             _apply(instance, shape, step, mode, route, board)
+            if windows and _breaks(windows, step, was_open, shape, mode, route, board):
+                _undo(instance, shape, step, mode, route, board)
+                continue
             # Packed inline rather than through a helper: this runs once per
             # state, and a call per state was measurably half the walk's time
             # on the widest environment.
@@ -353,7 +473,7 @@ def _walk(instance: Instance, shape: _Shape) -> _Walked:
             placed += step[0] == "place"
             stack.append(choices)
             applied.append(step)
-            choices = _steps(instance, shape, mode, route, board)
+            choices = _steps(instance, shape, mode, route, board, pins)
             continue
 
         if not stack:
@@ -365,7 +485,12 @@ def _walk(instance: Instance, shape: _Shape) -> _Walked:
 
 
 def _steps(
-    instance: Instance, shape: _Shape, mode: list[int], route: list[int], board: _Board
+    instance: Instance,
+    shape: _Shape,
+    mode: list[int],
+    route: list[int],
+    board: _Board,
+    pins: dict[int, int] | None = None,
 ) -> Iterator[_Step]:
     """Everything that could happen next, in the order worth trying first.
 
@@ -401,8 +526,11 @@ def _steps(
         if len(settled) > 1:
             continue  # two deliveries disagree; this activity can never run
         mine = frozenset(("delivery", arc, 0) for arc in shape.incoming[index])
+        pinned = pins.get(index) if pins else None
         for candidate in range(len(instance.activities[index].modes)):
             if settled and candidate not in settled:
+                continue
+            if pinned is not None and candidate != pinned:
                 continue
             if any(spot is None for spot in shape.departures[index][candidate]):
                 continue  # no route leaves this mode; choosing it strands the arc
