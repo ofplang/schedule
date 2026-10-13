@@ -1137,8 +1137,64 @@ def _construct_plan(
     )
 
 
+def _construct_for_replan(
+    instance, specs: tuple[JobSpec, ...], solve_kwargs: dict
+) -> tuple[Solution, list[JobSpec]] | None:
+    """A constructed schedule for a replan, read back, and the promises it breaks; or
+    None (design.md D66 stage 0, D67).
+
+    The promises are tried as they stand first. If the construction cannot keep them,
+    it is asked again without them; the jobs that then finish past their bound are the
+    ones it breaks."""
+    from ofplang.schedule.scheduler import greedy
+
+    fixation = solve_kwargs["fixation"]
+    if greedy._refuse(instance, fixation, specs) is not None:
+        return None
+    unbounded = tuple(replace(spec, bound=None) for spec in specs)
+    built = None
+    for trial in (specs, unbounded):
+        built = greedy.construct(
+            instance,
+            fixation=fixation,
+            jobs=trial,
+            objective=solve_kwargs["objective"],
+            running_task_margin=solve_kwargs["running_task_margin"],
+        )
+        if built is not None:
+            break
+    if built is None or check_schedule(instance, built, fixation):
+        return None
+    relaxed = [
+        spec
+        for spec in specs
+        if spec.bound is not None and built.job_completions.get(spec.id, 0) > spec.bound
+    ]
+    return built, relaxed
+
+
+def _better_than_solved(instance, specs, solve_kwargs, built: Solution, solved: Solution) -> bool:
+    """Whether a constructed schedule beats one the solver came back with unproved, by
+    the plan's own objective, stage by stage; a tie is the solver's."""
+    from ofplang.schedule.scheduler import greedy
+
+    stages = objective_stages.effective(
+        solve_kwargs["objective"] or objective_stages.default(len(specs)),
+        replenishment_possible=bool(instance.replenishments),
+    )
+    fixation = solve_kwargs["fixation"]
+    return greedy._stage_values(instance, fixation, specs, stages, built) < greedy._stage_values(
+        instance, fixation, specs, stages, solved
+    )
+
+
 def _construct_after_solver(
-    instance, specs: tuple[JobSpec, ...], solve_kwargs: dict, unsolved: Solution
+    instance,
+    specs: tuple[JobSpec, ...],
+    solve_kwargs: dict,
+    unsolved: Solution,
+    prebuilt: tuple[Solution, list[JobSpec]] | None = None,
+    why: str = "the solver found no schedule within its budget",
 ) -> tuple[Solution, tuple[JobSpec, ...], list[Diagnostic]] | None:
     """A constructed schedule for a replan the solver found nothing for, or None.
 
@@ -1153,37 +1209,18 @@ def _construct_after_solver(
     keep as many as possible, since a search is what just failed. Read back against
     the constraints before it is handed out, like every constructed plan.
     """
-    from ofplang.schedule.scheduler import greedy
-
-    fixation = solve_kwargs["fixation"]
-    if greedy._refuse(instance, fixation, specs) is not None:
+    found = prebuilt if prebuilt is not None else _construct_for_replan(
+        instance, specs, solve_kwargs
+    )
+    if found is None:
         return None
-    unbounded = tuple(replace(spec, bound=None) for spec in specs)
-    for trial in (specs, unbounded):
-        built = greedy.construct(
-            instance,
-            fixation=fixation,
-            jobs=trial,
-            objective=solve_kwargs["objective"],
-            running_task_margin=solve_kwargs["running_task_margin"],
-        )
-        if built is not None:
-            break
-    if built is None or check_schedule(instance, built, fixation):
-        return None
-
-    relaxed = [
-        spec
-        for spec in specs
-        if spec.bound is not None and built.job_completions.get(spec.id, 0) > spec.bound
-    ]
+    built, relaxed = found
     kept = tuple(replace(spec, bound=None) if spec in relaxed else spec for spec in specs)
     diagnostics = [
         Diagnostic(
             errors.PLAN_CONSTRUCTED_AFTER_SOLVER,
-            "the solver found no schedule within its budget, so this replan's plan was "
-            "constructed instead: it is a schedule and nothing more, and a shorter one "
-            "may exist",
+            f"{why}, so this replan's plan was constructed instead: it is a schedule "
+            "and nothing more, and a shorter one may exist",
             severity=WARNING,
         )
     ]
@@ -2490,12 +2527,35 @@ def _run(
     if planner == "greedy":
         solution, settled, relax_diags = _construct_plan(instance, named, solve_kwargs)
     else:
+        # 🔴 **Construct first** (design.md D67). Where the plan being replaced covers
+        # this replan -- as it is, or with what a decision changed spliced in -- the
+        # schedule it gives is built before the solve and handed to the solver as its
+        # starting point, reservations kept.
+        prebuilt = None
+        if had_now and fixation.previous is not None:
+            prebuilt = _construct_for_replan(instance, named, solve_kwargs)
+            if prebuilt is not None:
+                solve_kwargs = {**solve_kwargs, "hint": prebuilt[0]}
         solution, settled, relax_diags = _solve_within_bounds(instance, named, solve_kwargs)
         # A replan the solver came back from empty-handed is a run that would stop,
         # and a constructed schedule is better than stopping (design.md D66, stage 0).
-        # Only on a replan: a first plan that times out says so, as it always has.
+        # Only on a replan: a first plan that times out says so, as it always has. One it
+        # came back from unproved within its budget keeps whichever is better (D67).
         if solution.outcome == "unknown" and had_now:
-            fallback = _construct_after_solver(instance, named, solve_kwargs, solution)
+            fallback = _construct_after_solver(instance, named, solve_kwargs, solution, prebuilt)
+            if fallback is not None:
+                solution, settled, relax_diags = fallback
+        elif (
+            solution.outcome == "feasible"
+            and prebuilt is not None
+            and not prebuilt[1]
+            and _better_than_solved(instance, named, solve_kwargs, prebuilt[0], solution)
+        ):
+            fallback = _construct_after_solver(
+                instance, named, solve_kwargs, solution, prebuilt,
+                why="the solver came back within its budget with a schedule the constructed "
+                "one beats",
+            )
             if fallback is not None:
                 solution, settled, relax_diags = fallback
     diagnostics += relax_diags

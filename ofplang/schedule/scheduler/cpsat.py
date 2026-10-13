@@ -81,6 +81,7 @@ def solve(
     jobs: tuple[JobSpec, ...] = (),
     collect_solutions: bool = False,
     interchangeable: tuple[InterchangeableClass, ...] | None = None,
+    hint: Solution | None = None,
 ) -> Solution:
     """Build and solve the model. With a `fixation` (a replan), completed/running
     activities are pinned to their reported times, mode, and route, pending ones
@@ -640,7 +641,11 @@ def solve(
     # only where the search starts -- so the passes are asked for one with the
     # reservations left out, and the solver repairs what that gets wrong. Measured on
     # twenty-four inspected cups, the difference between a proof in 0.1 s and in 7.
-    constructed = greedy.construct(
+    #
+    # A replan the caller could construct a schedule for -- the plan being replaced,
+    # laid out again with what a decision changed spliced in (design.md D67) -- hands
+    # that schedule over (`hint`), reservations kept: it is the better start.
+    constructed = hint if hint is not None else greedy.construct(
         replace(instance, reservations=()) if instance.reservations else instance,
         fixation=fixation,
         jobs=jobs,
