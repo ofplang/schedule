@@ -35,6 +35,7 @@ from ofplang.schedule.scheduler.instance import (
     job_membership,
 )
 from ofplang.schedule.scheduler.model import JobSpec, Mode
+from ofplang.schedule.scheduler.plancheck import history_holds
 
 # The answer's shape lives in `result`, so that `greedy` can produce the same
 # thing without importing this module. Re-exported because callers have always
@@ -863,16 +864,18 @@ def _add_reservations(
 
     fixed_activities = set(fixation.activities) if fixation is not None else set()
     fixed_arcs = set(fixation.arcs) if fixation is not None else set()
+    holds = history_holds(instance, fixation)
 
-    def own(res, owner) -> bool:
+    def own(res, owner, spot: str) -> bool:
         kind, index = owner
         # History is not the reservation's to move (F1): what has run or is running, and
-        # an Object resting where history left it until its move comes for it.
+        # an Object resting where history left it until its move comes for it -- through
+        # any gate it waits in on that same spot (`plancheck.history_holds`).
         if kind == "a" and index in fixed_activities:
             return True
         if kind != "a" and index in fixed_arcs:
             return True
-        if kind == "rs" and instance.arcs[index].src_activity in fixed_activities:
+        if (kind, index, spot) in holds:
             return True
         return res.owns("a" if kind == "a" else "r", index)
 
@@ -882,7 +885,7 @@ def _add_reservations(
 
     for spot, entries in windows.items():
         for res, window in entries:
-            others = [iv for iv, owner in spot_owned.get(spot, []) if not own(res, owner)]
+            others = [iv for iv, owner in spot_owned.get(spot, []) if not own(res, owner, spot)]
             model.AddNoOverlap([*others, window])
         if not any(nested(a, b) for k, (a, _w) in enumerate(entries) for b, _x in entries[k + 1:]):
             model.AddNoOverlap([window for _res, window in entries])

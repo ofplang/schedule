@@ -1409,10 +1409,14 @@ $z_{\rho p}$ the resulting "spot $p$ is kept" literal and $o_\rho \Leftrightarro
 w^e_\rho > w^s_\rho$, the interval $[w^s_\rho, w^e_\rho]$ present under
 $z_{\rho p} \wedge o_\rho$ joins
 
-$$\textsc{NoOverlap}\big(\{\text{every interval on } p \text{ not of } T_\rho \cup R_\rho\}
-\cup \{[w^s_\rho, w^e_\rho]\}\big),$$
+$$\textsc{NoOverlap}\big(\{\text{every interval on } p \text{ not of } T_\rho \cup R_\rho
+\text{ nor in } H_p\} \cup \{[w^s_\rho, w^e_\rho]\}\big),$$
 
-and the windows on $p$ of two regions neither of which contains the other share a
+$H_p$ being the history on $p$, which no window moves (design.md D66 F1): the intervals
+of fixed activities and moves, and the stay of an Object a fixed activity left on $p$ --
+the source hold of each move out of it, and, where it waits in a gate held on $p$
+itself, that gate's interval on $p$ and the hand-over's destination hold, on to the
+moves out of the gate (D67). And the windows on $p$ of two regions neither of which contains the other share a
 $\textsc{NoOverlap}$ of their own. A loop's holding gate and the activity its Object
 goes to first in the next invocation may not take a pair of modes with no route between
 their spots. Without an undecided region none of this exists and §6 is unchanged.

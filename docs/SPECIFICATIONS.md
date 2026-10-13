@@ -2089,7 +2089,9 @@ region may yet need is free when it needs it: a plan made on an assumed outcome 
 get later when the outcome is another, never stuck. The region's own work -- its
 activities and gates, every move into, inside or out of it -- is on them as it likes.
 So is **history**: what has run or is running, and an Object resting where it left it,
-is not the reservation's to move. Where work overran onto a kept spot, the replan plans
+is not the reservation's to move -- until the move that takes it away, including any gate
+it waits in on that same spot on the way (nothing runs a gate, so waiting in one there is
+the same stay). Where work overran onto a kept spot, the replan plans
 on around it rather than finding no plan; what the reservation still guarantees is then
 the future it places, not the past it inherited.
 

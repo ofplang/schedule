@@ -35,6 +35,7 @@ from __future__ import annotations
 
 from ofplang.schedule.core.identifiers import parse_qualified_resource
 from ofplang.schedule.scheduler.instance import Instance
+from ofplang.schedule.scheduler.model import GATE_IN, slot_key
 from ofplang.schedule.scheduler.result import Solution
 from ofplang.schedule.scheduler.status import COMPLETION, START, Fixation
 
@@ -227,17 +228,72 @@ def _clash(start: int, end: int, other_start: int, other_end: int) -> bool:
     return start < other_end and other_start < end
 
 
-def _history(instance: Instance, fixation: Fixation | None, kind: str, index: int) -> bool:
-    """Whether a claim is history a reservation cannot move (design.md D66 F1): an
-    activity or move that has started, or an Object resting where a started activity
-    left it."""
+def history_holds(
+    instance: Instance, fixation: Fixation | None
+) -> frozenset[tuple[str, int, str]]:
+    """The spot claims of Objects resting where history left them (design.md D66 F1,
+    D67 hole 6): `(owner kind, index, spot)`, owners as `_claims` and the solver name
+    them.
+
+    What a started activity made stays on its output spot until a move takes it away,
+    and nothing runs a gate: one held on that same spot, and the hand-overs into and out
+    of it, are the same stay under other names -- however long the activity overran.
+    So the walk starts at each fixed activity's output spots and follows the moves out:
+    each one's source hold on that spot is the stay, and one into a gate the Object can
+    wait in right there carries it on, the gate's claim on that spot and the hand-over's
+    destination hold included, and on out of that gate. A gate on another spot is
+    somewhere the Object has to be moved to: new work, which a reservation does hold."""
+    if fixation is None:
+        return frozenset()
+    leaving: dict[int, list[int]] = {}
+    for r, arc in enumerate(instance.arcs):
+        leaving.setdefault(arc.src_activity, []).append(r)
+    walk: list[tuple[int, str]] = []
+    for i, fx in fixation.activities.items():
+        if fx.status == "cancelled":
+            continue
+        mode = instance.activities[i].modes[fx.mode_index]
+        for r in leaving.get(i, ()):
+            spot = mode.output_spots.get(slot_key(instance.arcs[r].arc.src))
+            if spot is not None:
+                walk.append((r, spot))
+    found: set[tuple[str, int, str]] = set()
+    while walk:
+        r, spot = walk.pop()
+        if ("rs", r, spot) in found:
+            continue
+        found.add(("rs", r, spot))
+        if r in fixation.arcs:
+            continue  # the move has set off: the Object is no longer resting here
+        target = instance.arcs[r].dst_activity
+        gate = instance.activities[target]
+        if not gate.gate or target in fixation.activities:
+            continue
+        if not any(mode.input_spots.get(GATE_IN) == spot for mode in gate.modes):
+            continue
+        found.update({("rd", r, spot), ("a", target, spot)})
+        walk.extend((out, spot) for out in leaving.get(target, ()))
+    return frozenset(found)
+
+
+def _history(
+    instance: Instance,
+    fixation: Fixation | None,
+    kind: str,
+    index: int,
+    spot: str,
+    holds: frozenset[tuple[str, int, str]],
+) -> bool:
+    """Whether a claim on `spot` is history a reservation cannot move (design.md D66
+    F1): an activity or move that has started, or an Object resting where history left
+    it (`history_holds`)."""
     if fixation is None:
         return False
-    if kind == "a":
-        return index in fixation.activities
-    if index in fixation.arcs:
+    if kind == "a" and index in fixation.activities:
         return True
-    return kind == "rs" and instance.arcs[index].src_activity in fixation.activities
+    if kind != "a" and index in fixation.arcs:
+        return True
+    return (kind, index, spot) in holds
 
 
 def _reservation_wrongs(
@@ -248,6 +304,7 @@ def _reservation_wrongs(
     -- neither inside the other -- keeping one spot at once."""
     wrong: list[str] = []
     by_region = {res.region: res for res in instance.reservations}
+    holds = history_holds(instance, fixation) if solution.reservations else frozenset()
     for kept in solution.reservations:
         res = by_region.get(kept.region)
         if res is None:
@@ -256,7 +313,7 @@ def _reservation_wrongs(
         for kind, name, start, end, what, (owner_kind, index) in claims:
             if kind != "spot" or name not in kept.spots:
                 continue
-            if _history(instance, fixation, owner_kind, index):
+            if _history(instance, fixation, owner_kind, index, name, holds):
                 continue
             if res.owns("a" if owner_kind == "a" else "r", index):
                 continue

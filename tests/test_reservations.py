@@ -347,6 +347,123 @@ def test_work_that_overran_onto_a_kept_spot_does_not_take_the_replan_away():
     assert report.ok, [(d.code, d.message) for d in report.diagnostics]
 
 
+# --- an Object history left on a kept spot ---------------------------------------------------
+
+# A dirty cup is washed and inspected again, and the second inspection decides between a
+# second wash and a polish: a branch inside a branch's arm.
+_WASHES_AGAIN = yaml.safe_load(
+    'spec_version: "0.5"\ntypes:\n  Cup: {domain: object}\nprocesses:\n'
+    + _INSPECT_PROCESSES
+    + """  wash_check:
+    kind: composite
+    inputs: {cup: {type: Cup, phase: data}}
+    outputs: {cup: {type: Cup, phase: data}}
+    body:
+      nodes:
+        - {id: W, process: wash, state: {cup: {from: inputs.cup}}}
+        - {id: J, process: inspect, state: {cup: {from: W.cup}}}
+        - id: K
+          kind: branch
+          condition: {from: J.dirty}
+          args: {cup: {from: J.cup}}
+          then: {process: wash}
+          else: {process: polish}
+      returns: {cup: {from: K.cup}}
+  main:
+    kind: composite
+    inputs: {cup: {type: Cup, phase: data}}
+    outputs: {cup: {type: Cup, phase: data}}
+    body:
+      nodes:
+        - {id: I, process: inspect, state: {cup: {from: inputs.cup}}}
+        - id: H
+          kind: branch
+          condition: {from: I.dirty}
+          args: {cup: {from: I.cup}}
+          then: {process: wash_check}
+          else: {process: polish}
+      returns: {cup: {from: H.cup}}
+entry: main
+"""
+)
+
+
+def _washes_again(document, **kwargs):
+    jobs = [JobInput(j, copy.deepcopy(_WASHES_AGAIN)) for j in "ab"]
+    return schedule_jobs(jobs, copy.deepcopy(_CUPS_ENV), document_path=document,
+                         random_seed=0, check_arms=False, **kwargs)
+
+
+def _stated(plan: dict, now: int, job: str, node: list) -> dict:
+    """`plan` handed back at `now`, everything on time, with `job`'s branch at `node`
+    stated `then` -- as a run does once the reading is in."""
+    document = copy.deepcopy(plan)
+    for entry in document["activities"]:
+        if entry["kind"] in ("processing", "transport") and entry["start"] < now:
+            entry["status"] = "completed" if entry["end"] <= now else "running"
+    document["now"] = now
+    held = next(j for j in document["jobs"] if j["id"] == job)
+    held.setdefault("expansion", {}).setdefault("arms", []).append({"node": node, "arm": "then"})
+    held.pop("bound", None)
+    held.pop("fingerprint", None)
+    return document
+
+
+def test_an_object_history_left_on_a_kept_spot_waits_there_through_its_gates(monkeypatch):
+    # One cup has been decided twice, `then` both times, and its second wash runs late on
+    # the sink. The other cup's inspection runs late too, so its branch is still open --
+    # and keeps the sink, since it may yet be washed. The first cup is still on the sink,
+    # and leaves it through the two gates its branches hand it on by, both on the sink:
+    # that stay is history's (design.md D66 F1, D67 hole 6), not new work inside the
+    # window. Holding the window against those gates made the replan infeasible.
+    roster = {"activities": [], "jobs": [
+        {"id": j, "release": 0,
+         "interface": {"inputs": {"cup": f"tray.{j}"}, "outputs": {"cup": f"rack.{j}"}}}
+        for j in "ab"
+    ]}
+    plan = _washes_again(roster).plan
+    first = min(kinds(plan, "decision"), key=lambda a: a["start"])
+    job = first["job"]
+    other = "b" if job == "a" else "a"
+    plan = _washes_again(_stated(plan, first["start"], job, ["H"])).plan
+    inner = next(a for a in kinds(plan, "decision") if a.get("job") == job)
+    assert inner["node"] == ["H", "K"]
+    plan = _washes_again(_stated(plan, inner["start"], job, ["H", "K"])).plan
+
+    def of(who, node):
+        return next(a for a in kinds(plan, "processing")
+                    if a.get("job") == who and a["node"] == node)
+
+    wash, look = of(job, ["H", "K"]), of(other, ["I"])
+    assert wash["end"] < look["end"] and "sink.basin" in wash["input_spots"].values()
+    now = look["end"] + 2
+    document = copy.deepcopy(plan)
+    for entry in document["activities"]:
+        if entry["kind"] not in ("processing", "transport") or entry["start"] >= now:
+            continue
+        if entry.get("job") == job and entry["start"] >= wash["end"]:
+            continue  # after the late wash: not started
+        if entry.get("job") == other and entry["start"] >= look["end"]:
+            continue  # after the late inspection: not started
+        late = entry in (wash, look)
+        entry["status"] = "running" if late or entry["end"] > now else "completed"
+    document["now"] = now
+
+    report = _washes_again(copy.deepcopy(document), running_task_margin=1)
+    assert report.ok, [(d.code, d.message) for d in report.diagnostics]
+    kept = [a for a in kinds(report.plan, "reservation") if a.get("job") == other]
+    assert any("sink.basin" in a["spots"] for a in kept)
+
+    # The constructed fallback, read back against the same rule, plans it too.
+    from ofplang.schedule.scheduler import api
+    from ofplang.schedule.scheduler.result import Solution
+
+    monkeypatch.setattr(api, "_solver", lambda: lambda *a, **k: Solution("unknown", None, (), ()))
+    constructed = _washes_again(copy.deepcopy(document), running_task_margin=1)
+    assert constructed.ok, [(d.code, d.message) for d in constructed.diagnostics]
+    assert "plan_constructed_after_solver" in [d.code for d in constructed.diagnostics]
+
+
 # --- a loop that draws on a stock ------------------------------------------------------------
 
 
