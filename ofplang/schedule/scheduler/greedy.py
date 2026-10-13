@@ -914,7 +914,7 @@ def _build(
         previous = fixation.previous if fixation is not None else None
         if previous is None:
             return None
-        return _replay_previous(instance, previous, floors, history, now)
+        return _replay_previous(instance, previous, floors, history, now, fixation)
     best: Solution | None = None
     mark: tuple[int, ...] | None = None
     for rule in _RULES:
@@ -971,7 +971,7 @@ def _build(
     # replan that already worked gets exactly the schedule it got before.
     previous = fixation.previous if fixation is not None else None
     if best is None and settled_already and previous is not None:
-        best = _replay_previous(instance, previous, floors, history, now)
+        best = _replay_previous(instance, previous, floors, history, now, fixation)
     return best
 
 
@@ -1373,6 +1373,7 @@ def _replay_previous(
     floors: dict[int, int],
     history: _History,
     now: int,
+    fixation: Fixation | None = None,
 ) -> Solution | None:
     """Lay the previous plan's pending order out over the reported history.
 
@@ -1447,6 +1448,39 @@ def _replay_previous(
     # opening is held until they have closed.
     after = _windows_before(instance, previous, history)
 
+    # 🔴 **And against everything else on their spots** (design.md D67, holes 1 and 4).
+    # A window is the previous plan's too: on each spot it keeps, what used the spot
+    # before the window opened did so before, and what used it after the window closed
+    # did so after. Overruns move both, so both are put back in that order -- what came
+    # after waits for the region's exit (`closing`), and what opens a window waits for
+    # what came before it to have left (`opening`), a loop's first move included.
+    closing, opening = _window_claims(instance, previous, history, fixation)
+    busy: set[tuple[str, int]] = set()
+
+    def held_to_windows(key: tuple[str, int], length: int) -> int | None:
+        """The earliest step `key` may start at for the windows around it, or None
+        where the order goes round in a circle."""
+        if key in busy:
+            return None
+        busy.add(key)
+        try:
+            at = 0
+            for gates in closing.get(key, ()):
+                for gate in gates:
+                    if not put(gate):
+                        return None
+                at = max(at, max(placed[gate].start for gate in gates))
+            for claims, by_end in opening.get(key, ()):
+                for kind, index in claims:
+                    if not (put(index) if kind == "place" else send(index)):
+                        return None
+                left = [placed[i].end if kind == "place" else moves[i].end for kind, i in claims]
+                if left:
+                    at = max(at, max(left) - (length if by_end else 0))
+            return at
+        finally:
+            busy.discard(key)
+
     def put(index: int) -> bool:
         """Put activity `index` down, after what it receives -- and after the windows
         it may not open before."""
@@ -1462,6 +1496,10 @@ def _replay_previous(
             closed = max(placed[gate].start for gate in gates)
             length = instance.activities[index].modes[choice].duration if by_end else 0
             floor[index] = max(floor[index], closed - length)
+        held = held_to_windows(("place", index), instance.activities[index].modes[choice].duration)
+        if held is None:
+            return False
+        floor[index] = max(floor[index], held)
         for arc_index in arriving[index]:
             if arc_index not in moves and not send(arc_index):
                 return False
@@ -1475,6 +1513,10 @@ def _replay_previous(
         arc = instance.arcs[arc_index]
         if choice is None or not put(arc.src_activity):
             return False
+        held = held_to_windows(("move", arc_index), 0)
+        if held is None:
+            return False
+        resting[arc_index] = max(resting.get(arc_index, 0), held)
         if not _replay_move(instance, board, arc_index, choice, moves, resting, placed, now):
             return False
         # An output node settles when the last of its material has landed.
@@ -1579,6 +1621,116 @@ def _windows_before(
                     continue  # already open: history
                 after.setdefault(index, []).append((other.closes, by_end))
     return after
+
+
+def _window_claims(
+    instance: Instance,
+    previous: PreviousPlan,
+    history: _History,
+    fixation: Fixation | None,
+) -> tuple[dict[tuple[str, int], list[tuple[int, ...]]],
+           dict[tuple[str, int], list[tuple[tuple[tuple[str, int], ...], bool]]]]:
+    """Where the previous plan had each step against each window on the spots it shares
+    with it (design.md D67, holes 1 and 4): `(closing, opening)`.
+
+    `closing` maps a step that came after a window -- or is on its spots at all while
+    the window is already open -- to that window's gates: it waits for them. `opening`
+    maps a step that opens a window (a branch: its condition's producers, by their end;
+    a loop: each of its activities and moves, by their start) to the steps that came
+    before it on its spots, which it waits to have left. Steps are `("place", activity)`
+    or `("move", arc)`. A region's own work, history, and an Object resting where history
+    left it (`plancheck.history_holds`) are on the spots as they like, as the read-back
+    has it; so is a same-spot hand-off, which claims nothing there."""
+    closing: dict[tuple[str, int], list[tuple[int, ...]]] = {}
+    opening: dict[tuple[str, int], list[tuple[tuple[tuple[str, int], ...], bool]]] = {}
+    if not instance.reservations:
+        return closing, opening
+    from ofplang.schedule.scheduler.plancheck import history_holds
+
+    holds = history_holds(instance, fixation)
+    places = {s.index: s for s in previous.steps if s.kind == "place"}
+    moves = {s.index: s for s in previous.steps if s.kind == "move"}
+    chosen = {i: s.choice for i, s in places.items()}
+    chosen.update(previous.implicit_modes)
+    chosen.update({i: mode for i, (mode, _s, _e) in history.activities.items()})
+    starts = {i: s.start for i, s in places.items()}
+    starts.update({i: start for i, (_m, start, _e) in history.activities.items()})
+    ends = {i: s.end for i, s in places.items()}
+    ends.update({i: end for i, (_m, _s, end) in history.activities.items()})
+
+    def kept_spots(res) -> frozenset[str]:
+        """The spots the previous plan's modes have this region keep."""
+        spots: set[str] = set()
+        for candidate_spots, pins in res.candidates:
+            if all(chosen.get(i) == m for i, m in pins):
+                spots |= candidate_spots
+                break
+        else:
+            if res.candidates:
+                return res.possible_spots(instance)
+        for i in res.derived:
+            if i not in chosen:
+                return res.possible_spots(instance)
+            mode = instance.activities[i].modes[chosen[i]]
+            spots.update(mode.input_spots.values())
+            spots.update(mode.output_spots.values())
+        if res.borrowed:
+            return res.possible_spots(instance)
+        return frozenset(spots)
+
+    def claims(spots: frozenset[str]):
+        """The pending steps on `spots`, with where the previous plan had them."""
+        for i, step in places.items():
+            mode = instance.activities[i].modes[step.choice]
+            on = (set(mode.input_spots.values()) | set(mode.output_spots.values())) & spots
+            if any(("a", i, spot) not in holds for spot in on):
+                yield ("place", i), step.start
+        for r, step in moves.items():
+            option = instance.arcs[r].options[step.choice]
+            if option.from_spot == option.to_spot:
+                continue
+            if (option.from_spot in spots and ("rs", r, option.from_spot) not in holds) or (
+                option.to_spot in spots and ("rd", r, option.to_spot) not in holds
+            ):
+                yield ("move", r), step.start
+
+    for res in instance.reservations:
+        if not res.closes or any(g not in starts for g in res.closes):
+            continue  # a window the previous plan did not place: nothing to keep in order
+        if res.opens_after:
+            if any(i not in ends for i in res.opens_after):
+                continue
+            opened = max(ends[i] for i in res.opens_after)
+            open_already = all(i in history.activities for i in res.opens_after)
+            openers = [(("place", i), True) for i in res.opens_after]
+        else:
+            firsts = [starts[i] for i in res.members if i in starts]
+            firsts += [moves[r].start for r in res.arcs if r in moves]
+            firsts += [start for r, (_o, start, _e) in history.arcs.items() if r in res.arcs]
+            if not firsts:
+                continue
+            opened = min(firsts)
+            open_already = any(i in history.activities for i in res.members) or any(
+                r in history.arcs for r in res.arcs
+            )
+            openers = [(("place", i), False) for i in sorted(res.members)]
+            openers += [(("move", r), False) for r in sorted(res.arcs)]
+        before: list[tuple[str, int]] = []
+        opens = {key for key, _by_end in openers}
+        for key, at in claims(kept_spots(res)):
+            kind, index = key
+            if res.owns("a" if kind == "place" else "r", index) or key in opens:
+                continue  # its own work, or what opens it: a window opens at its end
+            if open_already or at >= opened:
+                # After the window -- or, which the previous plan never had, inside it:
+                # either way it waits for the exit.
+                closing.setdefault(key, []).append(res.closes)
+            else:
+                before.append(key)
+        if before and not open_already:
+            for key, by_end in openers:
+                opening.setdefault(key, []).append((tuple(before), by_end))
+    return closing, opening
 
 
 def _replay_move(

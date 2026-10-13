@@ -2116,8 +2116,11 @@ neither does a branch something of which has started (it is decided in all but n
 nor a region of a job that has stopped (§6.2). The constructed planner's forward passes
 (`greedy`) do not keep reservations yet: a first plan that has one is declined
 (`planner_unsupported`). On a replan the previous plan is laid out again instead (§4.9)
--- in its order on every spot, and with every window opening only once the windows it
-followed have closed -- and offered where it keeps what it reports; that is also the
+-- in its order on every spot, with every window opening only once the windows it
+followed have closed, and with every window in its place against the rest of the work
+on its spots: what used them before it opened has left before it opens, and what used
+them after it closed waits for it to close -- and offered where it keeps what it
+reports; that is also the
 constructed fallback of §4.9 for such a plan.
 A plan with no undecided region has no reservation and is what it always was. Rendered
 on every plan, from the workflow and the solve; never run, and never read back.
