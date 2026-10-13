@@ -541,22 +541,42 @@ collide before (no constraint here bounds a time from above except a job's promi
 being replaced (§7) and its still-pending entries cover the remaining work exactly
 -- every pending activity in a mode it names, every pending leg on a route it took,
 nothing pending that it does not mention -- that order is a schedule known to exist.
-It is used in two places, and in neither does it change a plan that was already
-coming out:
+Laid out again it keeps every undecided region's window in its place too (§6.16).
 
-- the constructed planner (`planner: greedy`, see the README) lays it out over
+**And when a decision changed a region** (design.md D67). The two decisions a run
+meets most change the shape that plan was made for: a branch decided during the run on
+the arm not assumed, and a `do_while` going on one invocation more. The plan still
+covers everything outside that region, and what the region needs was kept free for it
+(§6.16): the outcome decided was planned locally on the candidate the plan kept, and a
+loop's next invocation runs the modes of the last one on the spots the loop kept. So
+the order is still a schedule once the region's new work is put in it -- in those
+modes, at the moment of the decision, after any Object a started activity left on one
+of its spots has gone, and before what came after the region's window. A `map`
+invocation more over what a loop that went on collected goes after everything. The
+candidate is found again by planning the branch locally on the expansion before its
+decision and matching the modes the plan gave its assumed outcome; where none matches
+(the environment or the scheduler changed since that plan), nothing is spliced.
+
+These orders are used in three places, and in none of them do they change a plan that
+was already coming out:
+
+- the constructed planner (`planner: greedy`, see the README) lays them out over
   the history when its own forward passes find nothing;
+- the solver is handed the schedule they give as its starting point, the
+  reservations kept;
 - a replan the solver comes back from with nothing within its budget (`unknown`) is
-  handed a constructed plan instead, read back against the constraints like every
-  constructed plan, with `plan_constructed_after_solver` (§10.4). A promise the
-  constructed plan cannot keep is relaxed and re-derived (`job_bound_relaxed`). A
-  **first** plan that times out still comes back `unknown`: there is nothing to
-  stop.
+  handed that constructed plan instead, read back against the constraints like every
+  constructed plan, with `plan_constructed_after_solver` (§10.4); so is one it comes
+  back from within its budget with an answer it has not proved and the constructed plan
+  beats by the plan's objective (a tie is the solver's, and a constructed plan that
+  breaks a promise never replaces one that keeps it). A promise the constructed plan
+  cannot keep is relaxed and re-derived (`job_bound_relaxed`). A **first** plan that
+  times out still comes back `unknown`: there is nothing to stop.
 
-Nothing is claimed where the shape changed -- a machine went out of service, a
-decision switched an arm, a job arrived -- since the previous order does not cover
-the instance then. Planned chains (§6.4.1) are not read back yet either, and the
-refills are outside the claim (`construct` places them afterwards).
+Nothing is claimed where the shape changed otherwise -- a machine went out of service
+or came back, a job arrived -- since the previous order does not cover the instance
+then. Planned chains (§6.4.1) are not read back yet either, and the refills are outside
+the claim (`construct` places them afterwards).
 
 ## 5. Execution environment definition schema
 
@@ -2121,9 +2141,9 @@ nor a region of a job that has stopped (§6.2). The constructed planner's forwar
 -- in its order on every spot, with every window opening only once the windows it
 followed have closed, and with every window in its place against the rest of the work
 on its spots: what used them before it opened has left before it opens, and what used
-them after it closed waits for it to close -- and offered where it keeps what it
-reports; that is also the
-constructed fallback of §4.9 for such a plan.
+them after it closed waits for it to close -- with what a decision changed since spliced
+in (§4.9), and offered where it keeps what it reports; that is also the solver's
+starting point and the constructed fallback of §4.9 for such a plan.
 A plan with no undecided region has no reservation and is what it always was. Rendered
 on every plan, from the workflow and the solve; never run, and never read back.
 

@@ -323,6 +323,16 @@ a plan is possible at all is asked for the order it found, and times are laid ov
 it. On the benchmark's hardest grid that is the difference between a minute of search
 returning nothing and a schedule every time.
 
+On a **replan** the starting point is the plan being replaced, laid out again over
+what has happened -- and, where a branch decided during the run took the arm not
+assumed or a loop went on, with that region's new work spliced in (spec §4.9, design.md
+D67). That is a schedule known to exist, so a replan whose solver runs out of budget
+gets it rather than nothing (`plan_constructed_after_solver`), and one whose solver
+comes back unproved keeps whichever of the two is better. Measured on twenty-four
+inspected cups, the first decided off the arm assumed: the replan is constructed in
+0.7 s, and the solver, started from it, finishes in 2.3 s instead of 6.4, to the same
+makespan.
+
 The construction is **not general**, and does not pretend to be. Two shapes are
 declined outright: a refill already under way, which is history it does not carry,
 and the work a stopped job abandoned, which it cannot place at an instant it does
