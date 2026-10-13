@@ -26,7 +26,7 @@ from ofplang.schedule.core import objective as objective_stages
 from ofplang.schedule.core import yamlnode
 from ofplang.schedule.core.diagnostics import ERROR, WARNING, Diagnostic, Diagnostics
 from ofplang.schedule.core.identifiers import format_node_path
-from ofplang.schedule.core.yamlnode import YMap
+from ofplang.schedule.core.yamlnode import YMap, YSeq
 from ofplang.schedule.scheduler.envload import load_environment
 from ofplang.schedule.scheduler.instance import (
     build_instance,
@@ -40,7 +40,13 @@ from ofplang.schedule.scheduler.instance import (
 )
 from ofplang.schedule.scheduler.interface import binding_elements, element_label
 from ofplang.schedule.scheduler.mobility import report_deadlocked_objects
-from ofplang.schedule.scheduler.model import JobSpec, SourceLiteral, SourceRef, Workflow
+from ofplang.schedule.scheduler.model import (
+    GATE_IN,
+    JobSpec,
+    SourceLiteral,
+    SourceRef,
+    Workflow,
+)
 from ofplang.schedule.scheduler.normalize import normalize
 from ofplang.schedule.scheduler.plan import render_plan
 from ofplang.schedule.scheduler.plancheck import check_plan_inventories, check_schedule
@@ -53,7 +59,15 @@ from ofplang.schedule.scheduler.region import (
 )
 from ofplang.schedule.scheduler.result import Solution
 from ofplang.schedule.scheduler.stats import SolveStats
-from ofplang.schedule.scheduler.status import ActivityFixation, ArcFixation, Fixation
+from ofplang.schedule.scheduler.status import (
+    ActivityFixation,
+    ArcFixation,
+    Fixation,
+    job_of,
+    node_path,
+    scoped,
+    text,
+)
 from ofplang.schedule.scheduler.symmetry import (
     interchangeable_classes,
     report_interchangeable,
@@ -1690,6 +1704,20 @@ def _switched_bases(j, job, workflow, spec, env, interface, roots, jobs, built=N
     return found
 
 
+def _planned_gate_spots(root) -> dict[tuple, str]:
+    """Where the document's activities put each holding gate (§6.15), by the gate's node
+    path in the instance's namespace -- pending and passed alike."""
+    activities = root.get("activities") if isinstance(root, YMap) else None
+    found: dict[tuple, str] = {}
+    for item in activities.items if isinstance(activities, YSeq) else []:
+        if not isinstance(item, YMap) or text(item.get("kind")) != "gate":
+            continue
+        spot = text(item.get("spot"))
+        if spot:
+            found[scoped(job_of(item), node_path(item.get("node")))] = spot
+    return found
+
+
 def _branch_candidates(jobs, workflows, specs, bases, env, interface, roots, built) -> dict:
     """Every undecided branch's candidates (design.md D66): region path -> `(job index,
     branch path, its BranchGate, candidates, why there are none)`.
@@ -2180,6 +2208,18 @@ def _run(
         for candidate in found:
             for gate, spot in candidate.exits.items():
                 exits.setdefault(gate, set()).add(spot)
+    # A gate whose region has been decided since the plan being replaced keeps the spot
+    # that plan put it on (design.md D67, hole 2): one of the candidates' exits, possibly
+    # a move on from where the arm leaves its Object, which the gate no longer offers
+    # once nothing undecided widens it -- and without it neither that plan's order nor a
+    # gate it already passed there can be read back.
+    planned = _planned_gate_spots(root)
+    for act in base.activities:
+        if not act.gate or act.node in exits or act.node not in planned:
+            continue
+        offered = {mode.input_spots.get(GATE_IN) for mode in act.modes}
+        if None not in offered and planned[act.node] not in offered:
+            exits[act.node] = {*offered, planned[act.node]}
     if exits:
         base = with_gate_spots(base, {gate: frozenset(s) for gate, s in exits.items()})
     instance, fixation, normalized, checked = _normalize_and_check(base, root, env, fixed)

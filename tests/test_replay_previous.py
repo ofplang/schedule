@@ -16,7 +16,7 @@ import pytest
 import yaml
 
 from ofplang.schedule import schedule
-from ofplang.schedule.scheduler import api, greedy
+from ofplang.schedule.scheduler import api, greedy, normalize
 from ofplang.schedule.scheduler.result import Solution
 from ofplang.schedule.validation import errors
 from tests.schedutil import plannable_examples
@@ -282,3 +282,49 @@ def test_a_replan_with_undecided_regions_the_solver_gives_up_on_is_laid_out_agai
     assert report.plan is not None, _codes(report)
     assert errors.PLAN_CONSTRUCTED_AFTER_SOLVER in _codes(report)
     assert [a for a in report.plan["activities"] if a["kind"] == "reservation"]
+
+
+def _decided(plan: dict, decision: dict) -> dict:
+    """`plan` handed back at `decision`, everything on time, with the branch stated on
+    the arm it was planned on -- as a run states it once the reading is in."""
+    now = decision["start"]
+    document = copy.deepcopy(plan)
+    for entry in document["activities"]:
+        if entry["kind"] in ("processing", "transport") and entry["start"] < now:
+            entry["status"] = "completed" if entry["end"] <= now else "running"
+    document["now"] = now
+    arms = document.setdefault("expansion", {}).setdefault("arms", [])
+    arms.append({"node": decision["node"], "arm": decision["arm"]})
+    return document
+
+
+def test_a_branch_decided_as_assumed_is_still_covered_by_the_previous_plan(monkeypatch):
+    # Each cup's branch is decided on the arm it was planned on, one after the other. A
+    # gate whose region is decided keeps the spot the plan being replaced put it on --
+    # one of its candidates' exits, possibly a move on from where the arm leaves the cup
+    # -- so that plan's order still covers the instance, and so does a gate already
+    # passed there (design.md D67, hole 2). Without it no decision left one to lay out.
+    name = "inspect_then_wash"
+    plan = _first_plan(name)
+    read = []
+    real = normalize._previous_plan
+
+    def recorded(*args, **kwargs):
+        found = real(*args, **kwargs)
+        read.append(found)
+        return found
+
+    monkeypatch.setattr(normalize, "_previous_plan", recorded)
+    decided = 0
+    while True:
+        pending = [a for a in plan["activities"] if a["kind"] == "decision"]
+        if not pending:
+            break
+        decision = min(pending, key=lambda a: a["start"])
+        read.clear()
+        report = _replan(name, _decided(plan, decision), check_arms=False)
+        assert report.ok, (decision["node"], _codes(report))
+        assert read and read[-1] is not None, decision["node"]
+        plan = report.plan
+        decided += 1
+    assert decided == 3
