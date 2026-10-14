@@ -90,3 +90,27 @@ def test_an_unproved_answer_as_good_is_kept(monkeypatch):
                       random_seed=0, check_arms=False)
     assert report.ok
     assert errors.PLAN_CONSTRUCTED_AFTER_SOLVER not in [d.code for d in report.diagnostics]
+
+
+def test_a_first_plan_whose_unproved_answer_the_constructed_one_beats_gives_way_too(monkeypatch):
+    # The same on a first plan (design.md D68, A2): it is built after the solve rather
+    # than handed to it, and offered where it is better.
+    workflow, env, document, _replan = _decided_else()
+    hints = _spied(monkeypatch, lambda solved: replace(
+        solved, outcome="feasible", makespan=(solved.makespan or 0) + 100
+    ))
+    report = schedule(copy.deepcopy(workflow), copy.deepcopy(env), document_path=document,
+                      random_seed=0, check_arms=False)
+    assert report.ok and hints == [None]
+    said = [d for d in report.diagnostics if d.code == errors.PLAN_CONSTRUCTED_AFTER_SOLVER]
+    assert said and "beats" in said[0].message
+    assert report.makespan < 100
+
+
+def test_a_first_plan_whose_unproved_answer_is_as_good_keeps_it(monkeypatch):
+    workflow, env, document, _replan = _decided_else()
+    _spied(monkeypatch, lambda solved: replace(solved, outcome="feasible"))
+    report = schedule(copy.deepcopy(workflow), copy.deepcopy(env), document_path=document,
+                      random_seed=0, check_arms=False)
+    assert report.ok
+    assert errors.PLAN_CONSTRUCTED_AFTER_SOLVER not in [d.code for d in report.diagnostics]

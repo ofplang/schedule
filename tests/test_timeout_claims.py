@@ -64,9 +64,11 @@ def _codes(report) -> list[str]:
 
 
 def test_a_timeout_does_not_claim_the_instance_is_infeasible(answers):
+    # What comes back is the constructed plan (design.md D68, A2), and still no claim.
     calls = answers("unknown")
     report = schedule(_workflow("simple"), _environment("simple"), max_time_seconds=1)
-    assert report.outcome == "unknown"
+    assert report.outcome == "feasible"
+    assert "plan_constructed_after_solver" in _codes(report)
     assert "infeasible" not in _codes(report)
     assert calls[0] == 1  # and nothing was solved a second time to say so
 
@@ -84,8 +86,7 @@ def test_a_timed_out_joint_plan_probes_nothing(answers):
     calls = answers("unknown")
     jobs = [JobInput(id=f"job{k}", workflow=_workflow("simple")) for k in range(1, 6)]
     report = schedule_jobs(jobs, _environment("simple"), max_time_seconds=1)
-    assert report.outcome == "unknown"
-    assert _codes(report) == []
+    assert _codes(report) == ["plan_constructed_after_solver"]
     assert calls[0] == 1
 
 

@@ -186,7 +186,9 @@ settled only as it runs (spec §2.1); one decided before the run is an ordinary 
   each loop runs in, and lays times over the order it finds. Where that walk finds no
   order, there is no schedule that keeps the spots, and the plan is refused before the
   search (`reservation_deadlocked`). A walk too large to finish (50,000 states) claims
-  nothing, and the solver decides.
+  nothing, and the solver decides. Where the solver runs out of budget, or comes back
+  with an unproved answer the built one beats, the built one is the plan
+  (`plan_constructed_after_solver`): a schedule is better than none.
 - **Every replan has a plan.** Whether the run took the outcome assumed or another, a
   loop went on one more invocation, or work took longer than planned, the plan being
   replaced is laid out again with the new work put in, and that is a schedule -- so the
@@ -375,6 +377,13 @@ comes back unproved keeps whichever of the two is better. Measured on twenty-fou
 inspected cups, the first decided off the arm assumed: the replan is constructed in
 0.7 s, and the solver, started from it, finishes in 2.3 s instead of 6.4, to the same
 makespan.
+
+A **first plan** whose solver comes back without a proof is treated the same way: the
+schedule is constructed after the solve and offered where the solver has nothing, or
+where it beats what the solver has (`plan_constructed_after_solver`). It is not handed
+to the solver as a start -- on the RNA-seq laboratory at five jobs, with a branch decided
+during the run, that made the search worse -- but where the solver had nothing in a
+minute, this is now a plan instead of `unknown`.
 
 The construction is **not general**, and does not pretend to be. Three shapes are
 declined outright: a refill already under way, which is history it does not carry;

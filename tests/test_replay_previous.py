@@ -201,9 +201,21 @@ def test_a_replan_the_solver_comes_back_empty_from_is_constructed(monkeypatch):
     assert errors.PLAN_CONSTRUCTED_AFTER_SOLVER in _codes(report)
 
 
-def test_a_first_plan_the_solver_comes_back_empty_from_stays_empty(monkeypatch):
-    # Only a replan falls back: a first plan that times out says so, as before.
+def test_a_first_plan_the_solver_comes_back_empty_from_is_constructed(monkeypatch):
+    # A first plan falls back too: a schedule is better than none (design.md D68, A2).
+    # It used to come back `unknown`.
     monkeypatch.setattr(api, "_solver", lambda: _unsolved)
+    report = schedule(EXAMPLES / "simple.workflow.yaml", EXAMPLES / "simple.env.yaml")
+    assert report.plan is not None
+    assert report.outcome == "feasible"
+    assert errors.PLAN_CONSTRUCTED_AFTER_SOLVER in _codes(report)
+
+
+def test_a_first_plan_nothing_can_be_built_for_still_says_unknown(monkeypatch):
+    from ofplang.schedule.scheduler import greedy
+
+    monkeypatch.setattr(api, "_solver", lambda: _unsolved)
+    monkeypatch.setattr(greedy, "construct", lambda *_a, **_k: None)
     report = schedule(EXAMPLES / "simple.workflow.yaml", EXAMPLES / "simple.env.yaml")
     assert report.plan is None
     assert report.outcome == "unknown"

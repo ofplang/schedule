@@ -133,7 +133,8 @@ is planned on its assumed outcome with what every other outcome may need kept fo
 (§6.16), and its other outcomes are checked without a solve (§9.3).
 
 - **First plan.** The solver plans it; so does the constructed planner, from an order
-  of the work with the regions' spots kept (§6.16). Where no such order exists the plan
+  of the work with the regions' spots kept (§6.16), and where the solver comes back
+  without a proof the constructed plan is offered instead (§4.9). Where no such order exists the plan
   is refused before the solve (`reservation_deadlocked`, §10.4); where the search for one
   is stopped at its bound nothing is claimed.
 - **Replan.** Where only durations moved, a branch was decided on either arm, or a loop
@@ -593,8 +594,16 @@ was already coming out:
   back from within its budget with an answer it has not proved and the constructed plan
   beats by the plan's objective (a tie is the solver's, and a constructed plan that
   breaks a promise never replaces one that keeps it). A promise the constructed plan
-  cannot keep is relaxed and re-derived (`job_bound_relaxed`). A **first** plan that
-  times out still comes back `unknown`: there is nothing to stop.
+  cannot keep is relaxed and re-derived (`job_bound_relaxed`).
+
+A **first** plan is treated alike (design.md D68, A2): a schedule is better than none.
+Where the solver comes back without a proof -- nothing within its budget, or an answer
+the constructed plan beats -- the constructed planner's schedule is offered instead,
+read back the same way and with the same warning. It is built only after the solve,
+not handed to it: as a starting point it made the search worse, not better. Where
+nothing can be built either, the plan is still `unknown`; a proof of `infeasible` is
+never second-guessed. The construction adds its own time to the solver's budget --
+about a second on the largest instances measured (RNA-seq, five jobs).
 
 Nothing is claimed where the shape changed otherwise -- a machine went out of service
 or came back, a job arrived -- since the previous order does not cover the instance
@@ -2830,7 +2839,7 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `reservation_deadlocked` | **error**: the Objects can be got to the end, but not while every region decided during the run keeps its spots (§6.16). The walk of `objects_deadlocked` is made again with each region's window kept, its choices -- the candidate a branch keeps, the modes a loop runs in -- among its steps, so where it finds no order no choice keeps them all and no schedule exists, whatever the durations are. Says so where the walk without the windows found a way through, since then it is the keeping that leaves none. Made only where nothing has been reported (§7): a reservation does not move history, and the walk cannot see the order history fixed. Silence claims nothing, and a walk stopped at its bound is silent. Reported before the solve and the solve is not run |
 | `plan_constructed` | **warning**: this plan was built rather than searched for, the `greedy` planner having been asked for. It is a schedule and nothing more — no claim is made that a shorter one does not exist, and none could be, since nothing searched |
 | `planner_unsupported` | **warning**: the planner asked for does not handle some shape of this plan, so it produced nothing. **A statement about the planner, not about the plan**: the instance may be perfectly schedulable, and asking for `cpsat` is the remedy |
-| `plan_constructed_after_solver` | **warning**: a replan the solver came back from with nothing within its budget was handed a constructed plan instead (§4.9). On a replan no plan stops the run; where only durations moved a schedule is known to exist, so one is built and read back against the constraints. It is a schedule and nothing more. Never on a first plan, which still reports `unknown` |
+| `plan_constructed_after_solver` | **warning**: a plan the solver came back from without a proof -- nothing within its budget, or an unproved answer the constructed one beats -- was handed a constructed plan instead (§4.9). On a replan no plan stops the run; where only durations moved a schedule is known to exist, so one is built and read back against the constraints. On a first plan a schedule is better than none (since 0.19.0; before, a first plan that timed out reported `unknown`). It is a schedule and nothing more |
 | `loop_stock_unchecked` | **warning**: a `do_while` decided only during the run draws on a stock in every invocation. The stocks are checked for the invocations planned and one more (§9.3), not up to `max_iterations` -- which is usually written far above what a run needs -- so a run that goes on longer may find one short. Refills, or the run ending sooner, may cover it (design.md D66) |
 | `plan_not_constructed` | **warning**: the constructed planner ran and came back with nothing. **Not a proof either way.** Where nothing is yet settled, an instance with no schedule is refused before this point and told which of `arc_unreachable`, `final_outputs_crowded`, `stock_cannot_last`, `objects_deadlocked` or `reservation_deadlocked` it fell to. Where history has been reported (§7) or a spot is held since a stated time (§6.12), it may not be: those checks walk with the clock erased (the `objects_deadlocked` entry above), so they cannot see the order the history fixed, and an instance can pass them and still have no schedule -- two samples already placed so that each needs the other's instrument is such a state, refused by none of them and proved infeasible by the solver. The solver is what settles the question. Also reported where a constructed schedule failed to survive being read back against the constraints, which is a defect in this package and not in the plan |
 | `infeasible` | the solver proved the instance has no feasible schedule |

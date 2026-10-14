@@ -1143,8 +1143,9 @@ def _construct_plan(
 def _construct_for_replan(
     instance, specs: tuple[JobSpec, ...], solve_kwargs: dict
 ) -> tuple[Solution, list[JobSpec]] | None:
-    """A constructed schedule for a replan, read back, and the promises it breaks; or
-    None (design.md D66 stage 0, D67).
+    """A constructed schedule, read back, and the promises it breaks; or None (design.md
+    D66 stage 0, D67) -- for a replan, and for a first plan the solver came back from
+    without a proof (D68, A2).
 
     The promises are tried as they stand first. If the construction cannot keep them,
     it is asked again without them; the jobs that then finish past their bound are the
@@ -1199,12 +1200,13 @@ def _construct_after_solver(
     prebuilt: tuple[Solution, list[JobSpec]] | None = None,
     why: str = "the solver found no schedule within its budget",
 ) -> tuple[Solution, tuple[JobSpec, ...], list[Diagnostic]] | None:
-    """A constructed schedule for a replan the solver found nothing for, or None.
+    """A constructed schedule for a plan the solver found nothing for, or None.
 
     The solver running out of budget proves nothing about the instance, and on a
     replan "nothing" means the run stops. Where only durations have moved, a schedule
     is known to exist -- the previous plan, shifted (`greedy._replay_previous`) -- so
-    handing one back is better than stopping (design.md D66, stage 0).
+    handing one back is better than stopping (design.md D66, stage 0). A first plan is
+    treated alike: a schedule is better than none (D68, A2).
 
     The promises are tried as they stand first. If the construction cannot keep them,
     it is asked again without them, and each job that then finishes past its bound is
@@ -1222,7 +1224,7 @@ def _construct_after_solver(
     diagnostics = [
         Diagnostic(
             errors.PLAN_CONSTRUCTED_AFTER_SOLVER,
-            f"{why}, so this replan's plan was constructed instead: it is a schedule "
+            f"{why}, so this plan was constructed instead: it is a schedule "
             "and nothing more, and a shorter one may exist",
             severity=WARNING,
         )
@@ -2541,16 +2543,21 @@ def _run(
         # schedule it gives is built before the solve and handed to the solver as its
         # starting point, reservations kept.
         prebuilt = None
-        if had_now and fixation.previous is not None:
+        tried = had_now and fixation.previous is not None
+        if tried:
             prebuilt = _construct_for_replan(instance, named, solve_kwargs)
             if prebuilt is not None:
                 solve_kwargs = {**solve_kwargs, "hint": prebuilt[0]}
         solution, settled, relax_diags = _solve_within_bounds(instance, named, solve_kwargs)
-        # A replan the solver came back from empty-handed is a run that would stop,
-        # and a constructed schedule is better than stopping (design.md D66, stage 0).
-        # Only on a replan: a first plan that times out says so, as it always has. One it
-        # came back from unproved within its budget keeps whichever is better (D67).
-        if solution.outcome == "unknown" and had_now:
+        # A plan the solver came back from empty-handed is a constructed one instead
+        # where one can be built: on a replan nothing is a run that would stop (design.md
+        # D66, stage 0), and on a first plan something is better than nothing (D68, A2).
+        # One it came back from unproved within its budget keeps whichever is better
+        # (D67). A first plan's is built only now, after the solve: handed to the solver
+        # as its start it made the search worse, not better (RNA-seq, five jobs).
+        if not tried and solution.outcome in ("unknown", "feasible"):
+            prebuilt = _construct_for_replan(instance, named, solve_kwargs)
+        if solution.outcome == "unknown":
             fallback = _construct_after_solver(instance, named, solve_kwargs, solution, prebuilt)
             if fallback is not None:
                 solution, settled, relax_diags = fallback
