@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import yaml
@@ -47,6 +47,7 @@ from ofplang.schedule.scheduler.model import (
     Endpoint,
     Gate,
     LengthCheck,
+    LengthGate,
     LoopGate,
     NodeInvocation,
     NodePath,
@@ -389,8 +390,12 @@ def _read_workflow(
             out_ports = {p.name: p.object_bearing for p in sig.outputs}
             # Nothing here traverses an Array, so no length is read; a stated one is
             # still checked against the ports, as it would be for a composite entry.
-            _boundary_lengths(
-                expansion, in_ports, _boundary_ranks(entry_proc)["entry_input_ranks"], diags
+            _check_stated_lengths(
+                _boundary_lengths(
+                    expansion, in_ports, _boundary_ranks(entry_proc)["entry_input_ranks"],
+                    diags,
+                ),
+                None, procs, diags,
             )
             # Nor is there a body, so no branch or loop: every one stated names none.
             for i, loop_path, _count, _ended in _stated_loops(expansion):
@@ -463,6 +468,7 @@ def _read_workflow(
     )
     _check_stated_arms(stated_arms, exp, procs, diags)
     _check_stated_loops(stated_loops, exp, procs, diags)
+    _check_stated_lengths(lengths, exp, procs, diags)
 
     return (
         Workflow(
@@ -493,6 +499,9 @@ def _read_workflow(
             gates=tuple(exp.gates),
             loops=exp.loops,
             undecided_loops=exp.undecided_loops,
+            # The traversals whose length is made during the run (D70): the runner
+            # states them, the planner marks the ones still waiting.
+            lengths=exp.length_gates,
             **_boundary_ranks(entry_proc),
         ),
         diags,
@@ -514,22 +523,37 @@ def _boundary_ranks(entry_proc: dict) -> dict:
     }
 
 
+@dataclass
+class _StatedLengths:
+    """What `expansion.lengths` says, as this reader uses it (§6.13): a Pure Data Array
+    entry input's length (`entry`, port -> length), one inner Array's of a nested one
+    (`inner`, (port, index) -> length), and the length of a value made during the run
+    (`made`, (node, port, index) -> (position, length), design.md D70)."""
+
+    entry: dict[str, int] = field(default_factory=dict)
+    inner: dict[tuple[str, tuple[int, ...]], int] = field(default_factory=dict)
+    made: dict[tuple[NodePath, str, tuple[int, ...]], tuple[int, int]] = field(
+        default_factory=dict
+    )
+
+
 def _boundary_lengths(
     expansion, in_ports: dict[str, bool], ranks: dict[str, int], diags: Diagnostics
-) -> dict[str, int]:
-    """The stated lengths this reader uses -- entry input -> its length -- with every
-    entry checked against the entry's input ports (§6.13, §9.3).
+) -> _StatedLengths:
+    """The stated lengths this reader uses, with every entry at the boundary checked
+    against the entry's input ports (§6.13, §9.3). One inside the workflow -- a value
+    an atomic makes -- is checked once the expansion has been made
+    (`_check_stated_lengths`), since only then is it known what it names.
 
     Read leniently, as `interface` is: the document has not been validated when a
     workflow is read, so an entry not shaped as one is skipped here and is the document
-    validation's to report. Of the well-formed ones, only an outermost length at the
-    boundary of a Pure Data Array entry input is read in this stage; anything else is
+    validation's to report. Of the well-formed ones, anything this reader cannot use is
     refused rather than ignored, since a length that was stated and then not read would
     let a document believe it had said something."""
-    lengths: dict[str, int] = {}
+    stated = _StatedLengths()
     entries = expansion.get("lengths") if isinstance(expansion, dict) else None
     if not isinstance(entries, list):
-        return lengths
+        return stated
     for i, entry in enumerate(entries):
         if not isinstance(entry, dict):
             continue
@@ -539,26 +563,16 @@ def _boundary_lengths(
         if not (
             isinstance(node, list) and isinstance(port, str) and isinstance(index, list)
             and isinstance(length, int) and not isinstance(length, bool) and length >= 0
+            and all(isinstance(k, int) and not isinstance(k, bool) and k >= 0 for k in index)
         ):
             continue
         where = f"expansion.lengths[{i}]"
         if node:
-            # A value made during the run -- an atomic's output -- is a later stage: its
-            # length is not known when the expansion is made (design.md D62).
-            diags.error(
-                errors.UNSUPPORTED_FEATURE,
-                f"{where}: a length inside the workflow (node {node}) is not read yet; "
-                "only an entry input's, at node []",
-                where,
-            )
-        elif index:
-            # An inner Array of a nested one: not read in this stage either (D62 L2).
-            diags.error(
-                errors.UNSUPPORTED_FEATURE,
-                f"{where}: the length of one element of {port!r} (index {index}) is not "
-                "read yet; only the outermost length of an entry input",
-                where,
-            )
+            # A value made during the run -- an atomic's output, or what a region not
+            # decided before the run hands on: the run counts it once it exists (D70).
+            if all(isinstance(x, str) or (isinstance(x, int) and not isinstance(x, bool))
+                   for x in node):
+                stated.made.setdefault((tuple(node), port, tuple(index)), (i, length))
         elif port not in in_ports or not ranks.get(port):
             diags.error(
                 errors.LENGTH_UNKNOWN_PORT,
@@ -574,9 +588,33 @@ def _boundary_lengths(
                 "its interface.inputs binding, one spot per element",
                 where,
             )
+        elif len(index) >= ranks[port]:
+            # An inner Array is one level in per index; deeper than the type nests, the
+            # element named is not an Array at all.
+            diags.error(
+                errors.LENGTH_UNKNOWN_PORT,
+                f"{where}: {port!r} nests Arrays {ranks[port]} deep, so index {index} "
+                "names no Array whose length could be stated",
+                where,
+            )
+        elif index:
+            stated.inner.setdefault((port, tuple(index)), length)
         else:
-            lengths.setdefault(port, length)
-    return lengths
+            stated.entry.setdefault(port, length)
+    # An inner Array is one element of the Array around it: there have to be that many.
+    for (port, index), _length in list(stated.inner.items()):
+        outer = stated.entry.get(port) if len(index) == 1 else stated.inner.get(
+            (port, index[:-1])
+        )
+        if outer is not None and index[-1] >= outer:
+            diags.error(
+                errors.LENGTH_UNKNOWN_PORT,
+                f"expansion.lengths: {port!r} index {list(index)} names an element past "
+                f"the {outer} stated for the Array around it",
+                "expansion.lengths",
+            )
+            del stated.inner[(port, index)]
+    return stated
 
 
 def _stated_arms(expansion) -> list[tuple[int, NodePath, str]]:
@@ -653,7 +691,27 @@ def _check_stated_loops(
         )
 
 
-def _does_not_occur(path: NodePath, exp, procs: dict, kind: str) -> bool:
+def _check_stated_lengths(stated: _StatedLengths, exp, procs: dict, diags: Diagnostics) -> None:
+    """Every stated length of a value made during the run that the expansion did not
+    read must be one it had no reason to (`_does_not_occur`): the value of an activity
+    inside an arm not taken or an invocation not made. Anything else -- an activity
+    that is not there, or one whose value no traversal reads the length of -- is
+    `length_unknown_node` (design.md D70)."""
+    for (node, port, index), (i, _length) in stated.made.items():
+        if exp is not None and (
+            (node, port, index) in exp.used_made or _does_not_occur(node, exp, procs, None)
+        ):
+            continue
+        diags.error(
+            errors.LENGTH_UNKNOWN_NODE,
+            f"expansion.lengths[{i}]: {format_node_path(node)!r} port {port!r}"
+            + (f" index {list(index)}" if index else "")
+            + " is not a value whose length a map or fold of this expansion reads",
+            f"expansion.lengths[{i}]",
+        )
+
+
+def _does_not_occur(path: NodePath, exp, procs: dict, kind: str | None) -> bool:
     """Whether `path` names a node of `kind` that this expansion has no reason to
     reach: inside the arm a reached branch did not take, inside an invocation a reached
     loop has not made, or under a branch or loop that could not be expanded (already
@@ -700,7 +758,7 @@ def _check_stated_arms(
         )
 
 
-def _names_node(proc, rel: NodePath, procs: dict, kind: str, depth: int = 0) -> bool:
+def _names_node(proc, rel: NodePath, procs: dict, kind: str | None, depth: int = 0) -> bool:
     """Whether `rel`, read inside the composite `proc`, names a node of `kind` (a
     `branch`, a `do_while`) -- by structure alone (an iteration index after a map,
     fold or do_while is not bounds-checked: the invocations were never made). A
@@ -801,6 +859,22 @@ def _expand_body(entry_name, entry_proc, procs, atomic, in_ports, exit_object_be
         # An undeclared port (invalid upstream) counts as Object-bearing, so that
         # nothing is recorded for it as Pure Data.
         object_bearing = exit_object_bearing.get(out_name, True)
+        outputs = interface.get("outputs") if isinstance(interface, dict) else None
+        if (
+            object_bearing and isinstance(value, _Gathered) and value.waits
+            and isinstance(outputs, dict) and isinstance(outputs.get(out_name), list)
+        ):
+            # As many Objects as the run turns out to make (design.md D70): a list of
+            # spots says how many there are before anybody knows. Left unbound, the
+            # schedule places each where it can rest, however many there are.
+            diags.error(
+                errors.INTERFACE_SHAPE_MISMATCH,
+                f"final output {out_name!r} is an Array of Objects whose length is decided "
+                "during the run, so interface.outputs cannot list a spot per element; "
+                "leave it unbound and the schedule places each one",
+                "interface.outputs",
+            )
+            continue
         if object_bearing:
             # The planner's exit: one arc per Object, the element index on the
             # boundary end -- from the activity that produced it, or, for an Object
@@ -889,9 +963,14 @@ class _NodeValue:
 class _Gathered:
     """An Array assembled element by element: the output of a `map`, or a `fold`'s
     collected output, element `i` being invocation `i`'s value. Its elements are any
-    of the markers above (or None where an invocation produced nothing to read)."""
+    of the markers above (or None where an invocation produced nothing to read).
+
+    `waits` is non-empty where how many elements there are is a value made during the
+    run (design.md D70): the producers of that length. A traversal over it has the same
+    length and the same wait -- it too may turn out to have no invocations."""
 
     items: tuple
+    waits: tuple[NodePath, ...] = ()
 
 
 # Structured node kinds the expansion does not handle. Every kind is expanded now: a
@@ -939,7 +1018,7 @@ class _Expander:
         domains: dict | None = None,
         interface: dict | None = None,
         entry_ports: dict[str, bool] | None = None,
-        entry_lengths: dict[str, int] | None = None,
+        entry_lengths: _StatedLengths | None = None,
         stated_arms: dict[NodePath, str] | None = None,
         assume: str | None = None,
         stated_loops: dict[NodePath, tuple[int, bool]] | None = None,
@@ -958,8 +1037,17 @@ class _Expander:
         inputs = interface.get("inputs") if isinstance(interface, dict) else None
         self.entry_bindings = dict(inputs) if isinstance(inputs, dict) else {}
         # A Pure Data Array entry input's length, where the document states it (§6.13):
-        # the runner counted it off the value it was given (design.md D62).
-        self.entry_lengths = entry_lengths or {}
+        # the runner counted it off the value it was given (design.md D62) -- the
+        # outermost one, and an inner Array's of a nested one (D70). And the length of
+        # a value made during the run, once the run has counted it (D70); which of
+        # those were read (`used_made`), so the rest can be told apart from a mistake.
+        stated = entry_lengths or _StatedLengths()
+        self.entry_lengths = stated.entry
+        self.inner_lengths = stated.inner
+        self.made_lengths = stated.made
+        self.used_made: set[tuple[NodePath, str, tuple[int, ...]]] = set()
+        # Every `map` / `fold` whose length is a value made during the run (D70).
+        self.length_gates: dict[NodePath, LengthGate] = {}
         # A branch's arm, where `expansion.arms` states it (§6.13): branch node path ->
         # `then` / `else`. Which of them a branch reached has read (`used_arms`), so the
         # rest can be told apart from a mistake (`check_stated_arms`).
@@ -1325,15 +1413,32 @@ class _Expander:
             }
 
         each, bind = resolved("each"), resolved("bind")
-        length = self._traversal_length(path, kind, each)
-        if length is None:
+        traversal = self._traversal_length(path, kind, each)
+        if traversal is None:
             return {}
+        length, waits = traversal
         self.iterations[path] = length
-        if kind == "map":
-            outputs = self._expand_map(path, pname, each, bind, length, stack)
-        else:
-            outputs = self._expand_fold(path, node, pname, resolved("carry"), each, bind,
-                                        length, stack)
+        # Whose length is a value made during the run (design.md D70): nothing of it
+        # starts before that value exists, as nothing of a branch starts before its
+        # condition does -- whichever length is planned.
+        for producer in waits:
+            self.gate_stack.append((path, producer))
+        try:
+            if kind == "map":
+                outputs = self._expand_map(path, pname, each, bind, length, stack)
+            else:
+                outputs = self._expand_fold(path, node, pname, resolved("carry"), each, bind,
+                                            length, stack, waits)
+        finally:
+            for _producer in waits:
+                self.gate_stack.pop()
+        if waits:
+            # What it gathers is as long as it turns out to be, and so is what traverses
+            # that in turn.
+            outputs = {
+                port: replace(value, waits=waits) if isinstance(value, _Gathered) else value
+                for port, value in outputs.items()
+            }
         self.structured[path] = outputs
         return outputs
 
@@ -1799,18 +1904,30 @@ class _Expander:
                 collected[p].append(outs.get(p))
         return {p: _Gathered(tuple(values)) for p, values in collected.items()}
 
-    def _expand_fold(self, path, node, pname, carry, each, bind, length, stack) -> dict:
+    def _expand_fold(self, path, node, pname, carry, each, bind, length, stack,
+                     waits: tuple[NodePath, ...] = ()) -> dict:
         """`fold` (§18): as `map`, plus the carry -- invocation `i + 1` gets invocation
         `i`'s carry outputs, the first gets the node's `carry` bindings. That data
         dependency is the whole of the ordering between invocations (design.md D57):
         the parts of one invocation that do not read the carry are not held back by
         the previous one. Outputs by mode (§18.1): `carry` is the last invocation's
         value (the initial one if there are none), `collect` the Array of every
-        invocation's, `drop` nothing."""
+        invocation's, `drop` nothing.
+
+        Where the length is a value made during the run (`waits`, design.md D70), every
+        carried Object leaves through a holding gate of the fold's own,
+        `[F, "@out", port]`: from the last invocation, or -- if there turn out to be
+        none -- from where it came in, so what follows takes it from one place either
+        way."""
         target_outputs = self.procs[pname].get("outputs") or {}
         modes = self._fold_modes(path, node, set(carry), target_outputs)
         if modes is None:
             return {}
+        carried_objects = {
+            port for port in carry
+            if _object_bearing(str((target_outputs.get(port) or {}).get("type", "")),
+                               self.domains)
+        } if waits else set()
         state = dict(carry)
         collected: dict[str, list] = {p: [] for p, mode in modes.items() if mode == "collect"}
         for i in range(length):
@@ -1823,7 +1940,10 @@ class _Expander:
         result: dict = {}
         for port, mode in modes.items():
             if mode == "carry":
-                result[port] = state.get(port)
+                result[port] = (
+                    self._hold(path + (GATE_OUT, port), path, state.get(port), waits)
+                    if port in carried_objects else state.get(port)
+                )
             elif mode == "collect":
                 result[port] = _Gathered(tuple(collected[port]))
         return result
@@ -1916,9 +2036,13 @@ class _Expander:
         )
         return {}
 
-    def _traversal_length(self, path: NodePath, kind, each: dict) -> int | None:
-        """L, the common length of the `each` sources (§17, §18 -- zip-equal), or None
-        where it cannot be known before the run (reported).
+    def _traversal_length(
+        self, path: NodePath, kind, each: dict
+    ) -> tuple[int, tuple[NodePath, ...]] | None:
+        """L, the common length of the `each` sources (§17, §18 -- zip-equal), and what
+        the traversal waits for before it starts -- nothing, unless L is a value made
+        during the run (`_made_length`, design.md D70) or follows one -- or None where
+        it cannot be known (reported).
 
         A source whose length the scheduler can see -- an Array of Objects bound in
         `interface`, a Pure Data entry input whose length `expansion` states, a
@@ -1963,6 +2087,9 @@ class _Expander:
                         "per element, and is not one at this depth",
                     )
                 return None
+        made = {port: value for port, value in each.items() if isinstance(value, _Producer)}
+        if made and len(made) == len(each):
+            return self._made_length(path, where, made, known)
         if not known:
             self.diags.error(
                 errors.ARRAY_LENGTH_UNKNOWN,
@@ -1985,7 +2112,53 @@ class _Expander:
             source = _source_of(value)
             if source is not None:
                 self.length_checks.append(LengthCheck(path, port, source, length))
-        return length
+        # Over what a traversal whose length is made during the run gathered: as long as
+        # that turns out to be, so it waits for the same (design.md D70).
+        inherited = sorted({
+            producer for value in each.values() if isinstance(value, _Gathered)
+            for producer in value.waits
+        })
+        return length, tuple(inherited)
+
+    def _made_length(
+        self, path: NodePath, where: str, made: dict, known: dict[str, int]
+    ) -> tuple[int, tuple[NodePath, ...]] | None:
+        """The length of a traversal every `each` source of which is a value made during
+        the run (design.md D70): the length `expansion.lengths` states for one of them,
+        or one -- assumed -- until the run counts it, if the caller says to assume
+        (`assume`, as for a branch's arm). Either way it waits for those values'
+        producers. A source zipped with a stated one but not stated itself is checked
+        by the run, as a source zipped with a known length always is."""
+        stated = {port: known[port] for port in made if port in known}
+        if len(set(stated.values())) > 1:
+            self.diags.error(
+                errors.EACH_LENGTH_MISMATCH,
+                f"{where} traverses each sources of different lengths {stated}; they are "
+                "zipped and must be equal",
+            )
+            return None
+        if stated:
+            length, assumed = next(iter(stated.values())), False
+        elif self.assume is not None:
+            length, assumed = 1, True
+        else:
+            self.diags.error(
+                errors.ARRAY_LENGTH_UNKNOWN,
+                f"{where}: the length of its each sources {sorted(made)} is a value made "
+                "during the run, and expansion.lengths does not state it",
+            )
+            return None
+        waits = tuple(sorted({value.path for value in made.values()}))
+        sources = tuple(
+            source for value in made.values() if (source := _source_of(value)) is not None
+        )
+        self.length_gates[path] = LengthGate(sources, waits, length, assumed)
+        if stated:
+            for port, value in made.items():
+                source = _source_of(value)
+                if port not in stated and source is not None:
+                    self.length_checks.append(LengthCheck(path, port, source, length))
+        return length, waits
 
     def _length(self, value) -> int | None:
         """The length of an Array value, where it is known before the run."""
@@ -1995,24 +2168,34 @@ class _Expander:
             return len(value.value) if isinstance(value.value, list) else None
         if isinstance(value, _EntryInput):
             if not self.entry_ports.get(value.name):
-                # Pure Data: a value the scheduler is not given (D57), only its outermost
-                # length where `expansion` states it (D62); an inner Array's is unknown.
-                return None if value.index else self.entry_lengths.get(value.name)
+                # Pure Data: a value the scheduler is not given (D57), only the lengths
+                # `expansion` states of it -- the outermost (D62), or an inner Array's.
+                if value.index:
+                    return self.inner_lengths.get((value.name, value.index))
+                return self.entry_lengths.get(value.name)
             binding = self.entry_bindings.get(value.name)
             for i in value.index:
                 binding = binding[i] if isinstance(binding, list) and i < len(binding) else None
             return len(binding) if isinstance(binding, list) else None
+        if isinstance(value, _Producer):
+            # A value made during the run: known once the run has counted it (D70).
+            key = (value.path, value.port, value.index)
+            stated = self.made_lengths.get(key)
+            if stated is not None:
+                self.used_made.add(key)
+                return stated[1]
         return None  # an atomic's output: its length is a run-time value
 
     def _stated(self, value) -> bool:
         """Whether a known length is one `expansion` stated: the only kind the run can
         still contradict, so the only known kind recorded for it to check."""
-        return (
-            isinstance(value, _EntryInput)
-            and not self.entry_ports.get(value.name)
-            and not value.index
-            and value.name in self.entry_lengths
-        )
+        if isinstance(value, _Producer):
+            return (value.path, value.port, value.index) in self.made_lengths
+        if not isinstance(value, _EntryInput) or self.entry_ports.get(value.name):
+            return False
+        if value.index:
+            return (value.name, value.index) in self.inner_lengths
+        return value.name in self.entry_lengths
 
     def _resolve_inputs(
         self, node: dict, prefix: NodePath, inputs_env: dict, siblings: dict, stack: tuple[str, ...]

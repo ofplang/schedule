@@ -21,6 +21,7 @@ from ofplang.schedule.scheduler.model import (
     GATE_IN,
     BranchGate,
     JobSpec,
+    LengthGate,
     LoopGate,
     NodePath,
     SourceRef,
@@ -45,7 +46,8 @@ def render_plan(
     jobs: tuple[JobSpec, ...] = (),
     stopped: frozenset[str] = frozenset(),
     gates: tuple[
-        tuple[str, dict[NodePath, BranchGate], dict[NodePath, LoopGate]], ...
+        tuple[str, dict[NodePath, BranchGate], dict[NodePath, LoopGate],
+              dict[NodePath, LengthGate]], ...
     ] = (),
 ) -> dict:
     """Build the execution-document dict for `solution`.
@@ -310,7 +312,8 @@ def _job_entry(job: JobSpec, stopped: frozenset[str] = frozenset()) -> dict:
 
 def _decisions(
     solution: Solution,
-    gates: tuple[tuple[str, dict[NodePath, BranchGate], dict[NodePath, LoopGate]], ...],
+    gates: tuple[tuple[str, dict[NodePath, BranchGate], dict[NodePath, LoopGate],
+                       dict[NodePath, LengthGate]], ...],
     jobs: tuple[str, ...],
     stopped: frozenset[str],
 ) -> list[dict]:
@@ -337,7 +340,7 @@ def _decisions(
             rendered["condition"] = where
         return rendered
 
-    for job, branches, loops in gates:
+    for job, branches, loops, lengths in gates:
         if job in stopped:
             continue
         prefix = (job,) if job else ()
@@ -360,6 +363,14 @@ def _decisions(
             if at is not None:
                 entries.append(entry(job, at, node, loop.condition, {
                     "iteration": loop.count - 1, "arm": "exit", "assumed": not loop.ended,
+                }))
+        # A traversal whose length is made during the run (design.md D70): planned at
+        # the length stated, or one until the run counts it.
+        for node, traversal in lengths.items():
+            at = settled_at(traversal.waits)
+            if at is not None:
+                entries.append(entry(job, at, node, traversal.condition, {
+                    "length": traversal.length, "assumed": traversal.assumed,
                 }))
     return entries
 

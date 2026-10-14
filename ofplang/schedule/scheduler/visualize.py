@@ -241,7 +241,10 @@ def _workflow_layout(activities):
             label = f"decide {'/'.join(map(str, a.get('node') or []))}"
             if a.get("iteration") is not None:  # a loop's, after this invocation
                 label += f" after invocation {a['iteration']}"
-            label += f": {a.get('arm')}"
+            if a.get("length") is not None:  # a traversal's length (design.md D70)
+                label += f": {a['length']} invocation(s)"
+            else:
+                label += f": {a.get('arm')}"
             if a.get("assumed"):
                 label += " (assumed)"
             lane_labels.append(label)

@@ -317,6 +317,33 @@ class LoopGate:
 
 
 @dataclass(frozen=True)
+class LengthGate:
+    """A `map` / `fold` whose length is a value made during the run (design.md D70):
+    every `each` source is an atomic's output -- or what a region not decided before
+    the run hands on through its gate -- and none has a length known before the run.
+
+    It is expanded `length` times: the length `expansion.lengths` states for `sources`,
+    or one (`assumed`) until the run counts it. Nothing of it starts before those
+    values exist (`waits`, their producers), whichever length is planned and whether or
+    not it is known -- as a branch waits for its condition -- since work that started
+    before the length was known would be work of an invocation that may not exist. A
+    `fold`'s carried Objects leave through holding gates (`Gate`), so what follows it
+    is in the same place however many invocations there turn out to be.
+
+    `sources` are where the lengths are read, one per `each` port (zipped: the run
+    checks they agree); `condition` is the first of them, for the plan's `decision`."""
+
+    sources: tuple[Source, ...]
+    waits: tuple[NodePath, ...]
+    length: int
+    assumed: bool
+
+    @property
+    def condition(self) -> Source | None:
+        return self.sources[0] if self.sources else None
+
+
+@dataclass(frozen=True)
 class LengthCheck:
     """A length the plan was built on but the scheduler could not see (D57).
 
@@ -507,3 +534,8 @@ class Workflow:
     # time it is reached (`Gate`, design.md D66). The planner places them like
     # activities; their paths join the same naming the runner keys values by.
     gates: tuple[Gate, ...] = ()
+    # `map` / `fold` node path -> how long it was expanded and what its length waits
+    # for (`LengthGate`, design.md D70), for every traversal reached whose length is a
+    # value made during the run. The runner states each in `expansion.lengths` once
+    # it can count it; the plan marks the ones still waiting with a `decision`.
+    lengths: dict[NodePath, LengthGate] = field(default_factory=dict)

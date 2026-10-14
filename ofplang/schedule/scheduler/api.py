@@ -1617,6 +1617,21 @@ def _switched_expansions(
         arms.append({"node": list(path), "arm": arm})
         return {**(expansion or {}), "arms": arms}
 
+    def with_length(expansion, sources, length) -> dict:
+        def key(entry) -> tuple:
+            return (tuple(entry.get("node") or ()), entry.get("port"),
+                    tuple(entry.get("index") or ()))
+
+        said = {(tuple(s.node), s.port, tuple(s.index)) for s in sources
+                if isinstance(s, SourceRef)}
+        lengths = [e for e in (expansion or {}).get("lengths") or [] if key(e) not in said]
+        for node, port, index in sorted(said, key=str):
+            entry = {"node": list(node), "port": port, "length": length}
+            if index:
+                entry["index"] = list(index)
+            lengths.append(entry)
+        return {**(expansion or {}), "lengths": lengths}
+
     def with_loop(expansion, path, count, ended) -> dict:
         loops = [
             entry for entry in (expansion or {}).get("loops") or []
@@ -1661,6 +1676,9 @@ def _switched_expansions(
             limit = loop.limit.value if isinstance(loop.limit, SourceLiteral) else None
             if loop.assumed and not (isinstance(limit, int) and loop.count >= limit):
                 points.append((path, ("loop", path, loop.count)))
+        for path, traversal in workflow.lengths.items():
+            if traversal.assumed:
+                points.append((path, ("length", path, traversal)))
         for point in put:
             points.append((point[1], ("branch", point[1], "then") if point[0] == "branch"
                            else ("loop", point[1], point[2])))
@@ -1672,6 +1690,14 @@ def _switched_expansions(
                 changed = with_arm(expansion, path, other)
                 phrase = f"branch {format_node_path(path)!r} on its {other} arm"
                 reveals = path
+            elif what[0] == "length":
+                # One invocation more than assumed (design.md D70), as a loop is checked
+                # going on: not up to any bound, which nothing here is told.
+                traversal = what[2]
+                changed = with_length(expansion, traversal.sources, traversal.length + 1)
+                phrase = (f"{format_node_path(path)!r} at {traversal.length + 1} "
+                          "invocations")
+                reveals = path + (traversal.length,)
             else:
                 count = what[2]
                 changed = with_loop(expansion, path, count + 1, False)
@@ -1698,7 +1724,7 @@ def _check_arms(
     for j, (job, workflow, spec) in enumerate(zip(jobs, workflows, specs, strict=True)):
         if not any(gate.assumed for gate in workflow.branch_gates.values()) and not any(
             loop.assumed for loop in workflow.loops.values()
-        ):
+        ) and not any(traversal.assumed for traversal in workflow.lengths.values()):
             continue
         for chain, _read, errs, _paths, base, made in _switched_bases(
             j, job, workflow, spec, env, interface, roots, jobs, built
@@ -1776,9 +1802,12 @@ def _branch_candidates(jobs, workflows, specs, bases, env, interface, roots, bui
         prefix = (job.id,) if job.id else ()
         outcomes = _planned_outcomes(j, job, workflow, spec, env, interface, roots, jobs, built)
         for path, gate in branches.items():
+            # A traversal inside the arm checked one invocation longer is not an outcome
+            # of the branch: its length is a decision of its own (design.md D70).
             inside = [
                 base for paths, base in outcomes
                 if all(tuple(p)[: len(path)] == tuple(path) for p in paths)
+                and not any(tuple(p) in workflow.lengths for p in paths)
             ]
             region = prefix + tuple(path)
             candidates, why = branch_candidates(region, [bases[j], *inside])
@@ -2607,9 +2636,9 @@ def _run(
         jobs=settled,
         stopped=frozenset(_stopped_jobs(document_activities) - set(withdraw)),
         gates=tuple(
-            (job.id, workflow.branch_gates, workflow.loops)
+            (job.id, workflow.branch_gates, workflow.loops, workflow.lengths)
             for job, workflow in zip(jobs, workflows, strict=True)
-            if workflow.branch_gates or workflow.loops
+            if workflow.branch_gates or workflow.loops or workflow.lengths
         ),
     )
 

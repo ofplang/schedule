@@ -111,7 +111,7 @@ REPLENISHMENT_KEYS = {"kind", "status", "start", "end", "id", "device", "repleni
 # plan and never read back, like a relay's position in a chain.
 DECISION_KEYS = {
     "kind", "job", "status", "start", "end", "node", "arm", "assumed", "condition",
-    "iteration",
+    "iteration", "length",
 }
 # A gate (§6.15) is where a region decided only during the run hands something on:
 # its node path (`[P, "@out", port]`), when, and -- for an Object -- the spot it waits
@@ -956,10 +956,15 @@ def _check_replenishment(amap: YMap, base: str, diags: Diagnostics) -> None:
 
 
 def _check_decision(amap: YMap, base: str, diags: Diagnostics) -> None:
-    """A `decision` (§6.14): the branch's node path, the arm planned, whether it was
-    assumed, and where the condition comes from (an arc endpoint's shape)."""
+    """A `decision` (§6.14): the region's node path, what was planned there -- the arm
+    of a branch or a loop, or the length of a traversal (`length`, design.md D70) --
+    whether it was assumed, and where the condition comes from (an arc endpoint's
+    shape)."""
     _check_node_path(shape.require(amap, "node", base, diags), shape.join(base, "node"), diags)
-    arm = shape.require(amap, "arm", base, diags)
+    length = amap.get("length")
+    arm = amap.get("arm") if length is not None else shape.require(amap, "arm", base, diags)
+    if length is not None:
+        shape.nonneg_int(length, shape.join(base, "length"), diags)
     if arm is not None and not (
         isinstance(arm, YScalar) and arm.is_str and arm.value in DECISION_ARMS
     ):

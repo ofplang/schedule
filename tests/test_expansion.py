@@ -70,8 +70,8 @@ processes:
 entry: main
 """
 
-# Rows of labels: a map over the rows whose target maps over one row's labels. Only
-# the outermost length is stated in this stage, so the inner map has none (D62 L2).
+# Rows of labels: a map over the rows whose target maps over one row's labels. Each
+# row's length is stated by its index (design.md D70); without it the inner map has none.
 NESTED = """\
 spec_version: "0.4"
 types:
@@ -160,7 +160,7 @@ def test_a_length_reaches_a_map_through_a_composite_input():
     assert errs == [] and [a.path for a in wf.activities] == [("B", "Make", 0), ("B", "Make", 1)]
 
 
-def test_an_inner_length_is_not_read_yet():
+def test_without_inner_lengths_the_rows_have_none():
     # The rows expand (2 of them); each row's labels have no stated length.
     _, errs = _parse(NESTED, _lengths(rows=2))
     assert errs == ["array_length_unknown"] * 2
@@ -216,18 +216,46 @@ def test_an_array_of_objects_is_refused():
     assert errs == ["length_on_object_port"]
 
 
-def test_a_length_inside_the_workflow_is_not_read_yet():
+def test_a_length_inside_the_workflow_names_a_value_a_traversal_reads():
+    # A cup is not an Array anything traverses: a statement about it says nothing the
+    # expansion could use (design.md D70).
     expansion = {"lengths": [{"node": ["Make", 0], "port": "cup", "length": 2},
                              {"node": [], "port": "labels", "length": 1}]}
     _, errs = _parse(MAP_DATA_ONLY, expansion)
-    assert errs == ["unsupported_feature"]
+    assert errs == ["length_unknown_node"]
 
 
-def test_an_inner_length_is_refused_rather_than_ignored():
-    expansion = {"lengths": [{"node": [], "port": "rows", "length": 2},
-                             {"node": [], "port": "rows", "index": [0], "length": 3}]}
-    _, errs = _parse(NESTED, expansion)
-    assert "unsupported_feature" in errs
+def _rows(*inner, outer=2) -> dict:
+    lengths = [{"node": [], "port": "rows", "length": outer}]
+    lengths += [{"node": [], "port": "rows", "index": [i], "length": n}
+                for i, n in enumerate(inner)]
+    return {"lengths": lengths}
+
+
+def test_an_inner_length_expands_the_map_over_that_row():
+    # Each row's labels have a length of their own (design.md D70, with D62).
+    wf, errs = _parse(NESTED, _rows(3, 1))
+    assert errs == []
+    assert sorted(a.path for a in wf.activities) == [
+        ("Rows", 0, "Make", 0), ("Rows", 0, "Make", 1), ("Rows", 0, "Make", 2),
+        ("Rows", 1, "Make", 0),
+    ]
+
+
+def test_a_row_with_no_stated_length_still_has_none():
+    _, errs = _parse(NESTED, _rows(3))
+    assert errs == ["array_length_unknown"]
+
+
+def test_an_inner_length_past_the_rows_or_too_deep_is_refused():
+    past = _rows(3, 1)
+    past["lengths"].append({"node": [], "port": "rows", "index": [2], "length": 1})
+    _, errs = _parse(NESTED, past)
+    assert errs == ["length_unknown_port"]
+    deep = _rows(3, 1)
+    deep["lengths"].append({"node": [], "port": "rows", "index": [0, 0], "length": 1})
+    _, errs = _parse(NESTED, deep)
+    assert errs == ["length_unknown_port"]
 
 
 def test_the_atomic_entry_checks_its_lengths_too():

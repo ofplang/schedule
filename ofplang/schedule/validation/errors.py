@@ -248,6 +248,11 @@ LENGTH_UNKNOWN_PORT = "length_unknown_port"
 # binding -- one spot per element (§6.8) -- so a second statement of it could only
 # agree or contradict.
 LENGTH_ON_OBJECT_PORT = "length_on_object_port"
+# An entry inside the workflow (`node` not empty) names no value whose length a `map` /
+# `fold` of this expansion reads: no activity there, or one whose length nothing
+# traverses (design.md D70). Not reported for one inside an arm the expansion did not
+# take, or an invocation that has not happened -- it simply does not occur.
+LENGTH_UNKNOWN_NODE = "length_unknown_node"
 # Two entries of `expansion.lengths` name the same position. Not `duplicate_key`,
 # which is a mapping key written twice: the entries are list items, and which of the
 # two lengths was meant is a question the document leaves open either way.
@@ -519,6 +524,7 @@ ERROR_CODES = frozenset(
         ARRAY_LENGTH_UNKNOWN,
         EACH_LENGTH_MISMATCH,
         LENGTH_UNKNOWN_PORT,
+        LENGTH_UNKNOWN_NODE,
         LENGTH_ON_OBJECT_PORT,
         DUPLICATE_LENGTH,
         BRANCH_ARM_UNKNOWN,
