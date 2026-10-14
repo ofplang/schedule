@@ -60,11 +60,22 @@ In scope:
   the boundary whose length `expansion` states (§6.13), from a literal, or from
   another `map` / `fold`'s output. An `each` source whose length is a value only the
   run has — an atomic's output, a Pure Data entry input with no stated length — is
-  planned at the L the others give and left for the runner to check; one of those
-  alone gives no L (`array_length_unknown`), and known lengths that differ are refused
-  (`each_length_mismatch`). Only the outermost length of an entry input can be stated
-  so far: a `map` / `fold` over an inner Array of a nested one, or over an atomic's
-  output, still has no L before the run. A `map`'s invocations are independent and ordered by
+  planned at the L the others give and left for the runner to check, and known lengths
+  that differ are refused (`each_length_mismatch`). An inner Array of a nested entry
+  input has the length `expansion` states for it (`index`, §6.13); an entry input with
+  no stated length alone gives no L (`array_length_unknown`). A traversal whose every
+  `each` source is a value made during the run -- an atomic's output, or what a region
+  decided during the run hands on -- has its L decided during the run (design.md D70):
+  it is planned at the L the run has stated (§6.13) and until then at **one**, assumed;
+  nothing of it starts before those values exist, whichever L is planned, as nothing of
+  a branch starts before its condition does; the plan marks the wait with a
+  `decision` (§6.14); and one invocation more is checked without a solve (§9.3). A
+  traversal over what such a one gathered has the same L and waits for the same. A
+  `fold` of that kind hands each carried Object on through a holding gate of its own
+  (§6.15) and keeps its last invocation's spots until it does (§6.16), so what follows
+  is in the same place however many invocations there turn out to be, none included.
+  An Array of Objects such a traversal makes is a final output only unbound
+  (`interface_shape_mismatch` if `interface.outputs` lists its spots). A `map`'s invocations are independent and ordered by
   nothing; a `fold`'s are ordered by its carry alone — invocation `i + 1` reads
   invocation `i`'s carry outputs — so the parts of one invocation that do not read
   the carry are not held back by the previous one. The same workflow with a longer
@@ -128,18 +139,21 @@ In scope:
 ### 2.1 What is guaranteed for regions decided during the run
 
 A **region decided during the run** is a `branch` whose condition is produced during
-the run, or a `do_while` whose condition is settled only during the run (above). It
-is planned on its assumed outcome with what every other outcome may need kept for it
-(§6.16), and its other outcomes are checked without a solve (§9.3).
+the run, a `do_while` whose condition is settled only during the run, or a `map` /
+`fold` whose length is a value made during the run (above). It is planned on its
+assumed outcome with what every other outcome may need kept for it (§6.16) -- a map's
+added invocations need nothing kept, going after everything -- and its other outcomes
+are checked without a solve (§9.3).
 
 - **First plan.** The solver plans it; so does the constructed planner, from an order
   of the work with the regions' spots kept (§6.16), and where the solver comes back
   without a proof the constructed plan is offered instead (§4.9). Where no such order exists the plan
   is refused before the solve (`reservation_deadlocked`, §10.4); where the search for one
   is stopped at its bound nothing is claimed.
-- **Replan.** Where only durations moved, a branch was decided on either arm, or a loop
-  went on one invocation more, the previous plan with what the decision changed put in
-  is a schedule (§4.9), so a replan of those always has a plan.
+- **Replan.** Where only durations moved, a branch was decided on either arm, a loop
+  went on one invocation more, or a traversal's length was counted (D70), the previous
+  plan with what the decision changed put in is a schedule (§4.9), so a replan of those
+  always has a plan.
 - **Not guaranteed** (planned by the solver, without that guarantee): a replan after
   the shape changed otherwise -- a machine out of service or back, a job arriving or
   leaving -- or with a planned chain (§6.4.1) still under way; the loop's stocks beyond
@@ -1914,6 +1928,9 @@ expansion:
       port: labels          # required: the port at that node
       length: 3             # required: how many elements its Array has
       # index: [0]          # optional: one element of a nested Array, as on an arc (§6.4)
+    - node: [Inspect]       # a value made during the run: the activity's output
+      port: redo
+      length: 2
   arms:
     - node: [Each, 0, Choose]   # required: the node path of a branch node
       arm: then                 # required: then | else
@@ -1944,20 +1961,24 @@ traversal. Written by hand — to plan a workflow before there is a run — it i
 the same rules, and the run still checks every length against the value it is run
 with.
 
-**Where it applies, so far.** Only an entry input's outermost length is read: an entry
-with `node: []`, no `index`, and a `port` that is a **Pure Data Array** entry input of
-the workflow. Anything else is refused rather than ignored, since a statement that was
-made and then not read would let a document believe it had said something:
+**Where it applies.** Two kinds of entry are read. At `node: []`, the length of a
+**Pure Data Array** entry input of the workflow -- its outermost one, or with `index`
+that of one inner Array of a nested one. And inside the workflow (`node` not empty), the
+length of a value made during the run -- an activity's output port, or one element of it
+with `index` -- that a traversal's length is read from (design.md D70): the run states it
+once the value exists, before anything of the traversal runs. Anything else is refused
+rather than ignored, since a statement that was made and then not read would let a
+document believe it had said something:
 
-- a port that is not an entry input of the workflow, or whose type is not an Array —
-  `length_unknown_port`;
+- a port that is not an entry input of the workflow, or whose type is not an Array, or
+  an `index` deeper than the type nests or past the length stated for the Array around
+  it — `length_unknown_port`;
 - an Array of Objects — `length_on_object_port`: its length is its `interface`
   binding's, one spot per element (§6.8), so a second statement could only agree or
   contradict;
-- a non-empty `node` (a value made during the run) or an `index` (an inner Array of a
-  nested one) — `unsupported_feature`. The form is fixed now so that the stage that
-  reads them needs no new one; a `map` over an inner Array has no length before the run
-  until then (`array_length_unknown`).
+- inside the workflow, a value no traversal of this expansion reads the length of —
+  `length_unknown_node` (not reported for one inside an arm not taken or an invocation
+  not made).
 
 A length takes part in the expansion like any other known length: two `each` sources
 of one node whose known lengths differ are refused before the run
@@ -2058,7 +2079,19 @@ once (`duplicate_loop`). A run that states a loop during a joint plan drops the 
   arm: exit                     # planned to end there
   assumed: true                 # false where expansion.loops says it ended
   condition: {node: [Clean, 0, Read], port: dirty}
+
+- kind: decision                # a traversal's length (design.md D70)
+  start: 3
+  end: 3
+  node: [Redo]                  # the map or fold
+  length: 1                     # the invocations planned, in place of an arm
+  assumed: true                 # false where expansion.lengths states it
+  condition: {node: [Inspect], port: redo}   # where the length is read
 ```
+
+A traversal's marks the moment the value its length is read from exists, and how many
+invocations are planned there -- one, `assumed`, until the run counts the value. Nothing
+of the traversal starts before it.
 
 A loop's marks the moment its last invocation's condition is settled, and that the
 loop is planned to end there (`arm: exit`) -- `assumed` until `expansion.loops` says
@@ -2094,7 +2127,8 @@ for, and the branch has no `decision` in the plan.
 ```
 
 A gate is where a branch or `do_while` whose condition is produced during the run
-(§2) hands something on (design.md D66). An Object leaves through a **holding** gate:
+(§2) hands something on (design.md D66) -- and where a `fold` whose length is made
+during the run hands on the Objects it carries (D70). An Object leaves through a **holding** gate:
 it is moved there by at most one move -- a single leg, never a chain (§6.4.1) -- and
 waits there, on `spot`, until what follows takes it. A Pure Data value leaves through a
 gate that holds nothing. Every gate starts after the region's decision -- the end of its
@@ -2164,6 +2198,11 @@ the future it places, not the past it inherited.
   next invocation decides that branch again; and its holding gates wait only on spots its next
   invocation can be reached from. A loop that cannot be reached from anywhere it leaves
   its Objects is `arm_unplannable`.
+- **A fold** whose length is made during the run, while that length is assumed, and that
+  carries an Object, keeps the spots of the modes its last invocation runs in from when
+  the length is counted to its gates (design.md D70): another invocation runs there if
+  the count says so, and the Object it carries waits in a gate until what follows takes
+  it. A `map` keeps nothing: it carries nothing from one invocation to the next.
 - **Two regions** keeping one spot, neither inside the other, take turns: their windows
   do not overlap. A region inside another keeps its spots within the outer one's.
 
@@ -2522,10 +2561,13 @@ environment for processes the workflow never invokes are not checked.
   omitted one is reported (`interface_output_unbound`, a warning): the output is then
   bound to a spot the scheduler chooses, so the section is checked and applied whether
   or not the document carries it (§6.8).
-- **Expansion** (§6.13): each length names a Pure Data Array entry input of the
-  workflow at `node: []` (`length_unknown_port` if no entry input has that name, or
-  its type is not an Array; `length_on_object_port` if it is an Array of Objects);
-  a `node` inside the workflow or an `index` is `unsupported_feature`. A length that
+- **Expansion** (§6.13): each length at `node: []` names a Pure Data Array entry input
+  of the workflow (`length_unknown_port` if no entry input has that name, its type is
+  not an Array, or an `index` is deeper than it nests or past the length stated around
+  it; `length_on_object_port` if it is an Array of Objects); one inside the workflow
+  names a value whose length a traversal reads (`length_unknown_node` otherwise).
+  A traversal whose length is assumed (§2) is checked with **one invocation more**, as a
+  loop going on is (`arm_unplannable`). A length that
   nothing traverses is not reported, and neither is an Array with no length that
   nothing traverses. Every branch the expansion reaches has an arm — stated in `arms`,
   read off a literal condition, or assumed for a condition produced during the run
@@ -2781,10 +2823,11 @@ building the solver instance. Severity is `error` unless marked *warning*.
 | `arm_unplannable` | a `branch` planned on an assumed arm could not be planned on its other arm, which the run may yet take: the switched expansion fails a check settled without a solve, or the branch has no local plan that lets every outcome through on a common place to leave its Objects (§9.3) |
 | `arm_unknown_node` | an `expansion.arms` entry names no branch of this expansion — no branch at that path, or an invocation that is not there — and no branch inside an arm not taken (§6.13) |
 | `arm_mismatch` | an `expansion.arms` entry states an arm other than the one its branch's literal condition takes (§6.13) |
-| `array_length_unknown` | a `map` / `fold` none of whose `each` sources has a length known before the run (§2). One with no `each` source at all is `missing_each_source` (below) |
+| `array_length_unknown` | a `map` / `fold` none of whose `each` sources has a length known before the run, and that is not a traversal whose length is made during the run planned on one assumed (§2) -- an entry input with no stated length, or a value made during the run where the caller did not allow assuming. One with no `each` source at all is `missing_each_source` (below) |
 | `each_length_mismatch` | a `map` / `fold` whose `each` sources' known lengths differ (they are zipped, §2) — an `expansion` length included (§6.13) |
 | `length_unknown_port` | an `expansion` length names a port that is not an entry input of the workflow, or one whose type is not an Array (§6.13) |
 | `length_on_object_port` | an `expansion` length names an Array of Objects, whose length is its `interface` binding's (§6.13) |
+| `length_unknown_node` | an `expansion` length inside the workflow names no value whose length a `map` / `fold` of this expansion reads (§6.13, design.md D70) |
 | `data_indegree`, `object_input_no_source` | an input port of a node's target that nothing binds (Pure Data / Object-bearing): the reader would have no value to read (§9) |
 | `unknown_reference`, `malformed_reference` | a `from` naming nothing in scope, or not a reference at all (§9) |
 | `output_not_exposed` | a `from` naming an output its node has but does not expose: a `fold` output its `outputs` section drops, or one the default drops (v0 18.2, 21). Not reported where the `fold`'s section is itself refused (below): what it exposes is then the thing refused (§9) |

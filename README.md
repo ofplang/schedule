@@ -165,21 +165,26 @@ plan it:
 | v0 feature | `ofplang-schedule` |
 |---|---|
 | `python_script_processes` | Supported. A script process is scheduled like any atomic one; its mode `duration` is the estimate of the compute cost. Running the script is the runner's job. |
-| `node_map`, `node_fold` | Supported. Each node is expanded into its invocations before planning, invocation `i` of `N` under the node path `[N, i, …]`. The number of invocations has to be known before the run — from an Array of Objects bound in `interface` as a list of spots, a Pure Data entry input whose length `expansion` states, a literal, or another map / fold's output. An atomic process with an Object-bearing Array port is not supported (`unsupported_feature`); traverse the Array with a map or fold. |
+| `node_map`, `node_fold` | Supported. Each node is expanded into its invocations before planning, invocation `i` of `N` under the node path `[N, i, …]`. The number of invocations is known before the run — from an Array of Objects bound in `interface` as a list of spots, a Pure Data entry input (or one inner Array of it) whose length `expansion` states, a literal, or another map / fold's output — or it is a value an activity makes during the run: then the node is planned on one invocation until the run counts the value and states it, nothing of it starts before the value exists, the plan marks the wait with a `decision`, and one invocation more is checked without a solve. An atomic process with an Object-bearing Array port is not supported (`unsupported_feature`); traverse the Array with a map or fold. |
 | `node_branch` | Supported. The branch is expanded with one arm, its activity at the branch's own path. A literal condition decides it here; an entry-input one -- a flag, or one flag per element inside a `map` -- is decided by the run before it starts and stated in the document's `expansion.arms`. A condition produced during the run is stated there by the run once the value exists; until then the branch is planned on its `then` arm, nothing of it starts before the condition does, the plan marks the wait with a `decision` (§6.14), and the other arm is checked without a solve (`arm_unplannable`). |
 | `node_do_while` | Supported. Expanded invocation by invocation (`[L, i]`); a literal condition decides here, one the run states in `expansion.loops` is taken, and one settled only during the run is planned to end the loop where it is -- growing by one each time the run says it goes on. Nothing of the next invocation, nor anything the loop hands on, starts before the condition; the plan marks the pending end with a `decision`, and going on one invocation more is checked without a solve (`arm_unplannable`). `exhausted` is read at the node's own path. |
 | `generic_processes` | **Not supported.** Refused with `unsupported_feature`. |
 
-## Branches and loops decided during the run
+## Branches, loops and lengths decided during the run
 
 What is promised for them, and where the promise stops. *Decided during the run* is a
-`branch` whose condition an activity produces, or a `do_while` whose condition is
-settled only as it runs (spec §2.1); one decided before the run is an ordinary plan.
+`branch` whose condition an activity produces, a `do_while` whose condition is settled
+only as it runs, or a `map` / `fold` whose length is a value an activity makes (spec
+§2.1); one decided before the run is an ordinary plan.
 
 - **How they are planned.** On an assumed outcome -- a branch on `then`, a loop ending
-  where it is -- with every spot another outcome may need kept free for the region from
-  its decision to its exit (a `reservation`, spec §6.16). The other outcomes are checked
-  without a solve (`arm_unplannable`).
+  where it is, a traversal of one invocation -- with every spot another outcome may need
+  kept free for the region from its decision to its exit (a `reservation`, spec §6.16):
+  a branch's other arm, a loop's next invocation, a fold's next invocation if it carries
+  an Object. A map keeps nothing, carrying nothing from one invocation to the next; its
+  invocations the count adds go after everything. Nothing of a region starts before its
+  decision. The other outcomes are checked without a solve (`arm_unplannable`): the other
+  arm, one invocation more.
 - **The first plan.** The solver plans it. The constructed planner
   (`planner="greedy"`) builds one too: it walks the work with the clock taken away and
   the regions' spots kept, choosing which candidate each branch keeps and which modes
@@ -190,7 +195,8 @@ settled only as it runs (spec §2.1); one decided before the run is an ordinary 
   with an unproved answer the built one beats, the built one is the plan
   (`plan_constructed_after_solver`): a schedule is better than none.
 - **Every replan has a plan.** Whether the run took the outcome assumed or another, a
-  loop went on one more invocation, or work took longer than planned, the plan being
+  loop went on one more invocation, a traversal turned out longer, shorter or empty, or
+  work took longer than planned, the plan being
   replaced is laid out again with the new work put in, and that is a schedule -- so the
   run never stops for want of one, whatever the solver's budget (spec §4.9).
 - **Outside that promise** -- the solver still plans these, but nothing says it does so
@@ -201,7 +207,10 @@ settled only as it runs (spec §2.1); one decided before the run is an ordinary 
   - a laboratory with nowhere to set material aside, where work running late and an
     outcome not assumed meet;
   - a stock a loop draws on in every invocation: it is checked for the invocations
-    planned and one more (`loop_stock_unchecked`).
+    planned and one more (`loop_stock_unchecked`); and how long a traversal can be is
+    checked to one invocation more than planned, not to any bound;
+  - an Array of Objects a traversal of a length made during the run makes is a final
+    output only unbound: the schedule places each element, however many there are.
 - **What a branch may keep.** Its candidates are the plan made for it locally and that
   plan carried over machines the region cannot tell apart, at most eight. A different
   way through that is not such a copy -- a second machine of another speed, say -- is
