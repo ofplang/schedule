@@ -255,3 +255,85 @@ def test_the_keeping_is_not_judged_where_history_fixed_an_order():
     held = Diagnostics()
     mobility.report_reservation_deadlocked(instance, held, history=True)
     assert held.items == []
+
+
+_SAMPLE = {"type": "Sample", "phase": "data"}
+
+
+def _chain(steps: int) -> dict:
+    """A sample prepared and cycled in turn, `steps` steps, with a check halfway that
+    decides during the run whether it is cycled once more -- the RNA-seq protocol's
+    shape, cut down."""
+
+    def atomic(extra=None):
+        return {"kind": "atomic", "inputs": {"sample": _SAMPLE},
+                "outputs": {"sample": _SAMPLE, **(extra or {})},
+                "objects": {"map": {"outputs.sample": "inputs.sample"}}}
+
+    nodes, last = [], "inputs.sample"
+    for k in range(steps):
+        kind = "check" if k == steps // 2 else ("cycle" if k % 2 else "prep")
+        nodes.append({"id": f"S{k}", "process": kind, "state": {"sample": {"from": last}}})
+        last = f"S{k}.sample"
+        if kind == "check":
+            nodes.append({"id": "Again", "kind": "branch", "condition": {"from": f"S{k}.short"},
+                          "args": {"sample": {"from": last}}, "then": {"process": "cycle"}})
+            last = "Again.sample"
+    return {"spec_version": "0.5", "types": {"Sample": {"domain": "object"}},
+            "processes": {
+                "prep": atomic(), "cycle": atomic(),
+                "check": atomic({"short": {"type": "Bool", "phase": "data"}}),
+                "main": {"kind": "composite", "inputs": {"sample": _SAMPLE},
+                         "outputs": {"sample": _SAMPLE},
+                         "body": {"nodes": nodes, "returns": {"sample": {"from": last}}}},
+            },
+            "entry": "main"}
+
+
+def _cyclers_lab(cyclers: int, arms: int, jobs: int) -> dict:
+    """Two preparers, `cyclers` interchangeable cyclers, `arms` arms that make every
+    move alike, and a bench with a spot per job."""
+    preps = ["prep_1", "prep_2"]
+    cycs = [f"cyc_{i}" for i in range(1, cyclers + 1)]
+    pairs = [(f"bench.s{j}", f"{p}.bay") for j in range(jobs) for p in preps]
+    pairs += [(f"{p}.bay", f"{c}.bay") for p in preps for c in cycs]
+    pairs += [(f"{c}.bay", f"{p}.bay") for p in preps for c in cycs]
+
+    def modes(devices, duration):
+        return {"modes": [{"devices": [d], "duration": duration,
+                           "input_spots": {"sample": f"{d}.bay"},
+                           "output_spots": {"sample": f"{d}.bay"}} for d in devices]}
+
+    return {"time": {"unit": "minute"},
+            "devices": [{"id": "bench", "spots": [f"s{j}" for j in range(jobs)]}]
+            + [{"id": d, "spots": ["bay"]} for d in preps + cycs],
+            "transporters": [{"id": f"arm_{a}"} for a in range(1, arms + 1)],
+            "transports": [{"transporter": f"arm_{a}", "from": x, "to": y, "duration": 5}
+                           for a in range(1, arms + 1) for x, y in pairs],
+            "processes": {"prep": modes(preps, 30), "check": modes(preps, 5),
+                          "cycle": modes(cycs, 40)}}
+
+
+def test_interchangeable_machines_and_arms_do_not_stop_the_walk():
+    # Every job's check keeps a cycler for its extra cycle. The walk used to give each
+    # the same one, so their windows could only take turns, and to undo that it went
+    # back through every cycler and every arm for every move: two jobs over six cyclers
+    # and four arms, or three over four and two, stopped it at its cap and the
+    # constructed planner had nothing. Choices that keep what no other window keeps are
+    # tried first, a move is not tried again under another arm, and none lands an
+    # activity in a mode its region's choice rules out (design.md D68, A1).
+    from ofplang.schedule import JobInput, schedule_jobs
+
+    for cyclers, arms, jobs in ((6, 4, 2), (4, 2, 3)):
+        workflow = _chain(9)
+        roster = {"activities": [], "jobs": [
+            {"id": f"j{j}", "interface": {"inputs": {"sample": f"bench.s{j}"}}}
+            for j in range(jobs)]}
+        report = schedule_jobs(
+            [JobInput(f"j{j}", copy.deepcopy(workflow)) for j in range(jobs)],
+            _cyclers_lab(cyclers, arms, jobs), document_path=roster, planner="greedy",
+            check_arms=False)
+        codes = [d.code for d in report.diagnostics]
+        assert report.ok and "plan_constructed" in codes, (cyclers, arms, jobs, codes)
+        kept = [a for a in report.plan["activities"] if a["kind"] == "reservation"]
+        assert len({tuple(a["spots"]) for a in kept}) == jobs  # one cycler each

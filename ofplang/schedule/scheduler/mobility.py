@@ -355,14 +355,31 @@ def _options(
     instance: Instance, windows: tuple[Window, ...], window: int, choices: _Choices
 ) -> Iterator[_Step]:
     """The choices open to `window`, in the order worth trying first, each one that holds
-    no activity to a mode another choice already holds it to otherwise."""
+    no activity to a mode another choice already holds it to otherwise.
+
+    First are those that keep the fewest spots another window already chose to keep
+    (one inside or around this one aside, which shares them by design): two windows on
+    one spot can only take turns, and where machines are interchangeable the walk would
+    otherwise give every region the same one and spend its cap undoing that (design.md
+    D68, the RNA-seq laboratory at two jobs). Only the order changes, so what the walk
+    can find does not. A loop's modes are ordered one activity at a time, so its
+    combinations are still made one by one rather than all up front."""
     w = windows[window]
+    taken: set[str] = set()
+    for k, other in enumerate(windows):
+        if k == window or choices.picked[k] < 0:
+            continue
+        ra, rb = w.region, other.region
+        if ra[: len(rb)] != rb and rb[: len(ra)] != ra:
+            taken |= choices.spots[k]
 
     def fits(pins: dict[int, int]) -> bool:
         return all(choices.pins.get(i, m) == m for i, m in pins.items())
 
     if w.candidates:
-        for k, (kept, pins) in enumerate(w.candidates):
+        order = sorted(range(len(w.candidates)), key=lambda k: len(w.candidates[k][0] & taken))
+        for k in order:
+            kept, pins = w.candidates[k]
             held = dict(pins)
             if fits(held):
                 choices.made[(window, k)] = (kept, held)
@@ -371,9 +388,26 @@ def _options(
     base: set[str] = set()
     for inner in w.borrowed:
         base |= choices.spots[inner]
-    ranges = [range(len(instance.activities[i].modes)) for i in w.free]
-    ranges += [range(len(group)) for group in w.templates]
-    for k, combo in enumerate(product(*ranges)):
+
+    def crowding(i: int, m: int) -> int:
+        mode = instance.activities[i].modes[m]
+        return len(({*mode.input_spots.values(), *mode.output_spots.values()} - base) & taken)
+
+    ranges = [
+        sorted(range(len(instance.activities[i].modes)), key=lambda m, i=i: crowding(i, m))
+        for i in w.free
+    ]
+    ranges += [
+        sorted(range(len(group)), key=lambda g, group=group: len((group[g] - base) & taken))
+        for group in w.templates
+    ]
+    # A choice is named by its combination, not by where the order put it, so that one
+    # name means one combination in every state the walk keys on.
+    radices = [len(r) for r in ranges]
+    for combo in product(*ranges):
+        k = 0
+        for value, radix in zip(combo, radices, strict=True):
+            k = k * radix + value
         chosen = dict(zip(w.free, combo[: len(w.free)], strict=True))
         if any(
             chosen.get(g) == a and chosen.get(r) == b for (g, a), (r, b) in w.excluded
@@ -726,11 +760,24 @@ def _steps(
             for other in shape.incoming[arc.dst_activity]
             if route[other] >= 0
         }
+        # A choice made for a window holds what it names to one mode, and a move that
+        # lands it in another leaves it an activity nothing can place.
+        bound = pins.get(arc.dst_activity)
+        # Two routes that differ only by the arm that drives them are one move here:
+        # nothing in a walk with time erased is held by an arm, so trying the second
+        # would only walk the first again under another name.
+        offered: set[tuple[int, str, str]] = set()
         for option_index, option in enumerate(arc.options):
             if option.src_mode_index != chosen:
                 continue
             if settled and option.dst_mode_index not in settled:
                 continue
+            if bound is not None and option.dst_mode_index != bound:
+                continue
+            same = (option.dst_mode_index, option.from_spot, option.to_spot)
+            if same in offered:
+                continue
+            offered.add(same)
             # A hand-off that stays put moves nothing, so there is no bay to free;
             # any other move needs its destination empty before it sets off.
             if option.from_spot != option.to_spot and not board.free(option.to_spot):
