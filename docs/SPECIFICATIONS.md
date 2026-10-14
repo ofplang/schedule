@@ -2214,7 +2214,11 @@ nor a region of a job that has stopped (§6.2). The constructed planner's forwar
 region is put on or moved onto its spots while it is open, it opens only when nothing
 outside it is on them, and two windows sharing a spot, neither inside the other, are not
 open together -- in which each branch's candidate and each loop's modes are choices of
-the walk; the order found is laid out as a previous plan is (below). Where no order
+the walk; the order found is laid out as a previous plan is (below). So is the order of
+each forward pass made as if no region kept anything, where it lays out with the windows
+kept and survives the read-back; the best of these by the plan's objective is the plan
+(design.md D71) -- the walk takes one Object through to its end before the next, so its
+order alone runs jobs that share a machine nearly one after another. Where no order
 keeps them the plan is refused (`reservation_deadlocked`); a plan with history and no
 previous plan is declined (`planner_unsupported`). On a replan the previous plan is laid out again instead (§4.9)
 -- in its order on every spot, with every window opening only once the windows it

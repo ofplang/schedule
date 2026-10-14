@@ -188,7 +188,10 @@ only as it runs, or a `map` / `fold` whose length is a value an activity makes (
 - **The first plan.** The solver plans it. The constructed planner
   (`planner="greedy"`) builds one too: it walks the work with the clock taken away and
   the regions' spots kept, choosing which candidate each branch keeps and which modes
-  each loop runs in, and lays times over the order it finds. Where that walk finds no
+  each loop runs in, and lays times over the order it finds; the forward passes' own
+  orders are laid out the same way where the regions' spots leave them room, and the
+  best of all of them is the plan -- on the RNA-seq laboratory at two jobs within 1% of
+  the solver, where the walk's order alone took nearly twice as long. Where that walk finds no
   order, there is no schedule that keeps the spots, and the plan is refused before the
   search (`reservation_deadlocked`). A walk too large to finish (50,000 states) claims
   nothing, and the solver decides. Where the solver runs out of budget, or comes back
