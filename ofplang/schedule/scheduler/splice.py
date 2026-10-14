@@ -24,7 +24,7 @@ from dataclasses import dataclass, replace
 from ofplang.schedule.core.yamlnode import YMap, YNode, YScalar, YSeq, to_plain
 from ofplang.schedule.scheduler import normalize
 from ofplang.schedule.scheduler.instance import Instance
-from ofplang.schedule.scheduler.model import GATE_IN, Mode, NodePath
+from ofplang.schedule.scheduler.model import GATE_IN, GATE_OUT, Mode, NodePath
 from ofplang.schedule.scheduler.status import (
     Fixation,
     PreviousPlan,
@@ -75,6 +75,15 @@ def changed_regions(root: YNode | None, jobs, workflows) -> list[Change]:
         workflow = workflows[j]
         path = node_path(item.get("node"))
         region = scoped(job, path)
+        length = item.get("length")
+        if isinstance(length, YScalar) and length.is_int:
+            # A traversal whose length the run has counted since (design.md D70).
+            traversal = workflow.lengths.get(path)
+            if traversal is not None and not traversal.assumed and (
+                traversal.length != length.value
+            ):
+                found.append(Change(region, "length", j, path))
+            continue
         iteration = item.get("iteration")
         if isinstance(iteration, YScalar) and iteration.is_int:
             loop = workflow.loops.get(path)
@@ -141,9 +150,32 @@ def previous_plan(
         return None
     act_fix, arc_fix = fixation.activities, fixation.arcs
     regions = [c.region for c in changes]
+    # A traversal's new invocations keep no spots of their own beforehand (design.md
+    # D70): they go after everything the plan had, as new work outside every region
+    # does -- unless the traversal is inside a region still keeping its spots, whose
+    # window cannot close before them. There they go in its window, after the decision,
+    # as a decided region's new work always has.
+    windows = [tuple(res.region) for res in instance.reservations]
+    # A fold that carries an Object holds it in its gate to the end of the region: what
+    # follows waits for the gate, so the new invocations go where the Object already is,
+    # before it, rather than after everything with the Object in the way.
+    holding = {
+        tuple(act.node[: len(act.node) - 2])
+        for act in instance.activities
+        if act.gate and len(act.node) >= 3 and act.node[-2] == GATE_OUT
+        and any(GATE_IN in mode.input_spots for mode in act.modes)
+    }
+    counted = [
+        c.region for c in changes
+        if c.kind == "length" and tuple(c.region) not in holding
+        and not any(len(w) < len(c.region) and tuple(c.region[: len(w)]) == w for w in windows)
+    ]
 
     def inside(path: NodePath) -> bool:
         return any(tuple(path[: len(r)]) == tuple(r) for r in regions)
+
+    def appended(path: NodePath) -> bool:
+        return not inside(path) or any(tuple(path[: len(r)]) == tuple(r) for r in counted)
 
     processing: dict[NodePath, YMap] = {}
     transport: dict[tuple, YMap] = {}
@@ -235,16 +267,36 @@ def previous_plan(
                 mode_index = next(
                     (k for k, m in enumerate(act.modes) if _occupies(m) == _occupies(want)), None
                 )
+        if mode_index is None and inside(act.node):
+            # No invocation before it to follow -- the first of a traversal inside a
+            # loop's next invocation, where the last one had none (design.md D70): a mode
+            # on the spots the changed region kept, which is what it kept them for.
+            outer = max((r for r in regions if tuple(act.node[: len(r)]) == tuple(r)), key=len)
+            kept = kept_by.get(outer)
+            if kept is not None:
+                mode_index = next(
+                    (k for k, m in enumerate(act.modes) if _spots(m) <= kept), None
+                )
         if mode_index is None:
             return None
         chosen[i] = mode_index
         new.append(PreviousStep("place", i, mode_index, 0, 0))
-        if not inside(act.node):
+        if appended(act.node):
             late.add(("place", i))
 
-    # The moves, read or new.
+    # The moves, read or new. A new one into a final output that rests where the schedule
+    # puts it is chosen last, once every other resting place is known: a finished product
+    # holds its spot to the end, so it cannot rest where another one does (design.md D70).
+    resting: list[int] = []
     for r, arc in enumerate(instance.arcs):
         if r in arc_fix:
+            continue
+        dst = acts[arc.dst_activity]
+        if (
+            dst.boundary is not None and dst.boundary.kind == "output" and len(dst.modes) > 1
+            and arc.src_activity in fresh
+        ):
+            resting.append(r)
             continue
         if acts[arc.src_activity].relay is not None:
             option_index = normalize._hand_over(arc, chosen)
@@ -268,7 +320,9 @@ def previous_plan(
                 if option_index is None:
                     return None
                 new.append(PreviousStep("move", r, option_index, 0, 0))
-                if not (inside(arc.arc.src.node) or inside(arc.arc.dst.node)):
+                if not (inside(arc.arc.src.node) or inside(arc.arc.dst.node)) or (
+                    ("place", arc.src_activity) in late or ("place", arc.dst_activity) in late
+                ):
                     late.add(("move", r))
         option = arc.options[option_index]
         for end_index, mode_index in (
@@ -279,7 +333,87 @@ def previous_plan(
                 continue
             if implicit.setdefault(end_index, mode_index) != mode_index:
                 return None
-    return PreviousPlan(_ordered(instance, fixation, old, new, late), implicit)
+    taken = {
+        spot
+        for i, act in enumerate(acts)
+        if act.boundary is not None and act.boundary.kind in ("output", "held")
+        and (i in implicit or len(act.modes) == 1)
+        for spot in _spots(act.modes[implicit.get(i, 0)])
+    }
+    for r in resting:
+        arc = instance.arcs[r]
+        preferred = _route(instance, r, chosen, by_node, transport)
+        free = [
+            k for k, option in enumerate(arc.options)
+            if chosen.get(arc.src_activity, option.src_mode_index) == option.src_mode_index
+            and option.to_spot not in taken
+        ]
+        if not free:
+            return None
+        option_index = preferred if preferred in free else free[0]
+        option = arc.options[option_index]
+        implicit[arc.dst_activity] = option.dst_mode_index
+        taken.add(option.to_spot)
+        new.append(PreviousStep("move", r, option_index, 0, 0))
+        if ("place", arc.src_activity) in late or not inside(arc.arc.src.node):
+            late.add(("move", r))
+    aside = _out_of_the_way(instance, old, new, implicit, taken)
+    if aside is None:
+        return None
+    return PreviousPlan(_ordered(instance, fixation, aside, new, late), implicit)
+
+
+def _out_of_the_way(
+    instance: Instance,
+    old: list[PreviousStep],
+    new: list[PreviousStep],
+    implicit: dict[int, int],
+    taken: set[str],
+) -> list[PreviousStep] | None:
+    """`old` with every finished product the new work would find in its way moved aside
+    (design.md D70, H1): a final output that rests where the schedule puts it holds that
+    spot to the end, and the plan being replaced may have left one on a spot the new work
+    needs -- a cup left in the hand that makes the next one. Its move has not happened
+    (only pending moves are in `old`), so it goes to a spot nothing in the plan uses
+    instead. None where there is none."""
+    acts = instance.activities
+
+    def spots_of(step: PreviousStep) -> set[str]:
+        if step.kind == "place":
+            return _spots(acts[step.index].modes[step.choice])
+        option = instance.arcs[step.index].options[step.choice]
+        return {option.from_spot, option.to_spot}
+
+    wanted: set[str] = set()
+    for step in new:
+        wanted |= spots_of(step)
+    used: set[str] = set(taken) | wanted
+    for step in old:
+        used |= spots_of(step)
+    moved: list[PreviousStep] = []
+    for step in old:
+        arc = instance.arcs[step.index] if step.kind == "move" else None
+        dst = acts[arc.dst_activity] if arc is not None else None
+        if (
+            arc is None or dst is None or dst.boundary is None
+            or dst.boundary.kind != "output" or len(dst.modes) < 2
+            or arc.options[step.choice].to_spot not in wanted
+        ):
+            moved.append(step)
+            continue
+        source_mode = arc.options[step.choice].src_mode_index
+        aside = next(
+            (k for k, option in enumerate(arc.options)
+             if option.src_mode_index == source_mode and option.to_spot not in used),
+            None,
+        )
+        if aside is None:
+            return None
+        option = arc.options[aside]
+        used.add(option.to_spot)
+        implicit[arc.dst_activity] = option.dst_mode_index
+        moved.append(replace(step, choice=aside))
+    return moved
 
 
 def _route(instance: Instance, r: int, chosen: dict[int, int], by_node, transport) -> int | None:

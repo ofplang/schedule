@@ -388,3 +388,16 @@ def test_inside_a_loop_each_invocation_waits_for_its_own_inspection():
     report = schedule(copy.deepcopy(looped), env, document_path=copy.deepcopy(DOCUMENT),
                       random_seed=0)
     assert report.ok, [d.code for d in report.diagnostics]
+
+
+def test_a_fold_carrying_an_object_keeps_its_spots_while_its_length_is_assumed():
+    # The plate waits in the fold's gate until it is stored, so another invocation finds
+    # nothing in its way only if its spots were kept for it, as a loop's next one's are.
+    # A map carries nothing across invocations, and keeps nothing.
+    fold = _plan(WASH)
+    kept = [a for a in fold.plan["activities"] if a["kind"] == "reservation"]
+    assert [a["node"] for a in kept] == [["W"]] and "sink.basin" in kept[0]["spots"]
+    assert not [a for a in _plan(REDO).plan["activities"] if a["kind"] == "reservation"]
+    # Once the length is counted there is nothing left to keep.
+    assert not [a for a in _plan(WASH, _made(2)).plan["activities"]
+                if a["kind"] == "reservation"]

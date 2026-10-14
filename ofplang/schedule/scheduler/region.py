@@ -672,6 +672,32 @@ def loop_reservation(
     )
 
 
+def fold_reservation(
+    instance: Instance, region: NodePath, count: int, waits: Sequence[NodePath]
+) -> Reservation:
+    """What a `fold` whose length is made during the run keeps while that length is
+    assumed (design.md D70): the spots of the modes its last invocation runs in, from
+    when the length is counted -- the end of `waits`, its producers -- to its holding
+    gates, which hand its carried Objects on. Another invocation, if the count says so,
+    runs those modes, as a loop's next one does; and the carried Object waits in the
+    gate until what follows takes it, so without these spots kept the next invocation
+    could find another Object in its way that is itself waiting for the gate's spot."""
+    members, arcs = region_members(instance, region)
+    last = tuple(region) + (count - 1,)
+    by_path = {act.node: i for i, act in enumerate(instance.activities) if act.relay is None}
+    return Reservation(
+        region=region,
+        members=members,
+        arcs=arcs,
+        opens_after=tuple(by_path[w] for w in waits if w in by_path),
+        closes=tuple(sorted(i for i in members if instance.activities[i].gate)),
+        derived=tuple(sorted(
+            i for i in members
+            if tuple(instance.activities[i].node[: len(last)]) == last
+        )),
+    )
+
+
 def cannot_go_on(reservation: Reservation, instance: Instance) -> bool:
     """Whether a loop's `excluded` pairs leave some holding gate and the activity its
     Object goes to next with no choice at all: then the loop can never go on, whatever

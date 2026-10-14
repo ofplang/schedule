@@ -45,6 +45,7 @@ from ofplang.schedule.scheduler.mobility import (
 )
 from ofplang.schedule.scheduler.model import (
     GATE_IN,
+    GATE_OUT,
     JobSpec,
     SourceLiteral,
     SourceRef,
@@ -57,6 +58,7 @@ from ofplang.schedule.scheduler.region import (
     branch_candidates,
     branch_reservation,
     cannot_go_on,
+    fold_reservation,
     loop_reservation,
     region_members,
 )
@@ -1911,6 +1913,27 @@ def _reservations(
                             "where the next one starts")
                 continue
             found.append(kept)
+
+    # A fold whose length is assumed and that carries an Object keeps what its last
+    # invocation runs on until its gate hands the Object on (design.md D70): another
+    # invocation runs there if the count says so.
+    for job, workflow in zip(jobs, workflows, strict=True):
+        prefix = (job.id,) if job.id else ()
+        for path, traversal in workflow.lengths.items():
+            region = prefix + tuple(path)
+            holds = any(
+                act.gate and tuple(act.node[: len(region) + 1]) == (*region, GATE_OUT)
+                and any(GATE_IN in mode.input_spots for mode in act.modes)
+                for act in instance.activities
+            )
+            if not traversal.assumed or not holds or traversal.length < 1:
+                continue
+            members, _arcs = region_members(instance, region)
+            if any(i in fixation.activities for i in members):
+                continue
+            found.append(fold_reservation(
+                instance, region, traversal.length, [prefix + tuple(w) for w in traversal.waits]
+            ))
     return tuple(found), diagnostics
 
 
