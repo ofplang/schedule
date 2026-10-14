@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import weakref
 from array import array
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, replace
 from itertools import product
 
@@ -389,18 +389,18 @@ def _options(
     for inner in w.borrowed:
         base |= choices.spots[inner]
 
-    def crowding(i: int, m: int) -> int:
-        mode = instance.activities[i].modes[m]
-        return len(({*mode.input_spots.values(), *mode.output_spots.values()} - base) & taken)
+    def crowding(spots: Iterable[str]) -> int:
+        return len((set(spots) - base) & taken)
 
-    ranges = [
-        sorted(range(len(instance.activities[i].modes)), key=lambda m, i=i: crowding(i, m))
-        for i in w.free
-    ]
-    ranges += [
-        sorted(range(len(group)), key=lambda g, group=group: len((group[g] - base) & taken))
-        for group in w.templates
-    ]
+    ranges: list[list[int]] = []
+    for i in w.free:
+        bound = [
+            (*mode.input_spots.values(), *mode.output_spots.values())
+            for mode in instance.activities[i].modes
+        ]
+        ranges.append(sorted(range(len(bound)), key=lambda m: crowding(bound[m])))
+    for group in w.templates:
+        ranges.append(sorted(range(len(group)), key=lambda g: crowding(group[g])))
     # A choice is named by its combination, not by where the order put it, so that one
     # name means one combination in every state the walk keys on.
     radices = [len(r) for r in ranges]
