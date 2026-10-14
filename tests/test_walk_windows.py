@@ -337,3 +337,27 @@ def test_interchangeable_machines_and_arms_do_not_stop_the_walk():
         assert report.ok and "plan_constructed" in codes, (cyclers, arms, jobs, codes)
         kept = [a for a in report.plan["activities"] if a["kind"] == "reservation"]
         assert len({tuple(a["spots"]) for a in kept}) == jobs  # one cycler each
+
+
+def test_the_constructed_first_plan_runs_the_jobs_alongside_one_another():
+    # The walk takes one Object through to its end before the next, so its order laid
+    # out ran the jobs one after another wherever they shared a machine: two jobs took
+    # twice as long as one. A forward pass's order, laid out with the windows kept, runs
+    # them side by side wherever the windows leave it room (design.md D68, A3).
+    from ofplang.schedule import JobInput, schedule_jobs
+
+    def built(jobs: int, cyclers: int, arms: int) -> int:
+        workflow = _chain(9)
+        roster = {"activities": [], "jobs": [
+            {"id": f"j{j}", "interface": {"inputs": {"sample": f"bench.s{j}"}}}
+            for j in range(jobs)]}
+        report = schedule_jobs(
+            [JobInput(f"j{j}", copy.deepcopy(workflow)) for j in range(jobs)],
+            _cyclers_lab(cyclers, arms, jobs), document_path=roster, planner="greedy",
+            check_arms=False)
+        assert report.ok, [d.code for d in report.diagnostics]
+        return report.makespan
+
+    alone = built(1, 6, 4)
+    assert built(2, 6, 4) <= 1.1 * alone
+    assert built(3, 4, 2) <= 1.2 * alone

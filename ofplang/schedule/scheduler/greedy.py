@@ -920,9 +920,24 @@ def _build(
         # plan, laid out again, is the one schedule this can offer on a replan
         # (design.md D66), and the walk that keeps the windows on a first plan (D68).
         previous = fixation.previous if fixation is not None else None
-        if previous is None:
-            return _walked_with_windows(instance, floors, history, now, fixation)
-        return _replay_previous(instance, previous, floors, history, now, fixation)
+        if previous is not None:
+            return _replay_previous(instance, previous, floors, history, now, fixation)
+        # A first plan: the walk's order, which is there whenever a way through is, and
+        # the forward passes' orders where the windows leave them room (A3) -- the best
+        # of them by the objective.
+        offered = [
+            *_forward_with_windows(instance, floors, reserved, history, now, fixation),
+        ]
+        walked = _walked_with_windows(instance, floors, history, now, fixation)
+        if walked is not None:
+            offered.append(walked)
+        chosen: Solution | None = None
+        chosen_rank: tuple[int, ...] | None = None
+        for candidate in offered:
+            rank = _stage_values(instance, fixation, jobs, stages, candidate)
+            if chosen is None or chosen_rank is None or rank < chosen_rank:
+                chosen, chosen_rank = candidate, rank
+        return chosen
     best: Solution | None = None
     mark: tuple[int, ...] | None = None
     for rule in _RULES:
@@ -1661,6 +1676,60 @@ def _walked_with_windows(
         if not (kind == "place" and instance.activities[index].boundary is not None)
     )
     return _replay_previous(instance, PreviousPlan(steps, implicit), floors, history, now, fixation)
+
+
+def _forward_with_windows(
+    instance: Instance,
+    floors: dict[int, int],
+    reserved: tuple[tuple[str, int, int], ...],
+    history: _History,
+    now: int,
+    fixation: Fixation | None,
+) -> list[Solution]:
+    """The forward passes' schedules with the windows put back (design.md D68, A3): each
+    pass run as if no region kept anything, its order then laid out as a previous plan
+    is -- every window in its place against the work on its spots -- and read back.
+
+    Why: the walk's order takes one Object through to its end before the next, so laid
+    out it runs jobs nearly one after another wherever they share a machine (RNA-seq,
+    two jobs: 1349 against the solver's 730). A forward pass orders work by time, and
+    where its order leaves the windows room it lays out at the pass's own quality (735).
+    Where it does not -- windows crowding one spot -- nothing comes of it, and the walk's
+    plan is what there is. Only those that survive the read-back are offered."""
+    from ofplang.schedule.scheduler.plancheck import check_schedule
+
+    free = replace(instance, reservations=())
+    arc_index = {(arc.arc, arc.seq): r for r, arc in enumerate(instance.arcs)}
+    found: list[Solution] = []
+    for rule in _RULES:
+        passed = _pass(free, rule, floors, reserved, history, now)
+        if passed is None:
+            continue
+        steps: list[PreviousStep] = []
+        implicit: dict[int, int] = {}
+        for p in passed.processing:
+            act = instance.activities[p.activity]
+            if p.activity in history.activities:
+                continue
+            choice = act.modes.index(p.mode)
+            if act.boundary is not None:
+                implicit[p.activity] = choice
+                continue
+            steps.append(PreviousStep("place", p.activity, choice, float(p.start), float(p.end)))
+        for t in passed.transport:
+            r = arc_index.get((t.arc, t.seq))
+            if r is None or r in history.arcs:
+                continue
+            steps.append(PreviousStep(
+                "move", r, instance.arcs[r].options.index(t.option), float(t.start), float(t.end)
+            ))
+        steps.sort(key=lambda s: (s.start, s.end, 0 if s.kind == "move" else 1, s.index))
+        laid = _replay_previous(
+            instance, PreviousPlan(tuple(steps), implicit), floors, history, now, fixation
+        )
+        if laid is not None and not check_schedule(instance, laid, fixation):
+            found.append(laid)
+    return found
 
 
 def _window_claims(
