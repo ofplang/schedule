@@ -263,7 +263,8 @@ def _workflow_layout(activities):
         elif kind == "reservation":
             # Spots kept for a region while its outcome is open (§6.16): a window, not
             # work, so no arrows.
-            label = f"keep {', '.join(a.get('spots') or [])} for {'/'.join(map(str, a.get('node') or []))}"
+            spots = ", ".join(a.get("spots") or [])
+            label = f"keep {spots} for {'/'.join(map(str, a.get('node') or []))}"
             lane_labels.append(label)
             bars.append(_Bar(lane, s, e, label, "hold-ghost"))
         else:
