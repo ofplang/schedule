@@ -8,9 +8,10 @@ Three views, selected by the caller:
   activity draws a bar on each device it occupies; a transport draws a solid bar
   on its transporter lane and ghost bars on its source/destination device lanes,
   reflecting the device occupancy of FORMULATION §7. Best for resource contention.
-- ``workflow`` — one lane per activity (processing and transport), with arrows
-  tracing each Object-bearing arc (source → transport → destination). Best for
-  reading the dataflow one activity at a time.
+- ``workflow`` — one lane per activity (processing, transport, refill, and the
+  decisions, gates and reservations of a region decided during the run), with
+  arrows tracing each Object-bearing arc (source → transport → destination,
+  through a gate). Best for reading the dataflow one activity at a time.
 - ``lane`` — dataflow swimlanes (ofp-scheduler style): a chain of processing
   activities shares one lane, a split branches into new lanes, and a merge
   rejoins to the lowest lane, so extra lanes appear only where work runs in
@@ -206,7 +207,8 @@ def _workflow_layout(activities):
 
     Every kind is named below. A refill has no arc, so treating "not a processing"
     as a transport gave it a lane labelled `> transport` -- present, and describing
-    something it is not.
+    something it is not; a gate and a reservation were drawn that way too until they
+    were named here.
     """
     ordered = sorted(
         activities,
@@ -247,6 +249,21 @@ def _workflow_layout(activities):
                 label += f": {a.get('arm')}"
             if a.get("assumed"):
                 label += " (assumed)"
+            lane_labels.append(label)
+            bars.append(_Bar(lane, s, e, label, "hold-ghost"))
+        elif kind == "gate":
+            # Where a region's outcome leaves it (§6.15): a moment, and the arcs into
+            # and out of it are drawn through it, as through a step.
+            label = f"gate {'/'.join(map(str, a.get('node') or []))}"
+            if a.get("spot"):
+                label += f" on {a['spot']}"
+            lane_labels.append(label)
+            bars.append(_Bar(lane, s, e, label, "hold-ghost"))
+            proc_lane[_node_key(a)] = lane
+        elif kind == "reservation":
+            # Spots kept for a region while its outcome is open (§6.16): a window, not
+            # work, so no arrows.
+            label = f"keep {', '.join(a.get('spots') or [])} for {'/'.join(map(str, a.get('node') or []))}"
             lane_labels.append(label)
             bars.append(_Bar(lane, s, e, label, "hold-ghost"))
         else:

@@ -976,7 +976,7 @@ environment.
 ### 6.2 Activity — common fields
 
 - `kind` (required) — `processing`, `transport`, `relay` (§6.4.1),
-  `replenishment` (§6.9), or `decision` (§6.14).
+  `replenishment` (§6.9), `decision` (§6.14), `gate` (§6.15), or `reservation` (§6.16).
 - `job` (optional) — an identifier (§8.1) naming which of several jointly planned
   workflows this activity came from (§6.11). Absent from every plan of a single
   workflow, and from a `replenishment` in any plan. It **scopes** the activity's
@@ -985,7 +985,7 @@ environment.
 - `status` (optional) — `pending`, `running`, `completed`, `failed`, or
   `cancelled`; default `pending`. A plan leaves it out (all activities are
   pending). A status sets `completed` / `running` on the activities that have
-  started. Pending activities are normally omitted from a status, but a replanning
+  started (and a replan marks a gate it has passed `completed` itself, §6.15). Pending activities are normally omitted from a status, but a replanning
   input **may** carry them (with any planned times): the scheduler ignores every
   `pending` / status-less entry and re-derives that work from the workflow, so a
   prior plan can be fed straight back in as the next replanning input (its future
@@ -2137,13 +2137,13 @@ gate is after the decision too, read off the structure. Its ports are `in` and `
 a move into a holding gate ends at its `in`, a move out of it starts at its `out`, as
 any arc endpoint (§6.4) does.
 
-**Planned, never run, never stamped.** The plan renders one for every gate of the
-expansion, from the workflow, as it renders relays. Nothing dispatches one and no
-status is ever written on one; a replan reads whether one has been passed off its
-history instead: a gate is behind the run once everything it waits for has completed
-and its Object, if any, has landed, at the latest of those ends -- and it is planned
-at or after `now` otherwise. Whatever a document given to the scheduler says on a gate
-entry is not read.
+**Planned, never run.** The plan renders one for every gate of the expansion, from
+the workflow, as it renders relays. Nothing dispatches one and a run never stamps
+one; a replan reads whether one has been passed off its history instead: a gate is
+behind the run once everything it waits for has completed and its Object, if any,
+has landed, at the latest of those ends -- and is then written `status: completed` at
+that moment, by the scheduler itself -- and it is planned at or after `now` otherwise.
+Whatever a document given to the scheduler says on a gate entry is not read.
 
 A holding gate of a region decided by now keeps its Object where it was left: one
 candidate spot per spot the region's last step can leave it on, reached by a same-spot
@@ -2467,7 +2467,7 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
   (`duplicate_loop`). A `decision`'s `arm` is `then` / `else` or `continue` / `exit`,
   and its `iteration` (a loop's) a non-negative integer.
 - Each activity: `kind` is required and is `processing`, `transport`, `relay`,
-  `replenishment` or `decision`; `job` (if present) is an identifier (§6.11) naming an entry of the
+  `replenishment`, `decision`, `gate` or `reservation`; `job` (if present) is an identifier (§6.11) naming an entry of the
   `jobs` roster (`unknown_job`, which also covers a `job` in a document with no
   roster) and is accepted on every kind but `replenishment`, which belongs to no job
   (§6.9) — and where the roster *is* present, every other kind must carry one
@@ -2497,6 +2497,14 @@ workflow, or that a spot exists in the environment) are execution-layer (§9.3).
     `device` (an identifier), `replenisher` (an identifier) and `amounts` (a
     **non-empty** map of resource name to a positive integer) are required; `node`
     must not appear.
+  - decision: `node` (a node path), `assumed` (a boolean) and `condition` (an arc
+    endpoint's shape, `{ node, port }` with an optional `index`) are required, and
+    `arm` unless `length` (a non-negative integer, a traversal's) is given;
+    `iteration` (a loop's) is optional (§6.14).
+  - gate: `node` (a node path that names a gate, `@out` included, §6.3) is required;
+    `spot` (a qualified spot, an Object's gate) is optional (§6.15).
+  - reservation: `node` (a region's node path) and `spots` (a non-empty list of
+    qualified spots) are required (§6.16).
 - Form rules: identifiers match `[A-Za-z_][A-Za-z0-9_]*`; a qualified spot has
   exactly one `.` with identifier parts, as does a qualified resource; a node path
   is a non-empty list of identifiers, each optionally followed by one non-negative
@@ -2784,7 +2792,7 @@ Stable codes for the schema validators (§9.1, §9.2). Codes are shared across
 | code | meaning |
 | --- | --- |
 | `missing_activities` | `activities` is absent |
-| `unknown_activity_kind` | `kind` is not `processing` / `transport` / `relay` / `replenishment` |
+| `unknown_activity_kind` | `kind` is not `processing` / `transport` / `relay` / `replenishment` / `decision` / `gate` / `reservation` |
 | `unknown_status` | `status` is not `pending` / `running` / `completed` / `failed` / `cancelled` |
 | `unknown_outcome` | `outcome` is not one of the defined values |
 | `end_before_start` | `end` is earlier than `start` |
