@@ -231,8 +231,9 @@ about them the plan depends on, and that is what `expansion.arms` states — a r
 it from the flags it was given. Each branch is then expanded with its one arm only, as
 though its node invoked that process: the plan's activities are `[Each, 0, Choose]`
 running `wash`, `[Each, 1, Choose]` running `polish`, and so on. A branch whose arm is
-not stated — or whose condition is produced during the run — is refused
-(`branch_arm_unknown`) rather than planned on a guess.
+not stated is refused (`branch_arm_unknown`) rather than planned on a guess; one whose
+condition is produced during the run is planned on an assumed arm instead, as
+`inspect_then_wash` below shows.
 
 ```sh
 ofp-schedule schedule wash_or_polish.workflow.yaml --env wash_or_polish.env.yaml \
@@ -265,6 +266,13 @@ without a solve instead, and an `else` that could not be planned would be refuse
 (`arm_unplannable`). A run reads each flag as its inspection finishes, states the arm,
 and replans.
 
+Whichever arm a cup turns out to take, the plan must still hold, so from the decision
+until the cup leaves the branch the spots either arm could need are kept for it: a
+**`reservation`** (§6.16) of `[buffer.pad, rack.a, sink.basin]` for `[Each, 0, Choose]`
+from 5 to 17. The cup leaves through a **`gate`** (§6.15), `[Each, 0, Choose, "@out",
+cup]`, which is where both arms end and what follows starts from; its transports name
+the gate's `in` and `out` ports.
+
 ```sh
 ofp-schedule schedule inspect_then_wash.workflow.yaml --env inspect_then_wash.env.yaml     --document inspect_then_wash.document.yaml
 ```
@@ -293,6 +301,12 @@ plan marks the moment with a **`decision`** (`node: [Clean]`, `iteration: 0`, `a
 exit`, `assumed: true`). Going on one rinse more is checked without a solve. A run states
 how many invocations there have been in `expansion.loops` as each reading comes in, and
 replans.
+
+The spots another invocation would use are kept from the start of the loop to its
+exit -- a **`reservation`** of `[reader.slot, sink.basin]` for `[Clean]` from 0 to 10 --
+so going on is always possible. The plate leaves the invocation through the gate
+`[Clean, 0, "@out", plate]` on `reader.slot`, and the loop's `exhausted` through
+`[Clean, "@out", exhausted]` (§6.15).
 
 ```sh
 ofp-schedule schedule rinse_until_clean.workflow.yaml --env rinse_until_clean.env.yaml \

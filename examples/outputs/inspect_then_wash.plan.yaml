@@ -83,6 +83,17 @@ activities:
       - 0
       - Choose
       port: cup
+- kind: reservation
+  start: 5
+  end: 17
+  node:
+  - Each
+  - 0
+  - Choose
+  spots:
+  - buffer.pad
+  - rack.a
+  - sink.basin
 - kind: transport
   start: 7
   end: 9
@@ -117,8 +128,8 @@ activities:
   output_spots:
     cup: sink.basin
 - kind: processing
-  start: 9
-  end: 12
+  start: 14
+  end: 17
   process: inspect
   mode: '0'
   node:
@@ -131,21 +142,6 @@ activities:
     cup: scope.stage
   output_spots:
     cup: scope.stage
-- kind: decision
-  start: 12
-  end: 12
-  node:
-  - Each
-  - 1
-  - Choose
-  arm: then
-  assumed: true
-  condition:
-    node:
-    - Each
-    - 1
-    - Look
-    port: dirty
 - kind: transport
   start: 15
   end: 17
@@ -159,6 +155,53 @@ activities:
       - 0
       - Choose
       port: cup
+    to:
+      node:
+      - Each
+      - 0
+      - Choose
+      - '@out'
+      - cup
+      port: in
+- kind: decision
+  start: 17
+  end: 17
+  node:
+  - Each
+  - 1
+  - Choose
+  arm: then
+  assumed: true
+  condition:
+    node:
+    - Each
+    - 1
+    - Look
+    port: dirty
+- kind: gate
+  start: 17
+  end: 17
+  node:
+  - Each
+  - 0
+  - Choose
+  - '@out'
+  - cup
+  spot: rack.a
+- kind: transport
+  start: 17
+  end: 17
+  from_spot: rack.a
+  to_spot: rack.a
+  arc:
+    from:
+      node:
+      - Each
+      - 0
+      - Choose
+      - '@out'
+      - cup
+      port: out
     to:
       node: []
       port: cups
@@ -183,6 +226,17 @@ activities:
       - 1
       - Choose
       port: cup
+- kind: reservation
+  start: 17
+  end: 29
+  node:
+  - Each
+  - 1
+  - Choose
+  spots:
+  - buffer.pad
+  - rack.b
+  - sink.basin
 - kind: transport
   start: 19
   end: 21
@@ -217,8 +271,8 @@ activities:
   output_spots:
     cup: sink.basin
 - kind: processing
-  start: 21
-  end: 24
+  start: 26
+  end: 29
   process: inspect
   mode: '0'
   node:
@@ -231,21 +285,6 @@ activities:
     cup: scope.stage
   output_spots:
     cup: scope.stage
-- kind: decision
-  start: 24
-  end: 24
-  node:
-  - Each
-  - 2
-  - Choose
-  arm: then
-  assumed: true
-  condition:
-    node:
-    - Each
-    - 2
-    - Look
-    port: dirty
 - kind: transport
   start: 27
   end: 29
@@ -259,6 +298,53 @@ activities:
       - 1
       - Choose
       port: cup
+    to:
+      node:
+      - Each
+      - 1
+      - Choose
+      - '@out'
+      - cup
+      port: in
+- kind: decision
+  start: 29
+  end: 29
+  node:
+  - Each
+  - 2
+  - Choose
+  arm: then
+  assumed: true
+  condition:
+    node:
+    - Each
+    - 2
+    - Look
+    port: dirty
+- kind: gate
+  start: 29
+  end: 29
+  node:
+  - Each
+  - 1
+  - Choose
+  - '@out'
+  - cup
+  spot: rack.b
+- kind: transport
+  start: 29
+  end: 29
+  from_spot: rack.b
+  to_spot: rack.b
+  arc:
+    from:
+      node:
+      - Each
+      - 1
+      - Choose
+      - '@out'
+      - cup
+      port: out
     to:
       node: []
       port: cups
@@ -283,6 +369,17 @@ activities:
       - 2
       - Choose
       port: cup
+- kind: reservation
+  start: 29
+  end: 41
+  node:
+  - Each
+  - 2
+  - Choose
+  spots:
+  - buffer.pad
+  - rack.c
+  - sink.basin
 - kind: processing
   start: 31
   end: 39
@@ -311,6 +408,38 @@ activities:
       - 2
       - Choose
       port: cup
+    to:
+      node:
+      - Each
+      - 2
+      - Choose
+      - '@out'
+      - cup
+      port: in
+- kind: gate
+  start: 41
+  end: 41
+  node:
+  - Each
+  - 2
+  - Choose
+  - '@out'
+  - cup
+  spot: rack.c
+- kind: transport
+  start: 41
+  end: 41
+  from_spot: rack.c
+  to_spot: rack.c
+  arc:
+    from:
+      node:
+      - Each
+      - 2
+      - Choose
+      - '@out'
+      - cup
+      port: out
     to:
       node: []
       port: cups

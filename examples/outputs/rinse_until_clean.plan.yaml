@@ -26,6 +26,14 @@ activities:
       - 0
       - Rinse
       port: plate
+- kind: reservation
+  start: 0
+  end: 10
+  node:
+  - Clean
+  spots:
+  - reader.slot
+  - sink.basin
 - kind: processing
   start: 2
   end: 6
@@ -89,6 +97,41 @@ activities:
     - 0
     - Read
     port: dirty
+- kind: gate
+  start: 10
+  end: 10
+  node:
+  - Clean
+  - 0
+  - '@out'
+  - plate
+  spot: reader.slot
+- kind: gate
+  start: 10
+  end: 10
+  node:
+  - Clean
+  - '@out'
+  - exhausted
+- kind: transport
+  start: 10
+  end: 10
+  from_spot: reader.slot
+  to_spot: reader.slot
+  arc:
+    from:
+      node:
+      - Clean
+      - 0
+      - Read
+      port: plate
+    to:
+      node:
+      - Clean
+      - 0
+      - '@out'
+      - plate
+      port: in
 - kind: transport
   start: 10
   end: 12
@@ -100,8 +143,9 @@ activities:
       node:
       - Clean
       - 0
-      - Read
-      port: plate
+      - '@out'
+      - plate
+      port: out
     to:
       node:
       - Dry
